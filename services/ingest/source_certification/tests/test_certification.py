@@ -68,7 +68,9 @@ GOOD_METRICS = (
     ("replicas", 2.0),
     ("clock_mode_wall", 1.0),
     ("lab_calibration_elapsed_seconds", 30.0),
-    ("operation_mix_coverage_ratio", 1.0),
+    ("typed_workload_declaration_bound", 1.0),
+    ("executable_operation_coverage_ratio", 1.0),
+    ("control_operation_coverage_ratio", 1.0),
     ("pipeline_e2e_proven", 1.0),
     ("promotion_eligible", 1.0),
     ("quota_config_verified", 1.0),
@@ -245,6 +247,116 @@ def test_required_renewal_contract_gaps_block_combined_execution() -> None:
         )
 
 
+def test_operation_mix_is_compatibility_only_for_typed_execution() -> None:
+    combined = next(
+        suite
+        for suite in SOURCE_CERTIFICATION_CATALOG["slack"].load_suites
+        if suite.kind == "combined"
+    )
+    compatibility_projection = replace(
+        combined,
+        operation_mix=(),
+    )
+
+    assert compatibility_projection.execution_workload_dict() == (
+        combined.execution_workload_dict()
+    )
+    assert compatibility_projection.execution_workload_sha256 == (
+        combined.execution_workload_sha256
+    )
+    assert compatibility_projection.data_operations == combined.data_operations
+    assert (
+        compatibility_projection.control_operations
+        == combined.control_operations
+    )
+
+
+def test_historical_data_operations_require_positive_pipeline_outputs() -> None:
+    historical = next(
+        suite
+        for suite in SOURCE_CERTIFICATION_CATALOG["slack"].load_suites
+        if suite.kind == "historical"
+    )
+    fetch = next(iter(historical.data_operations))
+    invalid_operations = tuple(
+        replace(operation, raw_cardinality="zero_or_more")
+        if operation.operation_id == fetch.operation_id
+        else operation
+        for operation in historical.executable_operations
+    )
+
+    with pytest.raises(
+        CertificationInvariantError,
+        match="historical data operations require positive",
+    ):
+        replace(historical, executable_operations=invalid_operations)
+
+
+@pytest.mark.parametrize(
+    ("changes", "match"),
+    (
+        ({"executable_binding": ""}, "executable_binding"),
+        ({"evidence_id": ""}, "load evidence_id"),
+        ({"quota_mappings": ()}, "quota_mapping receipt proof"),
+        ({"raw_cardinality": "none"}, "data operations require"),
+        ({"cursor_applicability": "optional"}, "cursor_consistency proof"),
+    ),
+)
+def test_historical_fetch_rejects_missing_typed_declarations(
+    changes: dict[str, object],
+    match: str,
+) -> None:
+    historical = next(
+        suite
+        for suite in SOURCE_CERTIFICATION_CATALOG["slack"].load_suites
+        if suite.kind == "historical"
+    )
+    fetch = next(iter(historical.data_operations))
+
+    with pytest.raises(CertificationInvariantError, match=match):
+        replace(fetch, **changes)
+
+
+@pytest.mark.parametrize(
+    ("changes", "match"),
+    (
+        ({"quota_mappings": ()}, "require quota mappings"),
+        ({"cursor_applicability": "optional"}, "require cursor consistency"),
+    ),
+)
+def test_historical_suite_rejects_missing_quota_or_cursor_declarations(
+    changes: dict[str, object],
+    match: str,
+) -> None:
+    historical = next(
+        suite
+        for suite in SOURCE_CERTIFICATION_CATALOG["slack"].load_suites
+        if suite.kind == "historical"
+    )
+    fetch = next(iter(historical.data_operations))
+    removed_proof = (
+        "quota_mapping"
+        if "quota_mappings" in changes
+        else "cursor_consistency"
+    )
+    replacement = replace(
+        fetch,
+        **changes,
+        receipt_proof_requirements=tuple(
+            proof
+            for proof in fetch.receipt_proof_requirements
+            if proof != removed_proof
+        ),
+    )
+    operations = tuple(
+        replacement if operation.operation_id == fetch.operation_id else operation
+        for operation in historical.executable_operations
+    )
+
+    with pytest.raises(CertificationInvariantError, match=match):
+        replace(historical, executable_operations=operations)
+
+
 def test_canary_operations_cover_contract_requests_and_live_transports() -> None:
     for spec in SOURCE_CERTIFICATION_SPECS:
         source = source_definition(spec.source_id)
@@ -335,6 +447,69 @@ def test_locked_evidence_and_complete_results_can_pass() -> None:
     )
     assert decision.state == "passed"
     assert decision.failures == ()
+
+
+def test_declared_not_applicable_load_shape_is_neutral() -> None:
+    spec = _lock_evidence(SOURCE_CERTIFICATION_CATALOG["whatsapp"])
+    passing = _passing_input(spec)
+
+    def neutralize_historical(
+        suites: tuple[SuiteResult, ...],
+    ) -> tuple[SuiteResult, ...]:
+        return tuple(
+            SuiteResult(
+                kind="historical",
+                state="not_applicable",
+                artifact_uri="artifact://historical-not-applicable",
+            )
+            if suite.kind == "historical"
+            else suite
+            for suite in suites
+        )
+
+    supplied = replace(
+        passing,
+        provider_safe_suites=neutralize_historical(
+            passing.provider_safe_suites,
+        ),
+        fyralis_ceiling_suites=neutralize_historical(
+            passing.fyralis_ceiling_suites,
+        ),
+        fault_recovery_suites=neutralize_historical(
+            passing.fault_recovery_suites,
+        ),
+    )
+
+    decision = evaluate_certification(spec, supplied, now=NOW)
+
+    assert decision.state == "passed"
+    assert decision.failures == ()
+
+
+def test_not_applicable_load_shape_is_rejected_for_executable_declaration() -> None:
+    spec = _lock_evidence(SOURCE_CERTIFICATION_CATALOG["slack"])
+    passing = _passing_input(spec)
+    supplied = replace(
+        passing,
+        provider_safe_suites=tuple(
+            SuiteResult(
+                kind="historical",
+                state="not_applicable",
+                artifact_uri="artifact://invalid-not-applicable",
+            )
+            if suite.kind == "historical"
+            else suite
+            for suite in passing.provider_safe_suites
+        ),
+    )
+
+    decision = evaluate_certification(spec, supplied, now=NOW)
+
+    assert decision.state == "blocked"
+    assert (
+        "provider_safe.historical is not_applicable but the source declaration "
+        "is executable"
+    ) in decision.failures
 
 
 @pytest.mark.parametrize(
@@ -465,7 +640,9 @@ def test_short_or_synthetic_load_provenance_cannot_pass() -> None:
     metrics.update(
         clock_mode_wall=0.0,
         lab_calibration_elapsed_seconds=0.01,
-        operation_mix_coverage_ratio=0.5,
+        typed_workload_declaration_bound=0.0,
+        executable_operation_coverage_ratio=0.5,
+        control_operation_coverage_ratio=0.5,
         pipeline_e2e_proven=0.0,
         promotion_eligible=0.0,
         quota_config_verified=0.0,
@@ -489,7 +666,9 @@ def test_short_or_synthetic_load_provenance_cannot_pass() -> None:
         "provider_safe.live.clock_mode_wall must equal 1",
         "provider_safe.live.promotion_eligible must equal 1",
         "provider_safe.live.pipeline_e2e_proven must equal 1",
-        "provider_safe.live.operation_mix_coverage_ratio must equal 1",
+        "provider_safe.live.typed_workload_declaration_bound must equal 1",
+        "provider_safe.live.executable_operation_coverage_ratio must equal 1",
+        "provider_safe.live.control_operation_coverage_ratio must equal 1",
         "provider_safe.live.quota_config_verified must equal 1",
     }
     assert expected <= set(decision.failures)

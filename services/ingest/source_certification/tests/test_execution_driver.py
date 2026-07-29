@@ -55,6 +55,42 @@ def test_idempotency_replay_promotion_applies_to_all_27_sources() -> None:
     assert "duplicate_delivery_and_idempotency" in PIPELINE_SCENARIO_IDS
 
 
+async def test_all_catalog_load_suites_emit_typed_pipeline_artifacts(
+    tmp_path: Path,
+) -> None:
+    from services.ingest.source_certification import (  # noqa: PLC0415
+        execution_driver as driver,
+    )
+
+    for source_id, spec in SOURCE_CERTIFICATION_CATALOG.items():
+        artifacts, provider_safe, fyralis_ceiling = (
+            await driver._run_typed_pipeline_loads(  # noqa: SLF001
+                source_id,
+                ambient_env={},
+                artifact_dir=tmp_path / source_id,
+                adapter_factory=None,
+            )
+        )
+        declared_kinds = {suite.kind for suite in spec.load_suites}
+        assert set(artifacts) == {"provider_safe", "fyralis_ceiling"}
+        assert all(set(mode_artifacts) == declared_kinds for mode_artifacts in artifacts.values())
+        assert {result.kind for result in provider_safe} == declared_kinds
+        assert {result.kind for result in fyralis_ceiling} == declared_kinds
+        for suite in spec.load_suites:
+            for mode in artifacts:
+                artifact = artifacts[mode][suite.kind]
+                assert artifact["workload"] == suite.execution_workload_dict()
+                assert (
+                    tmp_path / source_id / "pipeline_load" / suite.kind / f"{mode}.json"
+                ).is_file()
+                expected_state = (
+                    "not_applicable"
+                    if suite.non_applicability is not None
+                    else "blocked"
+                )
+                assert artifact["state"] == expected_state
+
+
 async def test_local_driver_writes_strict_source_isolated_used_surface_evidence(
     tmp_path: Path,
 ) -> None:
@@ -276,14 +312,21 @@ async def test_load_driver_measures_lab_but_does_not_guess_provider_quota(
     assert distributed["exact_assertions_passed"] is False
     assert distributed["synthetic_promotion_allowed"] is False
     offered = artifact["offered_load"]
-    assert offered["state"] == "measured_blocked"
+    assert offered["state"] == "diagnostic_only"
     assert offered["clock_mode"] == "virtual"
     assert offered["quota_configuration"]["state"] == "blocked"
     assert {
         suite["kind"] for suite in offered["suites"]
     } == {"historical", "live", "combined"}
+    typed = artifact["pipeline_load_artifacts"]
+    assert set(typed) == {"provider_safe", "fyralis_ceiling"}
+    assert all(
+        suite["state"] == "blocked"
+        for mode in typed.values()
+        for suite in mode.values()
+    )
     for suite in offered["suites"]:
-        ceiling = suite["fyralis_ceiling"]
+        ceiling = suite["provider_lab_diagnostic"]["fyralis_ceiling"]
         assert ceiling["state"] == "blocked"
         assert (
             "safety cap" in ceiling["reason"]
@@ -291,7 +334,7 @@ async def test_load_driver_measures_lab_but_does_not_guess_provider_quota(
         )
         assert not (
             artifact_dir
-            / "load"
+            / "provider_lab_load"
             / suite["kind"]
             / "fyralis_ceiling.json"
         ).exists()
@@ -334,12 +377,12 @@ async def test_provider_safe_diagnostic_requires_exact_evidence_labelled_budget(
         suite.state == "blocked" for suite in supplied.provider_safe_suites
     )
     for suite in artifact["offered_load"]["suites"]:
-        provider_safe = suite["provider_safe"]
+        provider_safe = suite["provider_lab_diagnostic"]["provider_safe"]
         assert provider_safe["state"] == "blocked"
         assert "safety cap" in provider_safe["reason"]
         assert not (
             artifact_dir
-            / "load"
+            / "provider_lab_load"
             / suite["kind"]
             / "provider_safe.json"
         ).exists()
@@ -352,8 +395,14 @@ async def test_provider_safe_diagnostic_requires_exact_evidence_labelled_budget(
         == "web-api-steady"
     )
     assert all(
-        dict(suite.metrics)["quota_config_verified"] == 1
+        dict(suite.metrics)["quota_config_verified"] == 0
         for suite in supplied.provider_safe_suites
+    )
+    assert all(
+        pipeline_artifact["quota"] is None
+        for pipeline_artifact in artifact["pipeline_load_artifacts"][
+            "provider_safe"
+        ].values()
     )
 
 
@@ -389,7 +438,10 @@ def test_quota_scope_evidence_controls_shared_budget_identity() -> None:
     lanes = driver._load_lanes(  # noqa: SLF001
         LoadTopology(tenants=2, installations_per_tenant=2, replicas=2),
     )
-    operation = driver._offered_operation_plan("slack")[0]  # noqa: SLF001
+    operation = driver._offered_operation_plan(  # noqa: SLF001
+        "slack",
+        SOURCE_CERTIFICATION_CATALOG["slack"].load_suites[0],
+    )[0]
 
     def scopes(scope: str) -> set[str]:
         evidence = VerifiedQuotaEvidence(
@@ -417,12 +469,12 @@ def test_quota_scope_evidence_controls_shared_budget_identity() -> None:
     assert len(scopes("installation")) == 4
 
 
-def test_offered_plan_uses_exact_operation_bindings_without_cartesian_pairs() -> None:
+def test_provider_lab_http_plan_uses_exact_operation_bindings() -> None:
     from services.ingest.source_certification import (  # noqa: PLC0415
         execution_driver as driver,
     )
 
-    gmail = driver._offered_operation_plan("gmail")  # noqa: SLF001
+    gmail = driver._provider_lab_http_operation_plan("gmail")  # noqa: SLF001
     topic = [
         operation
         for operation in gmail
@@ -444,7 +496,7 @@ def test_offered_plan_uses_exact_operation_bindings_without_cartesian_pairs() ->
     )
     fireflies = [
         operation
-        for operation in driver._offered_operation_plan(  # noqa: SLF001
+        for operation in driver._provider_lab_http_operation_plan(  # noqa: SLF001
             "fireflies",
         )
         if operation.operation_id is not None
@@ -599,7 +651,7 @@ async def test_offer_limit_is_a_safety_cap_not_synthetic_instability() -> None:
     assert app.state.provider_lab.ledger.list(source="slack") == []
 
 
-async def test_calibration_exercises_every_declared_operation_mix_case(
+async def test_calibration_exercises_every_typed_data_operation_case(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from services.ingest.source_certification import (  # noqa: PLC0415
@@ -649,9 +701,7 @@ async def test_calibration_exercises_every_declared_operation_mix_case(
         runner,
     )
 
-    assert captured_minimum_samples == (
-        len(runner.operation_plan) * len(suite.operation_mix)
-    )
+    assert captured_minimum_samples == len(runner.operation_plan)
     assert calibration.passed is True
 
 
@@ -1001,9 +1051,33 @@ async def test_all_27_sources_execute_declared_load_and_fault_diagnostics(
             "combined",
         }
         for suite in offered["suites"]:
-            ceiling = suite["fyralis_ceiling"]
+            provider_lab = suite["provider_lab_diagnostic"]
+            if provider_lab.get("state") == "not_applicable":
+                assert suite["kind"] == "historical"
+                assert source_id == "whatsapp"
+                continue
+            ceiling = provider_lab["fyralis_ceiling"]
             assert ceiling["state"] == "blocked"
             assert ceiling["reason"]
+
+        typed = load_artifact["pipeline_load_artifacts"]
+        for mode in typed.values():
+            for kind, pipeline_artifact in mode.items():
+                declared = next(
+                    suite
+                    for suite in SOURCE_CERTIFICATION_CATALOG[
+                        source_id
+                    ].load_suites
+                    if suite.kind == kind
+                )
+                assert pipeline_artifact["workload"] == (
+                    declared.execution_workload_dict()
+                )
+                assert pipeline_artifact["state"] == (
+                    "not_applicable"
+                    if declared.non_applicability is not None
+                    else "blocked"
+                )
 
         fault_dir = tmp_path / source_id / "fault"
         await run_stage(

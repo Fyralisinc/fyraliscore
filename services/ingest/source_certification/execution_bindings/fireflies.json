@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "91f2b643fadc2490fa0d189ab110e4dd426db8b889903e7bf1132f97d35f5444"
+        "f66d38fdf2385c2389a62e7b403ce6956129cc56b5b5a691543b9f45a1b78789"
       ],
       "credential_env": [
         "FYRALIS_CANARY_FIREFLIES"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "91f2b643fadc2490fa0d189ab110e4dd426db8b889903e7bf1132f97d35f5444"
+        "f66d38fdf2385c2389a62e7b403ce6956129cc56b5b5a691543b9f45a1b78789"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "91f2b643fadc2490fa0d189ab110e4dd426db8b889903e7bf1132f97d35f5444"
+        "f66d38fdf2385c2389a62e7b403ce6956129cc56b5b5a691543b9f45a1b78789"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "91f2b643fadc2490fa0d189ab110e4dd426db8b889903e7bf1132f97d35f5444"
+        "f66d38fdf2385c2389a62e7b403ce6956129cc56b5b5a691543b9f45a1b78789"
       ],
       "credential_env": [],
       "required_env": [],

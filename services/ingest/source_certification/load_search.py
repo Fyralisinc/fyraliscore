@@ -1,11 +1,11 @@
 """Artifact-producing maximum-stable-throughput search.
 
-The controller owns the prescribed workload shape while an injected driver
+The controller owns the prescribed typed workload while an injected driver
 owns traffic generation and measurement. Tests may use a virtual clock and
 short durations, but the resulting artifact records that provenance and is not
 promotion eligible. Release promotion requires the exact declared topology,
-operation mix, wall-clock durations, verified quota evidence, Provider Lab
-calibration, and an end-to-end pipeline proof.
+executable operation receipts, wall-clock durations, verified quota evidence,
+Provider Lab calibration, and an end-to-end pipeline proof.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from services.ingest.synthetic.provider_lab.calibration import (
 )
 
 
-LOAD_ARTIFACT_SCHEMA_VERSION = "fyralis.source-load-envelope.v2"
+LOAD_ARTIFACT_SCHEMA_VERSION = "fyralis.source-load-envelope.v3"
 LoadMode = Literal["provider_safe", "fyralis_ceiling"]
 Phase = Literal["warmup", "step", "binary_search", "validation", "soak"]
 ClockMode = Literal["wall", "virtual"]
@@ -264,15 +264,20 @@ class LoadArtifact:
     source_id: str
     suite_kind: SuiteKind
     mode: LoadMode
-    operation_mix: tuple[str, ...]
-    required_operation_labels: tuple[str, ...]
+    compatibility_operation_mix: tuple[str, ...]
+    workload_declaration_sha256: str
+    executable_operation_ids: tuple[str, ...]
+    control_operation_ids: tuple[str, ...]
+    contract_absence_operation_ids: tuple[str, ...]
+    non_applicability_evidence_id: str | None
+    required_provider_operation_labels: tuple[str, ...]
     topology: LoadTopology
     config: LoadSearchConfig
     clock_mode: ClockMode
     calibration: LabCalibration
     envelope: LoadEnvelope
     quota_evidence: tuple[VerifiedQuotaEvidence, ...]
-    operation_coverage_ratio: float
+    executable_operation_coverage_ratio: float
     pipeline_e2e_proven: bool
     started_at: datetime
     completed_at: datetime
@@ -285,16 +290,39 @@ class LoadArtifact:
             raise ValueError(f"invalid suite_kind {self.suite_kind!r}")
         if self.clock_mode not in {"wall", "virtual"}:
             raise ValueError(f"invalid clock_mode {self.clock_mode!r}")
-        if not self.operation_mix:
-            raise ValueError("operation_mix must not be empty")
-        if len(self.required_operation_labels) != len(
-            set(self.required_operation_labels),
+        if len(self.workload_declaration_sha256) != 64 or any(
+            character not in "0123456789abcdef"
+            for character in self.workload_declaration_sha256
         ):
-            raise ValueError("required_operation_labels must be unique")
+            raise ValueError("workload_declaration_sha256 must be a SHA-256")
+        for name in (
+            "executable_operation_ids",
+            "control_operation_ids",
+            "contract_absence_operation_ids",
+            "required_provider_operation_labels",
+        ):
+            values = getattr(self, name)
+            if len(values) != len(set(values)) or any(
+                not isinstance(value, str) or not value
+                for value in values
+            ):
+                raise ValueError(f"{name} must contain unique non-empty IDs")
+        if not self.executable_operation_ids:
+            raise ValueError("an executable load artifact requires operation IDs")
+        if self.non_applicability_evidence_id is not None:
+            raise ValueError(
+                "load-search artifacts cannot represent non-applicable suites"
+            )
+        if len(self.required_provider_operation_labels) != len(
+            set(self.required_provider_operation_labels),
+        ):
+            raise ValueError("required_provider_operation_labels must be unique")
         if self.completed_at < self.started_at:
             raise ValueError("completed_at cannot precede started_at")
-        if not 0 <= self.operation_coverage_ratio <= 1:
-            raise ValueError("operation_coverage_ratio must be between 0 and 1")
+        if not 0 <= self.executable_operation_coverage_ratio <= 1:
+            raise ValueError(
+                "executable_operation_coverage_ratio must be between 0 and 1",
+            )
 
     @property
     def promotion_eligible(self) -> bool:
@@ -306,9 +334,26 @@ class LoadArtifact:
             "source_id": self.source_id,
             "suite_kind": self.suite_kind,
             "mode": self.mode,
-            "operation_mix": list(self.operation_mix),
-            "required_operation_labels": list(
-                self.required_operation_labels,
+            "workload": {
+                "declaration_sha256": self.workload_declaration_sha256,
+                "executable_operation_ids": list(self.executable_operation_ids),
+                "control_operation_ids": list(self.control_operation_ids),
+                "contract_absence_operation_ids": list(
+                    self.contract_absence_operation_ids,
+                ),
+                "non_applicability_evidence_id": (
+                    self.non_applicability_evidence_id
+                ),
+            },
+            # Retained only for readers of v2 diagnostic files.  Active
+            # scheduling, coverage, comparison, and promotion use the typed
+            # workload fields above.
+            "compatibility_operation_mix": list(
+                self.compatibility_operation_mix,
+            ),
+            "operation_mix": list(self.compatibility_operation_mix),
+            "required_provider_operation_labels": list(
+                self.required_provider_operation_labels,
             ),
             "topology": dataclasses.asdict(self.topology),
             "config": dataclasses.asdict(self.config),
@@ -318,7 +363,9 @@ class LoadArtifact:
             "quota_evidence": [
                 evidence.as_dict() for evidence in self.quota_evidence
             ],
-            "operation_coverage_ratio": self.operation_coverage_ratio,
+            "executable_operation_coverage_ratio": (
+                self.executable_operation_coverage_ratio
+            ),
             "pipeline_e2e_proven": self.pipeline_e2e_proven,
             "started_at": self.started_at.astimezone(timezone.utc).isoformat(),
             "completed_at": self.completed_at.astimezone(timezone.utc).isoformat(),
@@ -453,10 +500,25 @@ def compare_load_envelopes(
     if (
         provider_safe.source_id != fyralis_ceiling.source_id
         or provider_safe.suite_kind != fyralis_ceiling.suite_kind
-        or provider_safe.operation_mix != fyralis_ceiling.operation_mix
         or (
-            provider_safe.required_operation_labels
-            != fyralis_ceiling.required_operation_labels
+            provider_safe.workload_declaration_sha256
+            != fyralis_ceiling.workload_declaration_sha256
+        )
+        or (
+            provider_safe.executable_operation_ids
+            != fyralis_ceiling.executable_operation_ids
+        )
+        or (
+            provider_safe.control_operation_ids
+            != fyralis_ceiling.control_operation_ids
+        )
+        or (
+            provider_safe.contract_absence_operation_ids
+            != fyralis_ceiling.contract_absence_operation_ids
+        )
+        or (
+            provider_safe.required_provider_operation_labels
+            != fyralis_ceiling.required_provider_operation_labels
         )
         or provider_safe.topology != fyralis_ceiling.topology
     ):
@@ -479,22 +541,22 @@ def promotion_failures(
     *,
     suite: LoadSuite,
     mode: LoadMode,
-    operation_mix: tuple[str, ...],
+    workload_declaration_sha256: str,
     topology: LoadTopology,
     config: LoadSearchConfig,
     clock_mode: ClockMode,
     calibration: LabCalibration,
     envelope: LoadEnvelope,
     quota_evidence: tuple[VerifiedQuotaEvidence, ...],
-    operation_coverage_ratio: float,
+    executable_operation_coverage_ratio: float,
     pipeline_e2e_proven: bool,
 ) -> tuple[str, ...]:
     """Return every reason this measurement cannot be release evidence."""
 
     failures: list[str] = []
     declared_topology = LoadTopology.from_suite(suite)
-    if operation_mix != suite.operation_mix:
-        failures.append("operation mix differs from the source declaration")
+    if workload_declaration_sha256 != suite.execution_workload_sha256:
+        failures.append("typed workload declaration differs from the source contract")
     if topology != declared_topology:
         failures.append("topology differs from the source declaration")
     if not math.isclose(
@@ -527,8 +589,8 @@ def promotion_failures(
             "Provider Lab calibration did not run for the required wall-clock "
             "duration",
         )
-    if operation_coverage_ratio < 1:
-        failures.append("declared operation mix was not fully exercised")
+    if executable_operation_coverage_ratio < 1:
+        failures.append("declared executable operations were not fully exercised")
     if not pipeline_e2e_proven:
         failures.append("raw-to-Observation-to-T1 pipeline proof is missing")
     if mode == "provider_safe" and not quota_evidence:
@@ -585,8 +647,8 @@ async def run_artifact_load_search(
     lab_calibration: LabCalibration,
     include_soak: bool,
     quota_evidence: tuple[VerifiedQuotaEvidence, ...] = (),
-    operation_coverage_ratio: float = 0.0,
-    required_operation_labels: tuple[str, ...] = (),
+    verified_executable_operation_coverage_ratio: float = 0.0,
+    required_provider_operation_labels: tuple[str, ...] = (),
     pipeline_e2e_proven: bool = False,
     artifact_path: Path | None = None,
     require_promotion: bool = False,
@@ -594,6 +656,11 @@ async def run_artifact_load_search(
 ) -> LoadArtifact:
     """Run one envelope, assess promotion, and optionally write canonical JSON."""
 
+    if suite.non_applicability is not None:
+        raise ValueError(
+            "not-applicable suites must be handled by the typed pipeline "
+            "load runner",
+        )
     clock = now or (lambda: datetime.now(timezone.utc))
     started_at = clock().astimezone(timezone.utc)
     envelope = await find_maximum_stable_rate(
@@ -604,15 +671,33 @@ async def run_artifact_load_search(
         include_soak=include_soak,
     )
     completed_at = clock().astimezone(timezone.utc)
-    observed_mix_labels = {
-        label.removeprefix("executed_mix:")
+    declared_data_operation_ids = {
+        operation.operation_id for operation in suite.data_operations
+    }
+    declared_control_operation_ids = {
+        operation.operation_id for operation in suite.control_operations
+    }
+    observed_data_operation_ids = {
+        label.removeprefix("executed_data_operation:")
         for trial in envelope.trials
         for label, count in trial.measurement.operation_counts
-        if label.startswith("executed_mix:") and count > 0
+        if label.startswith("executed_data_operation:") and count > 0
     }
-    observed_mix_coverage = (
-        len(observed_mix_labels & set(suite.operation_mix))
-        / len(suite.operation_mix)
+    observed_control_operation_ids = {
+        label.removeprefix("executed_control_operation:")
+        for trial in envelope.trials
+        for label, count in trial.measurement.operation_counts
+        if label.startswith("executed_control_operation:") and count > 0
+    }
+    observed_data_coverage = (
+        len(observed_data_operation_ids & declared_data_operation_ids)
+        / len(declared_data_operation_ids)
+    )
+    observed_control_coverage = (
+        len(observed_control_operation_ids & declared_control_operation_ids)
+        / len(declared_control_operation_ids)
+        if declared_control_operation_ids
+        else 1.0
     )
     observed_operation_labels = {
         label
@@ -621,42 +706,56 @@ async def run_artifact_load_search(
         if count > 0
     }
     observed_required_coverage = (
-        len(observed_operation_labels & set(required_operation_labels))
-        / len(required_operation_labels)
-        if required_operation_labels
+        len(observed_operation_labels & set(required_provider_operation_labels))
+        / len(required_provider_operation_labels)
+        if required_provider_operation_labels
         else 1.0
     )
     effective_operation_coverage = min(
-        operation_coverage_ratio,
-        observed_mix_coverage,
+        verified_executable_operation_coverage_ratio,
+        observed_data_coverage,
+        observed_control_coverage,
         observed_required_coverage,
     )
     failures = promotion_failures(
         suite=suite,
         mode=mode,
-        operation_mix=suite.operation_mix,
+        workload_declaration_sha256=suite.execution_workload_sha256,
         topology=topology,
         config=config,
         clock_mode=clock_mode,
         calibration=lab_calibration,
         envelope=envelope,
         quota_evidence=quota_evidence,
-        operation_coverage_ratio=effective_operation_coverage,
+        executable_operation_coverage_ratio=effective_operation_coverage,
         pipeline_e2e_proven=pipeline_e2e_proven,
     )
     artifact = LoadArtifact(
         source_id=source_id,
         suite_kind=suite.kind,
         mode=mode,
-        operation_mix=suite.operation_mix,
-        required_operation_labels=required_operation_labels,
+        compatibility_operation_mix=suite.operation_mix,
+        workload_declaration_sha256=suite.execution_workload_sha256,
+        executable_operation_ids=tuple(
+            operation.operation_id
+            for operation in suite.executable_operations
+        ),
+        control_operation_ids=tuple(
+            operation.operation_id for operation in suite.control_operations
+        ),
+        contract_absence_operation_ids=tuple(
+            assertion.operation_id
+            for assertion in suite.contract_absence_assertions
+        ),
+        non_applicability_evidence_id=None,
+        required_provider_operation_labels=required_provider_operation_labels,
         topology=topology,
         config=config,
         clock_mode=clock_mode,
         calibration=lab_calibration,
         envelope=envelope,
         quota_evidence=quota_evidence,
-        operation_coverage_ratio=effective_operation_coverage,
+        executable_operation_coverage_ratio=effective_operation_coverage,
         pipeline_e2e_proven=pipeline_e2e_proven,
         started_at=started_at,
         completed_at=completed_at,

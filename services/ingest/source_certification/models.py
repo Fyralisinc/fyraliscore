@@ -23,7 +23,13 @@ LoadOperationKind = Literal["data", "control"]
 LoadExecutionFrequency = Literal["per_item", "once_per_trial", "periodic"]
 LoadCardinality = Literal["none", "exactly_one", "zero_or_more", "one_or_more"]
 LoadCursorApplicability = Literal["required", "optional", "not_applicable"]
-CertificationState = Literal["unverified", "passed", "failed", "blocked"]
+CertificationState = Literal[
+    "unverified",
+    "passed",
+    "failed",
+    "blocked",
+    "not_applicable",
+]
 CanaryCleanupState = Literal["not_required", "passed", "failed", "blocked"]
 CanaryOperationMutability = Literal["read", "mutation", "unclassified"]
 CertificationBindingRole = Literal[
@@ -32,7 +38,9 @@ CertificationBindingRole = Literal[
     "fixture_count_oracle",
     "installation_seeder",
 ]
-_CERTIFICATION_STATES = frozenset({"unverified", "passed", "failed", "blocked"})
+_CERTIFICATION_STATES = frozenset(
+    {"unverified", "passed", "failed", "blocked", "not_applicable"}
+)
 _SUITE_KINDS = frozenset({"historical", "live", "combined"})
 _CALLABLE_REFERENCE_RE = re.compile(
     r"^[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*:"
@@ -460,13 +468,16 @@ class LoadSuiteNonApplicability:
 class LoadSuite:
     """Deterministic local workload required for one source.
 
-    ``operation_mix`` remains the request-boundary semantic projection.
-    ``executable_operations`` is the independently hashed load-runner
-    projection and never treats internal semantic stages as offerable work.
+    ``operation_mix`` is an optional, temporary read-only compatibility
+    projection for
+    historical diagnostic readers.  Active execution must use
+    ``executable_operations`` and :meth:`execution_workload_dict`; internal
+    semantic stages are never treated as offerable work merely because they
+    appear in the compatibility projection.
     """
 
     kind: SuiteKind
-    operation_mix: tuple[str, ...]
+    operation_mix: tuple[str, ...] = ()
     executable_operations: tuple[ExecutableLoadOperation, ...] = ()
     contract_absence_assertions: tuple[LoadOperationContractAbsence, ...] = ()
     non_applicability: LoadSuiteNonApplicability | None = None
@@ -482,8 +493,6 @@ class LoadSuite:
     def __post_init__(self) -> None:
         if self.kind not in {"historical", "live", "combined"}:
             raise CertificationInvariantError(f"invalid suite kind {self.kind!r}")
-        if not self.operation_mix:
-            raise CertificationInvariantError("operation_mix must not be empty")
         for operation in self.operation_mix:
             _nonempty(operation, "operation_mix item")
         if (
@@ -507,6 +516,10 @@ class LoadSuite:
         if self.executable_operations and self.non_applicability is not None:
             raise CertificationInvariantError(
                 "a load suite cannot be executable and not applicable"
+            )
+        if not self.executable_operations and self.non_applicability is None:
+            raise CertificationInvariantError(
+                "an applicable load suite requires executable operations"
             )
         executable_ids = tuple(
             operation.operation_id for operation in self.executable_operations
@@ -534,29 +547,63 @@ class LoadSuite:
             raise CertificationInvariantError(
                 "contract absence IDs must be unique and not executable"
             )
+        if self.non_applicability is not None and self.contract_absence_assertions:
+            raise CertificationInvariantError(
+                "a non-applicable load suite cannot declare executable "
+                "contract absences"
+            )
+        if self.executable_operations and not any(
+            operation.kind == "data"
+            and operation.execution_frequency == "per_item"
+            for operation in self.executable_operations
+        ):
+            raise CertificationInvariantError(
+                "an executable load suite requires at least one per-item "
+                "data operation"
+            )
+        if self.kind == "historical" and self.executable_operations:
+            historical_data_operations = self.data_operations
+            if not historical_data_operations or any(
+                cardinality == "zero_or_more"
+                for operation in historical_data_operations
+                for cardinality in (
+                    operation.raw_cardinality,
+                    operation.normalized_cardinality,
+                    operation.observation_cardinality,
+                )
+            ):
+                raise CertificationInvariantError(
+                    "historical data operations require positive raw, "
+                    "normalized, and observation cardinalities"
+                )
+            if any(
+                not operation.quota_mappings
+                for operation in historical_data_operations
+            ):
+                raise CertificationInvariantError(
+                    "historical data operations require quota mappings"
+                )
+            if any(
+                operation.cursor_applicability != "required"
+                for operation in historical_data_operations
+            ):
+                raise CertificationInvariantError(
+                    "historical data operations require cursor consistency"
+                )
         if self.kind == "combined" and self.executable_operations:
             if self.non_applicability is not None:
                 raise CertificationInvariantError(
                     "combined load suite cannot be non-applicable"
                 )
             renewal_ids = tuple(
-                operation
-                for operation in self.operation_mix
-                if operation.endswith(".token_or_watch_renewal")
+                operation_id
+                for operation_id in (*executable_ids, *absence_ids)
+                if operation_id.endswith(".token_or_watch_renewal")
             )
             if len(renewal_ids) != 1:
                 raise CertificationInvariantError(
-                    "combined legacy operation mix must declare one "
+                    "combined typed workload must declare one "
                     "token_or_watch_renewal semantic"
-                )
-            renewal_id = renewal_ids[0]
-            if (
-                renewal_id not in executable_ids
-                and renewal_id not in absence_ids
-            ):
-                raise CertificationInvariantError(
-                    "combined renewal omission requires an explicit executable "
-                    "contract-absence assertion"
                 )
         for name in (
             "tenants",
@@ -571,6 +618,68 @@ class LoadSuite:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise CertificationInvariantError(f"{name} must be a positive integer")
+
+    @property
+    def data_operations(self) -> tuple[ExecutableLoadOperation, ...]:
+        """The typed operations whose selection weight drives offered rate."""
+
+        return tuple(
+            operation
+            for operation in self.executable_operations
+            if operation.kind == "data"
+            and operation.execution_frequency == "per_item"
+        )
+
+    @property
+    def control_operations(self) -> tuple[ExecutableLoadOperation, ...]:
+        """Typed once-per-trial and periodic control operations."""
+
+        return tuple(
+            operation
+            for operation in self.executable_operations
+            if operation.kind == "control"
+        )
+
+    def execution_workload_dict(self) -> dict[str, object]:
+        """Return the hash-pinned typed workload consumed by load runners.
+
+        The compatibility ``operation_mix`` deliberately does not participate
+        in this payload.  It remains available for historical readers but
+        cannot alter callable selection, cardinality, cursor, quota, or
+        receipt requirements.
+        """
+
+        payload = {
+            "kind": self.kind,
+            "executable_operations": [
+                operation.to_dict() for operation in self.executable_operations
+            ],
+            "contract_absence_assertions": [
+                assertion.to_dict()
+                for assertion in self.contract_absence_assertions
+            ],
+            "non_applicability": (
+                self.non_applicability.to_dict()
+                if self.non_applicability is not None
+                else None
+            ),
+        }
+        rendered = json.dumps(
+            payload,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ).encode("utf-8") + b"\n"
+        return {
+            **payload,
+            "declaration_sha256": hashlib.sha256(rendered).hexdigest(),
+        }
+
+    @property
+    def execution_workload_sha256(self) -> str:
+        """Stable identity of the active typed workload declaration."""
+
+        return str(self.execution_workload_dict()["declaration_sha256"])
 
 
 @dataclass(frozen=True, slots=True)
@@ -912,6 +1021,12 @@ class SuiteResult:
             raise CertificationInvariantError(
                 "a passed suite requires an artifact, limiting component, "
                 "and no failures"
+            )
+        if self.state == "not_applicable" and (
+            self.failures or not self.artifact_uri
+        ):
+            raise CertificationInvariantError(
+                "a not-applicable suite requires an artifact and no failures"
             )
 
 

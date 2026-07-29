@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "5fc170a5882771a4e9d42ea0b095ca3c415ca084401710daae3abdaf6f42d34c"
+        "0d2070ac740fc5cae84389726406f193ff868cc4e7e58e62e5b62f4745195452"
       ],
       "credential_env": [
         "FYRALIS_CANARY_GOOGLE_CALENDAR"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "5fc170a5882771a4e9d42ea0b095ca3c415ca084401710daae3abdaf6f42d34c"
+        "0d2070ac740fc5cae84389726406f193ff868cc4e7e58e62e5b62f4745195452"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "5fc170a5882771a4e9d42ea0b095ca3c415ca084401710daae3abdaf6f42d34c"
+        "0d2070ac740fc5cae84389726406f193ff868cc4e7e58e62e5b62f4745195452"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "5fc170a5882771a4e9d42ea0b095ca3c415ca084401710daae3abdaf6f42d34c"
+        "0d2070ac740fc5cae84389726406f193ff868cc4e7e58e62e5b62f4745195452"
       ],
       "credential_env": [],
       "required_env": [],

@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "a59bb17a5b62bca23df53fbb3d6960a3ec6ed63790bbfc24dd569b3a16f405e7"
+        "818b7a54f80413d027b98cc78fdc3506a73ed4a640ca637c890d172826922421"
       ],
       "credential_env": [
         "FYRALIS_CANARY_ASHBY"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "a59bb17a5b62bca23df53fbb3d6960a3ec6ed63790bbfc24dd569b3a16f405e7"
+        "818b7a54f80413d027b98cc78fdc3506a73ed4a640ca637c890d172826922421"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "a59bb17a5b62bca23df53fbb3d6960a3ec6ed63790bbfc24dd569b3a16f405e7"
+        "818b7a54f80413d027b98cc78fdc3506a73ed4a640ca637c890d172826922421"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "a59bb17a5b62bca23df53fbb3d6960a3ec6ed63790bbfc24dd569b3a16f405e7"
+        "818b7a54f80413d027b98cc78fdc3506a73ed4a640ca637c890d172826922421"
       ],
       "credential_env": [],
       "required_env": [],

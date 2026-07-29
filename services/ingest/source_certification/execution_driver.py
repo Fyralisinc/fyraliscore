@@ -65,11 +65,20 @@ from services.ingest.source_certification.models import (
     CanaryResult,
     CertificationInput,
     CertificationState,
+    ExecutableLoadOperation,
     LoadSuite,
     ScenarioResult,
     SourceCertificationSpec,
     SuiteKind,
     SuiteResult,
+)
+from services.ingest.source_certification.pipeline_load_runner import (
+    PipelineAdapterFactory,
+    declared_pipeline_workload_from_suite,
+    diagnostic_pipeline_load_config_from_suite,
+    run_pipeline_load,
+    validate_pipeline_load_artifact,
+    write_pipeline_load_artifact,
 )
 from services.ingest.source_certification.pipeline_probe import (
     PIPELINE_TOPOLOGY_SCENARIO_IDS,
@@ -451,7 +460,8 @@ def build_declared_execution_plan(source_id: str) -> dict[str, object]:
         "load_suites": [
             {
                 "kind": suite.kind,
-                "operation_mix": list(suite.operation_mix),
+                "workload": suite.execution_workload_dict(),
+                "compatibility_operation_mix": list(suite.operation_mix),
                 "tenants": suite.tenants,
                 "installations_per_tenant": suite.installations_per_tenant,
                 "replicas": suite.replicas,
@@ -1500,7 +1510,14 @@ def _load_quota_evidence(
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class _OfferedOperation:
+class _ProviderLabHttpOperation:
+    """One strict Provider Lab request template.
+
+    This is deliberately separate from an executable load operation.  The Lab
+    diagnostic can exercise a provider route, but only the typed pipeline
+    runner can invoke the declared Fyralis binding and produce a receipt.
+    """
+
     route: ProviderRoute
     method: str
     operation_id: str | None
@@ -1512,6 +1529,38 @@ class _OfferedOperation:
             self.operation_id
             or f"{self.route.route_id}:{self.method.casefold()}"
         )
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _OfferedOperation:
+    """Typed data work paired with one Provider Lab HTTP template.
+
+    The pairing is diagnostic route coverage only.  It must never be confused
+    with execution of ``load_operation.executable_binding``.
+    """
+
+    load_operation: ExecutableLoadOperation
+    provider_operation: _ProviderLabHttpOperation
+
+    @property
+    def route(self) -> ProviderRoute:
+        return self.provider_operation.route
+
+    @property
+    def method(self) -> str:
+        return self.provider_operation.method
+
+    @property
+    def operation_id(self) -> str | None:
+        return self.provider_operation.operation_id
+
+    @property
+    def binding(self) -> ProviderOperationBinding | None:
+        return self.provider_operation.binding
+
+    @property
+    def label(self) -> str:
+        return self.provider_operation.label
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -1531,15 +1580,15 @@ class _LoadLane:
         return f"replica-{self.replica}"
 
 
-def _offered_operation_plan(
+def _provider_lab_http_operation_plan(
     source_id: str,
-) -> tuple[_OfferedOperation, ...]:
+) -> tuple[_ProviderLabHttpOperation, ...]:
     adapter = build_lab_adapter_registry().require(source_id)
-    plan: list[_OfferedOperation] = []
+    plan: list[_ProviderLabHttpOperation] = []
     for route in adapter.routes:
         if route.operation_ids:
             plan.extend(
-                _OfferedOperation(
+                _ProviderLabHttpOperation(
                     route=route,
                     method=binding.method,
                     operation_id=operation_id,
@@ -1552,7 +1601,7 @@ def _offered_operation_plan(
         for method in route.methods:
             plan.extend(
                 (
-                    _OfferedOperation(
+                    _ProviderLabHttpOperation(
                         route=route,
                         method=method,
                         operation_id=None,
@@ -1561,9 +1610,41 @@ def _offered_operation_plan(
             )
     if not plan:
         raise ExecutionDriverError(
-            f"{source_id} has no HTTP operation for offered-load execution",
+            f"{source_id} has no HTTP operation for Provider Lab diagnostics",
         )
     return tuple(plan)
+
+
+def _offered_operation_plan(
+    source_id: str,
+    suite: LoadSuite,
+) -> tuple[_OfferedOperation, ...]:
+    """Pair every declared data operation with strict HTTP diagnostics.
+
+    The route pairing preserves full Provider Lab used-surface coverage but
+    does not claim a typed callable ran.  ``run_pipeline_load`` remains the
+    only execution path allowed to emit durable typed operation receipts.
+    """
+
+    if suite.non_applicability is not None:
+        raise ExecutionDriverError(
+            f"{source_id}.{suite.kind} is explicitly not applicable",
+        )
+    http_operations = _provider_lab_http_operation_plan(source_id)
+    plan = tuple(
+        _OfferedOperation(
+            load_operation=load_operation,
+            provider_operation=provider_operation,
+        )
+        for load_operation in suite.data_operations
+        for provider_operation in http_operations
+    )
+    if not plan:
+        raise ExecutionDriverError(
+            f"{source_id}.{suite.kind} has no typed data operation for "
+            "Provider Lab diagnostics",
+        )
+    return plan
 
 
 def _load_lanes(
@@ -1644,7 +1725,7 @@ class _ProviderLabOfferedLoadRunner:
         self.options = options
         self.app = app
         self.quota_evidence = quota_evidence
-        self.operation_plan = _offered_operation_plan(source_id)
+        self.operation_plan = _offered_operation_plan(source_id, suite)
         self.lanes = _load_lanes(topology)
 
     def _prepare_trial(self, mode: LoadMode) -> None:
@@ -1733,6 +1814,17 @@ class _ProviderLabOfferedLoadRunner:
         )
         status_counts: dict[str, int] = {}
         operation_counts: dict[str, int] = {}
+        for operation in self.suite.control_operations:
+            scheduled_count = (
+                1
+                if operation.execution_frequency == "once_per_trial"
+                else math.ceil(
+                    duration_seconds / (operation.cadence_seconds or 1.0),
+                )
+            )
+            operation_counts[
+                f"scheduled_control_operation:{operation.operation_id}"
+            ] = scheduled_count
         latencies_ms: list[float] = []
         response_bytes = 0
         quota_units = 0.0
@@ -1769,9 +1861,6 @@ class _ProviderLabOfferedLoadRunner:
                     mode=mode,
                 )
                 scope = lane.installation_scope
-                mix_label = self.suite.operation_mix[
-                    index % len(self.suite.operation_mix)
-                ]
                 request_started = time.perf_counter()
                 response = await _provider_request(
                     client,
@@ -1792,11 +1881,12 @@ class _ProviderLabOfferedLoadRunner:
                     status_counts.get(status_label, 0) + 1
                 )
                 labels = [
-                    # This Provider Lab boundary runner schedules the declared
-                    # mix but does not execute its planner/normalizer/persist
-                    # semantics. Only a real pipeline runner may emit the
-                    # ``executed_mix:`` prefix consumed by promotion.
-                    f"scheduled_mix:{mix_label}",
+                    # This Provider Lab boundary runner schedules a typed
+                    # data operation but never invokes its declared callable.
+                    # Only the pipeline runner may emit ``executed_*``
+                    # evidence consumed by promotion.
+                    "scheduled_data_operation:"
+                    f"{operation.load_operation.operation_id}",
                     lane.replica_label,
                     f"route:{operation.route.route_id}",
                 ]
@@ -1896,39 +1986,23 @@ class _ProviderLabOfferedLoadRunner:
         )
 
 
-def _http_operation_coverage_ratio(source_id: str) -> float:
-    expected = set(source_definition(source_id).operation_policy_ids)
-    if not expected:
-        return 1.0
-    exercised = {
-        operation.operation_id
-        for operation in _offered_operation_plan(source_id)
-        if operation.operation_id is not None
-    }
-    return len(exercised & expected) / len(expected)
-
-
 async def _calibrate_offered_load_runner(
     runner: _ProviderLabOfferedLoadRunner,
 ) -> Any:
-    """Calibrate every exact operation × declared-mix case at the lab ceiling."""
+    """Calibrate every typed-data × Provider Lab HTTP diagnostic case."""
 
     runtime = runner.app.state.provider_lab
     runtime.reset_source_state(runner.source_id)
     runtime.quotas.clear()
     runtime.ledger.clear()
-    cases = tuple(
-        (operation, mix_label)
-        for operation in runner.operation_plan
-        for mix_label in runner.suite.operation_mix
-    )
+    cases = runner.operation_plan
     if not cases:
         raise ExecutionDriverError(
-            f"{runner.source_id} has no operation/mix calibration cases"
+            f"{runner.source_id} has no typed Provider Lab calibration cases"
         )
     expected_cases = {
-        (operation.label, mix_label)
-        for operation, mix_label in cases
+        (operation.load_operation.operation_id, operation.label)
+        for operation in cases
     }
     successful_cases: set[tuple[str, str]] = set()
     next_case = 0
@@ -1967,7 +2041,7 @@ async def _calibrate_offered_load_runner(
                 nonlocal next_case
                 index = next_case
                 next_case += 1
-                operation, mix_label = cases[index % len(cases)]
+                operation = cases[index % len(cases)]
                 lane = runner.lanes[index % len(runner.lanes)]
                 response = await _provider_request(
                     client,
@@ -1979,7 +2053,12 @@ async def _calibrate_offered_load_runner(
                 )
                 accepted = response.status_code < 400
                 if accepted:
-                    successful_cases.add((operation.label, mix_label))
+                    successful_cases.add(
+                        (
+                            operation.load_operation.operation_id,
+                            operation.label,
+                        ),
+                    )
                 return accepted
 
             calibration = await calibrate_provider_lab(
@@ -2000,8 +2079,8 @@ async def _calibrate_offered_load_runner(
         missing_cases = sorted(expected_cases - successful_cases)
         if missing_cases:
             preview = ", ".join(
-                f"{operation}/{mix_label}"
-                for operation, mix_label in missing_cases[:8]
+                f"{load_operation}/{provider_operation}"
+                for load_operation, provider_operation in missing_cases[:8]
             )
             suffix = (
                 f" (+{len(missing_cases) - 8} more)"
@@ -2010,7 +2089,7 @@ async def _calibrate_offered_load_runner(
             )
             raise ExecutionDriverError(
                 "Provider Lab calibration did not successfully exercise every "
-                f"operation/mix case: {preview}{suffix}"
+                f"typed-data/provider-operation case: {preview}{suffix}"
             )
         return calibration
     finally:
@@ -2028,6 +2107,11 @@ async def _run_offered_load_envelope(
     quota_evidence: tuple[VerifiedQuotaEvidence, ...],
     artifact_path: Path,
 ) -> LoadArtifact:
+    if suite.non_applicability is not None:
+        raise ExecutionDriverError(
+            "explicitly non-applicable suites have no Provider Lab load "
+            "diagnostic",
+        )
     registry = build_lab_adapter_registry()
     app = build_provider_lab_app(
         registry=registry,
@@ -2054,8 +2138,11 @@ async def _run_offered_load_envelope(
         lab_calibration=calibration,
         include_soak=options.include_soak,
         quota_evidence=quota_evidence,
-        operation_coverage_ratio=_http_operation_coverage_ratio(source_id),
-        required_operation_labels=tuple(
+        # This diagnostic never emits executable receipt labels.  The zero is
+        # intentional: route traffic cannot stand in for a typed pipeline
+        # callable, even when it covers every Provider Lab operation.
+        verified_executable_operation_coverage_ratio=0.0,
+        required_provider_operation_labels=tuple(
             source_definition(source_id).operation_policy_ids,
         ),
         # This driver measures the Provider Lab boundary. It cannot claim that
@@ -2067,158 +2154,199 @@ async def _run_offered_load_envelope(
     )
 
 
-def _quota_utilization_ratio(artifact: LoadArtifact) -> float:
-    if not artifact.quota_evidence:
-        return 0.0
-    duration = artifact.envelope.validation.duration_seconds
-    lanes = _load_lanes(artifact.topology)
-    operations = _offered_operation_plan(artifact.source_id)
-    modeled_units_per_second = 0.0
-    for evidence in artifact.quota_evidence:
-        scope_count = len(
-            {
-                _quota_scope_key(
-                    source_id=artifact.source_id,
-                    evidence=evidence,
-                    lane=lane,
-                    operation=operation,
-                )
-                for lane in lanes
-                for operation in operations
-                if operation.route.quota_bucket == evidence.bucket
-            }
-        )
-        modeled_units_per_second += scope_count * (
-            evidence.refill_per_second + evidence.capacity / duration
-        )
-    if modeled_units_per_second <= 0:
-        return 0.0
-    return min(
-        1.0,
-        (
-            artifact.envelope.validation.quota_units_per_second
-            / modeled_units_per_second
-        ),
-    )
-
-
-def _wall_clock_duration_ratio(artifact: LoadArtifact) -> float:
-    ratios = [
-        trial.measurement.wall_elapsed_seconds
-        / trial.measurement.duration_seconds
-        for trial in artifact.envelope.trials
-    ]
-    return min(ratios) if ratios else 0.0
-
-
-def _suite_result_from_load_artifact(
-    artifact: LoadArtifact,
-    *,
-    artifact_uri: str,
-    headroom_ratio: float = 0.0,
-    extra_failures: tuple[str, ...] = (),
-) -> SuiteResult:
-    validation = artifact.envelope.validation
-    failures = (*artifact.promotion_failures, *extra_failures)
-    calibration_metrics = artifact.calibration.certification_metrics()
-    metrics: dict[str, float] = {
-        "p50_latency_ms": validation.p50_latency_ms,
-        "p95_latency_ms": validation.p95_latency_ms,
-        "p99_latency_ms": validation.p99_latency_ms,
-        "requests_per_second": validation.requests_per_second,
-        "quota_units_per_second": validation.quota_units_per_second,
-        "records_per_second": validation.records_per_second,
-        "bytes_per_second": validation.bytes_per_second,
-        "kafka_lag": validation.kafka_lag,
-        "observation_p99_latency_ms": (
-            validation.observation_p99_latency_ms
-        ),
-        "retries": float(validation.retries),
-        "rate_limited_responses": float(
-            validation.rate_limited_responses,
-        ),
-        "dlq_entries": float(validation.dlq_entries),
-        "unexpected_duplicates": float(validation.unexpected_duplicates),
-        "missing_records": float(validation.missing_records),
-        "cursor_consistency_errors": float(
-            validation.cursor_consistency_errors,
-        ),
-        "cpu_percent": validation.cpu_percent,
-        "memory_bytes": float(validation.memory_bytes),
-        "backlog_growth_per_second": (
-            validation.backlog_growth_per_second
-        ),
-        "cooldown_violations": float(validation.cooldown_violations),
-        "cross_tenant_leaks": float(validation.cross_tenant_leaks),
-        "hot_loops": float(validation.hot_loops),
-        "warmup_seconds": float(artifact.config.warmup_seconds),
-        "step_seconds": float(artifact.config.step_seconds),
-        "validation_seconds": float(artifact.config.validation_seconds),
-        "soak_seconds": (
-            float(artifact.config.soak_seconds)
-            if artifact.envelope.soak is not None
-            else 0.0
-        ),
-        "search_tolerance_ratio": artifact.envelope.tolerance_fraction,
-        "offered_rate": max(
-            trial.measurement.offered_rate
-            for trial in artifact.envelope.trials
-        ),
-        "stable_rate": artifact.envelope.maximum_stable_rate,
-        "tenants": float(artifact.topology.tenants),
-        "installations_per_tenant": float(
-            artifact.topology.installations_per_tenant,
-        ),
-        "replicas": float(artifact.topology.replicas),
-        "quota_utilization_ratio": _quota_utilization_ratio(artifact),
-        "headroom_ratio": headroom_ratio,
-        "recovered_faults_ratio": 0.0,
-        "promotion_eligible": float(not failures),
-        "clock_mode_wall": float(artifact.clock_mode == "wall"),
-        "pipeline_e2e_proven": float(artifact.pipeline_e2e_proven),
-        "quota_config_verified": float(bool(artifact.quota_evidence)),
-        "operation_mix_coverage_ratio": (
-            artifact.operation_coverage_ratio
-        ),
-        "wall_clock_duration_ratio": _wall_clock_duration_ratio(artifact),
-        "lab_calibration_elapsed_seconds": (
-            artifact.calibration.elapsed_seconds
-        ),
-        **calibration_metrics,
-    }
-    return SuiteResult(
-        kind=artifact.suite_kind,
-        state="passed" if not failures else "blocked",
-        artifact_uri=artifact_uri,
-        started_at=artifact.started_at,
-        completed_at=artifact.completed_at,
-        metrics=tuple(sorted(metrics.items())),
-        limiting_component=validation.limiting_component,
-        failures=failures,
-    )
-
-
-def _blocked_load_suite(
+def _typed_operation_coverage(
+    artifact: Mapping[str, object],
     suite: LoadSuite,
+) -> tuple[float, float]:
+    """Derive operation coverage from canonical typed trial counters only."""
+
+    trials = artifact.get("trials")
+    if not isinstance(trials, list):
+        return 0.0, 0.0
+    counts: dict[str, int] = {}
+    for trial in trials:
+        if not isinstance(trial, Mapping):
+            continue
+        trial_counts = trial.get("operation_counts")
+        if not isinstance(trial_counts, Mapping):
+            continue
+        for operation_id, count in trial_counts.items():
+            if isinstance(operation_id, str) and isinstance(count, int):
+                counts[operation_id] = counts.get(operation_id, 0) + count
+
+    def _coverage(operation_ids: tuple[str, ...]) -> float:
+        if not operation_ids:
+            return 1.0
+        return sum(counts.get(operation_id, 0) > 0 for operation_id in operation_ids) / len(
+            operation_ids,
+        )
+
+    return (
+        _coverage(tuple(operation.operation_id for operation in suite.data_operations)),
+        _coverage(
+            tuple(operation.operation_id for operation in suite.control_operations),
+        ),
+    )
+
+
+def _suite_result_from_pipeline_load_artifact(
     *,
-    reason: str,
-    quota_config_verified: bool = False,
+    suite: LoadSuite,
+    artifact: Mapping[str, object],
+    artifact_uri: str,
 ) -> SuiteResult:
+    """Map a validated typed artifact to a fail-closed stage summary."""
+
+    validate_pipeline_load_artifact(artifact)
+    if artifact.get("workload") != suite.execution_workload_dict():
+        raise ExecutionDriverError(
+            f"{suite.kind} pipeline artifact workload differs from the "
+            "catalog declaration",
+        )
+    state = artifact.get("state")
+    if not isinstance(state, str):
+        raise ExecutionDriverError("pipeline load artifact state is invalid")
+    data_coverage, control_coverage = _typed_operation_coverage(artifact, suite)
+    boundary = artifact.get("boundary")
+    pipeline_e2e_proven = float(
+        isinstance(boundary, Mapping)
+        and boundary.get("evidence_class") == "exact_pipeline",
+    )
+    configuration = artifact.get("configuration")
+    topology = (
+        configuration.get("topology")
+        if isinstance(configuration, Mapping)
+        else None
+    )
+    quota_config_verified = float(artifact.get("quota") is not None)
+    metrics = (
+        ("typed_workload_declaration_bound", 1.0),
+        ("executable_operation_coverage_ratio", data_coverage),
+        ("control_operation_coverage_ratio", control_coverage),
+        ("pipeline_e2e_proven", pipeline_e2e_proven),
+        ("promotion_eligible", float(artifact.get("promotion_eligible") is True)),
+        ("quota_config_verified", quota_config_verified),
+        (
+            "tenants",
+            float(topology.get("tenants", suite.tenants))
+            if isinstance(topology, Mapping)
+            else float(suite.tenants),
+        ),
+        (
+            "installations_per_tenant",
+            float(topology.get("installations_per_tenant", suite.installations_per_tenant))
+            if isinstance(topology, Mapping)
+            else float(suite.installations_per_tenant),
+        ),
+        (
+            "replicas",
+            float(topology.get("replicas", suite.replicas))
+            if isinstance(topology, Mapping)
+            else float(suite.replicas),
+        ),
+    )
+    if suite.non_applicability is not None:
+        if state != "not_applicable":
+            return SuiteResult(
+                kind=suite.kind,
+                state="failed",
+                artifact_uri=artifact_uri,
+                metrics=metrics,
+                failures=(
+                    "declared non-applicable workload did not produce a "
+                    "not_applicable pipeline artifact",
+                ),
+            )
+        return SuiteResult(
+            kind=suite.kind,
+            state="not_applicable",
+            artifact_uri=artifact_uri,
+            metrics=metrics,
+        )
+    if state == "not_applicable":
+        return SuiteResult(
+            kind=suite.kind,
+            state="failed",
+            artifact_uri=artifact_uri,
+            metrics=metrics,
+            failures=(
+                "applicable workload produced an undeclared not_applicable "
+                "pipeline artifact",
+            ),
+        )
+    reason = artifact.get("reason_code")
+    reason_label = reason if isinstance(reason, str) and reason else state
     return SuiteResult(
         kind=suite.kind,
-        state="blocked",
-        artifact_uri=_EVIDENCE_FILE,
-        metrics=(
-            ("installations_per_tenant", float(suite.installations_per_tenant)),
-            ("operation_mix_coverage_ratio", 0.0),
-            ("pipeline_e2e_proven", 0.0),
-            ("promotion_eligible", 0.0),
-            ("quota_config_verified", float(quota_config_verified)),
-            ("replicas", float(suite.replicas)),
-            ("tenants", float(suite.tenants)),
-            ("wall_clock_duration_ratio", 0.0),
+        state="failed" if state == "failed" else "blocked",
+        artifact_uri=artifact_uri,
+        metrics=metrics,
+        failures=(
+            "typed pipeline artifact cannot promote through stage schema v3: "
+            f"{reason_label}",
         ),
-        failures=(reason,),
+    )
+
+
+async def _run_typed_pipeline_loads(
+    source_id: str,
+    *,
+    ambient_env: Mapping[str, str],
+    artifact_dir: Path,
+    adapter_factory: PipelineAdapterFactory | None,
+) -> tuple[
+    dict[str, dict[str, object]],
+    tuple[SuiteResult, ...],
+    tuple[SuiteResult, ...],
+]:
+    """Run every typed suite/mode through the canonical pipeline runner.
+
+    R1 intentionally supplies no concrete adapter.  The runner therefore
+    seals truthful blocked artifacts (or the declared WhatsApp
+    non-applicability) rather than falling back to Provider Lab route traffic.
+    """
+
+    spec = SOURCE_CERTIFICATION_CATALOG[source_id]
+    artifacts: dict[str, dict[str, object]] = {
+        "provider_safe": {},
+        "fyralis_ceiling": {},
+    }
+    provider_safe_results: list[SuiteResult] = []
+    ceiling_results: list[SuiteResult] = []
+    for suite in spec.load_suites:
+        workload = declared_pipeline_workload_from_suite(suite)
+        config = diagnostic_pipeline_load_config_from_suite(suite)
+        for mode, results in (
+            ("provider_safe", provider_safe_results),
+            ("fyralis_ceiling", ceiling_results),
+        ):
+            artifact = await run_pipeline_load(
+                source_id=source_id,
+                mode=mode,
+                workload=workload,
+                ambient_env=ambient_env,
+                adapter_factory=adapter_factory,
+                quota=None,
+                config=config,
+            )
+            validate_pipeline_load_artifact(artifact)
+            path = artifact_dir / "pipeline_load" / suite.kind / f"{mode}.json"
+            write_pipeline_load_artifact(path, artifact)
+            artifacts[mode][suite.kind] = artifact
+            results.append(
+                _suite_result_from_pipeline_load_artifact(
+                    suite=suite,
+                    artifact=artifact,
+                    artifact_uri=(
+                        "evidence-file:pipeline_load/"
+                        f"{suite.kind}/{mode}.json"
+                    ),
+                ),
+            )
+    return (
+        artifacts,
+        tuple(provider_safe_results),
+        tuple(ceiling_results),
     )
 
 
@@ -2228,12 +2356,13 @@ async def _offered_load_diagnostic(
     ambient_env: Mapping[str, str],
     artifact_dir: Path,
     options: LoadStageOptions,
-) -> tuple[
-    dict[str, object],
-    tuple[SuiteResult, ...],
-    tuple[SuiteResult, ...],
-]:
-    """Run all three declared suites and persist each measured envelope."""
+) -> dict[str, object]:
+    """Measure Provider Lab route capacity without certifying Fyralis load.
+
+    This remains a useful request-boundary diagnostic, but it is deliberately
+    isolated from ``CertificationInput``.  Typed pipeline artifacts emitted by
+    :func:`run_pipeline_load` are the active load result path.
+    """
 
     spec = SOURCE_CERTIFICATION_CATALOG[source_id]
     routes = build_lab_adapter_registry().require(source_id).routes
@@ -2242,12 +2371,25 @@ async def _offered_load_diagnostic(
         routes,
         ambient_env=ambient_env,
     )
-    provider_results: list[SuiteResult] = []
-    ceiling_results: list[SuiteResult] = []
     suite_summaries: list[dict[str, object]] = []
 
     for suite in spec.load_suites:
-        suite_dir = artifact_dir / "load" / suite.kind
+        summary: dict[str, object] = {
+            "kind": suite.kind,
+            "workload": suite.execution_workload_dict(),
+            "compatibility_operation_mix": list(suite.operation_mix),
+            "topology": dataclasses.asdict(LoadTopology.from_suite(suite)),
+        }
+        if suite.non_applicability is not None:
+            summary["provider_lab_diagnostic"] = {
+                "state": "not_applicable",
+                "reason": suite.non_applicability.reason,
+                "evidence_id": suite.non_applicability.evidence_id,
+            }
+            suite_summaries.append(summary)
+            continue
+
+        suite_dir = artifact_dir / "provider_lab_load" / suite.kind
         ceiling_path = suite_dir / "fyralis_ceiling.json"
         provider_path = suite_dir / "provider_safe.json"
         ceiling_artifact: LoadArtifact | None = None
@@ -2289,7 +2431,6 @@ async def _offered_load_diagnostic(
             provider_error = quota_note
 
         comparison_payload: dict[str, object] | None = None
-        comparison_headroom: float | None = None
         comparison_failure: str | None = None
         if provider_artifact is not None and ceiling_artifact is not None:
             try:
@@ -2303,120 +2444,50 @@ async def _offered_load_diagnostic(
                 )
             else:
                 comparison_payload = dataclasses.asdict(comparison)
-                comparison_headroom = comparison.headroom_ratio
-
-        if provider_artifact is None:
-            provider_result = _blocked_load_suite(
-                suite,
-                reason=provider_error or "provider-safe artifact is missing",
-                quota_config_verified=bool(quota_evidence),
-            )
-        else:
-            provider_result = _suite_result_from_load_artifact(
-                provider_artifact,
-                artifact_uri=(
-                    f"evidence-file:load/{suite.kind}/provider_safe.json"
-                ),
-                extra_failures=(
-                    (comparison_failure,)
-                    if comparison_failure is not None
-                    else ()
-                ),
-            )
-        provider_results.append(provider_result)
-
-        if ceiling_artifact is None:
-            ceiling_result = _blocked_load_suite(
-                suite,
-                reason=ceiling_error or "Fyralis ceiling artifact is missing",
-            )
-        else:
-            ceiling_result = _suite_result_from_load_artifact(
-                ceiling_artifact,
-                artifact_uri=(
-                    f"evidence-file:load/{suite.kind}/fyralis_ceiling.json"
-                ),
-                headroom_ratio=(
-                    comparison_headroom
-                    if comparison_headroom is not None
-                    else 0.0
-                ),
-                extra_failures=(
-                    (comparison_failure,)
-                    if comparison_failure is not None
-                    else ()
-                ),
-            )
-        ceiling_results.append(ceiling_result)
-
-        suite_summaries.append(
-            {
-                "kind": suite.kind,
-                "operation_mix": list(suite.operation_mix),
-                "topology": dataclasses.asdict(
-                    LoadTopology.from_suite(suite),
-                ),
-                "provider_safe": (
-                    provider_artifact.as_dict()
-                    if provider_artifact is not None
-                    else {
-                        "state": "blocked",
-                        "reason": provider_error,
-                    }
-                ),
-                "fyralis_ceiling": (
-                    ceiling_artifact.as_dict()
-                    if ceiling_artifact is not None
-                    else {
-                        "state": "blocked",
-                        "reason": ceiling_error,
-                    }
-                ),
-                "comparison": (
-                    comparison_payload
-                    if comparison_payload is not None
-                    else {
-                        "state": "blocked",
-                        "reason": (
-                            comparison_failure
-                            or provider_error
-                            or ceiling_error
-                        ),
-                    }
-                ),
-            }
-        )
-
-    return (
-        {
-            "state": (
-                "promotion_eligible"
-                if all(
-                    result.state == "passed"
-                    for result in (*provider_results, *ceiling_results)
-                )
-                else "measured_blocked"
+        summary["provider_lab_diagnostic"] = {
+            "provider_safe": (
+                provider_artifact.as_dict()
+                if provider_artifact is not None
+                else {"state": "blocked", "reason": provider_error}
             ),
-            "clock_mode": options.clock_mode,
-            "promotion_durations_requested": options.promotion,
-            "quota_configuration": {
-                "state": "verified" if quota_evidence else "blocked",
-                "reason": quota_note,
-                "evidence": [
-                    item.as_dict() for item in quota_evidence
-                ],
-            },
-            "suites": suite_summaries,
-            "claim_boundary": (
-                "The complete declared HTTP surface was scheduled across the "
-                "declared tenant/installation/replica topology. Provider Lab "
-                "boundary measurements do not prove raw evidence, Kafka, "
-                "Observation, T1, or non-HTTP protocol throughput."
+            "fyralis_ceiling": (
+                ceiling_artifact.as_dict()
+                if ceiling_artifact is not None
+                else {"state": "blocked", "reason": ceiling_error}
             ),
+            "comparison": (
+                comparison_payload
+                if comparison_payload is not None
+                else {
+                    "state": "blocked",
+                    "reason": (
+                        comparison_failure
+                        or provider_error
+                        or ceiling_error
+                    ),
+                }
+            ),
+        }
+        suite_summaries.append(summary)
+
+    return {
+        "state": "diagnostic_only",
+        "clock_mode": options.clock_mode,
+        "promotion_durations_requested": options.promotion,
+        "quota_configuration": {
+            "state": "verified" if quota_evidence else "blocked",
+            "reason": quota_note,
+            "evidence": [item.as_dict() for item in quota_evidence],
         },
-        tuple(provider_results),
-        tuple(ceiling_results),
-    )
+        "suites": suite_summaries,
+        "claim_boundary": (
+            "Typed data-operation scheduling and strict Provider Lab route "
+            "coverage were measured across the declared topology. This "
+            "diagnostic does not invoke typed Fyralis callables and cannot "
+            "prove raw evidence, Kafka, Observation, T1, cursor, quota, or "
+            "non-HTTP protocol throughput."
+        ),
+    }
 
 
 async def _declared_surface_load_probe(source_id: str) -> dict[str, object]:
@@ -2441,7 +2512,9 @@ async def _declared_surface_load_probe(source_id: str) -> dict[str, object]:
                 f"installation-{index % 4 // 2 + 1}"
             ),
         )
-        for index, operation in enumerate(_offered_operation_plan(source_id))
+        for index, operation in enumerate(
+            _provider_lab_http_operation_plan(source_id),
+        )
     ]
     transport = httpx.ASGITransport(
         app=app,
@@ -2456,7 +2529,7 @@ async def _declared_surface_load_probe(source_id: str) -> dict[str, object]:
         timeout=30.0,
     ) as client:
         async def _one(
-            operation: _OfferedOperation,
+            operation: _ProviderLabHttpOperation,
             scope: str,
         ) -> dict[str, object]:
             request_started = time.perf_counter()
@@ -2924,6 +2997,7 @@ async def run_stage(
     ambient_env: Mapping[str, str] | None = None,
     load_request_count: int = _DEFAULT_LOAD_REQUESTS,
     load_options: LoadStageOptions | None = None,
+    pipeline_adapter_factory: PipelineAdapterFactory | None = None,
     expected_plan_sha256: str | None = None,
 ) -> CertificationInput:
     """Run one source-isolated stage and write its strict result + artifact."""
@@ -3027,24 +3101,32 @@ async def run_stage(
             ambient_env=env,
         )
         (
-            offered_load,
+            pipeline_load_artifacts,
             provider_safe_suites,
             fyralis_ceiling_suites,
-        ) = await _offered_load_diagnostic(
+        ) = await _run_typed_pipeline_loads(
+            source_id,
+            ambient_env=env,
+            artifact_dir=artifact_dir,
+            adapter_factory=pipeline_adapter_factory,
+        )
+        offered_load = await _offered_load_diagnostic(
             source_id,
             ambient_env=env,
             artifact_dir=artifact_dir,
             options=effective_load_options,
         )
         reason = (
-            "Artifact-producing stepped Provider Lab envelopes were run, but "
-            "release promotion remains fail-closed unless exact quotas, "
-            "declared wall-clock durations/topology, the weekly soak, full "
-            "operation coverage, and raw-to-Observation-to-T1 throughput are "
-            "all proven"
+            "Every typed historical/live/combined workload was delegated to "
+            "the pipeline load runner. Without the R3 exact-pipeline adapter "
+            "and R5 verified quota input, applicable workloads remain "
+            "fail-closed; WhatsApp historical is recorded as declared "
+            "non-applicability. Provider Lab route measurements remain "
+            "diagnostic-only and cannot promote a load claim."
         )
         artifact["load_diagnostic"] = diagnostic
         artifact["offered_load"] = offered_load
+        artifact["pipeline_load_artifacts"] = pipeline_load_artifacts
         artifact["declared_load_suites"] = execution_plan["load_suites"]
         artifact["claim_boundary"] = reason
         supplied = _base_input(spec, reason=reason)

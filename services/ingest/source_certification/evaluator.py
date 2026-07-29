@@ -71,7 +71,9 @@ _REQUIRED_LOAD_PROVENANCE_METRICS = frozenset(
     {
         "clock_mode_wall",
         "lab_calibration_elapsed_seconds",
-        "operation_mix_coverage_ratio",
+        "typed_workload_declaration_bound",
+        "executable_operation_coverage_ratio",
+        "control_operation_coverage_ratio",
         "pipeline_e2e_proven",
         "promotion_eligible",
         "quota_config_verified",
@@ -156,6 +158,35 @@ def _suite_failures(
         )
     for suite in suites:
         prefix = f"{label}.{suite.kind}"
+        declaration = declarations.get(suite.kind)
+        declared_not_applicable = (
+            declaration is not None
+            and declaration.non_applicability is not None
+        )
+        if suite.state == "not_applicable":
+            if not declared_not_applicable:
+                failures.append(
+                    f"{prefix} is not_applicable but the source declaration "
+                    "is executable",
+                )
+            elif suite.failures:
+                failures.append(
+                    f"{prefix} not_applicable result contains failures",
+                )
+            elif not suite.artifact_uri:
+                failures.append(
+                    f"{prefix} not_applicable artifact is missing",
+                )
+            # A declared non-applicable shape is neither a passing load
+            # envelope nor a release blocker. It deliberately contributes no
+            # rate/topology metrics and is excluded from envelope comparison.
+            continue
+        if declared_not_applicable:
+            failures.append(
+                f"{prefix} must be not_applicable because the source "
+                "declaration marks this workload unsupported",
+            )
+            continue
         if suite.state != "passed":
             failures.append(f"{prefix} state is {suite.state}")
             continue
@@ -204,7 +235,6 @@ def _suite_failures(
             failures.append(f"{prefix}.offered_rate must be > 0")
         if metrics.get("stable_rate", 0) <= 0:
             failures.append(f"{prefix}.stable_rate must be > 0")
-        declaration = declarations.get(suite.kind)
         if declaration is not None:
             for metric_name in (
                 "tenants",
@@ -225,9 +255,17 @@ def _suite_failures(
                 failures.append(f"{prefix}.promotion_eligible must equal 1")
             if metrics.get("pipeline_e2e_proven") != 1:
                 failures.append(f"{prefix}.pipeline_e2e_proven must equal 1")
-            if metrics.get("operation_mix_coverage_ratio") != 1:
+            if metrics.get("typed_workload_declaration_bound") != 1:
                 failures.append(
-                    f"{prefix}.operation_mix_coverage_ratio must equal 1",
+                    f"{prefix}.typed_workload_declaration_bound must equal 1",
+                )
+            if metrics.get("executable_operation_coverage_ratio") != 1:
+                failures.append(
+                    f"{prefix}.executable_operation_coverage_ratio must equal 1",
+                )
+            if metrics.get("control_operation_coverage_ratio") != 1:
+                failures.append(
+                    f"{prefix}.control_operation_coverage_ratio must equal 1",
                 )
             if metrics.get("wall_clock_duration_ratio", 0) < 0.99:
                 failures.append(
@@ -305,6 +343,8 @@ def _temporal_failures(
 def _envelope_consistency_failures(
     provider_safe_suites: tuple[SuiteResult, ...],
     fyralis_ceiling_suites: tuple[SuiteResult, ...],
+    *,
+    declarations: Mapping[str, LoadSuite],
 ) -> list[str]:
     """Cross-check measured ceiling rates against provider-safe rates."""
 
@@ -319,6 +359,15 @@ def _envelope_consistency_failures(
         provider = provider_by_kind.get(kind)
         ceiling = ceiling_by_kind.get(kind)
         if provider is None or ceiling is None:
+            continue
+        declaration = declarations.get(kind)
+        if (
+            declaration is not None
+            and declaration.non_applicability is not None
+        ):
+            # `_suite_failures` verifies the exact neutral state for both
+            # modes. There is no provider-safe/ceiling rate to compare for an
+            # unsupported workload shape.
             continue
         provider_rate = _metrics(provider).get("stable_rate")
         ceiling_metrics = _metrics(ceiling)
@@ -424,6 +473,7 @@ def evaluate_certification(
         _envelope_consistency_failures(
             supplied.provider_safe_suites,
             supplied.fyralis_ceiling_suites,
+            declarations=declarations,
         )
     )
 

@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "33ae93616cf30394932bdd29fdb5ff565dbf5d32a671dbe144218c75e8e7280b"
+        "34f35b5e6c4efdc2953d6b2fd1a64ae0c02597596f3ccf0f58dd9b8d158064ad"
       ],
       "credential_env": [
         "FYRALIS_CANARY_AWS"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "33ae93616cf30394932bdd29fdb5ff565dbf5d32a671dbe144218c75e8e7280b"
+        "34f35b5e6c4efdc2953d6b2fd1a64ae0c02597596f3ccf0f58dd9b8d158064ad"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "33ae93616cf30394932bdd29fdb5ff565dbf5d32a671dbe144218c75e8e7280b"
+        "34f35b5e6c4efdc2953d6b2fd1a64ae0c02597596f3ccf0f58dd9b8d158064ad"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "33ae93616cf30394932bdd29fdb5ff565dbf5d32a671dbe144218c75e8e7280b"
+        "34f35b5e6c4efdc2953d6b2fd1a64ae0c02597596f3ccf0f58dd9b8d158064ad"
       ],
       "credential_env": [],
       "required_env": [],

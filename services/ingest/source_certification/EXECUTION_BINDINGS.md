@@ -64,11 +64,11 @@ declaration with `spec_hash` and has this exact shape:
 Every checked-in binding invokes
 `services.ingest.source_certification.execution_driver` with an exact source
 and stage. Each generated command also carries `--plan-sha256`: a digest over
-that source's exact scenarios, load topology, callable bindings, Provider Lab
-routes/protocols, live transports, normalizers, and idempotency builders. The
-driver recomputes the plan before making a request and rejects a stale binding.
-This prevents a generic shared command from silently ignoring source-specific
-declarations.
+that source's exact scenarios, typed load workloads and declaration hashes,
+load topology, callable bindings, Provider Lab routes/protocols, live
+transports, normalizers, and idempotency builders. The driver recomputes the
+plan before making a request and rejects a stale binding. This prevents a
+generic shared command from silently ignoring source-specific declarations.
 
 The driver makes the strongest source-isolated local measurement that the
 current credential-free, in-process infrastructure can support without
@@ -84,16 +84,22 @@ fabricating a release claim:
 - The local artifact has one row for every declared scenario. Each row lists
   measured prerequisite probes and the exact remaining proof. Without the
   opt-in data-plane environment, all rows remain blocked. With that environment
-  exactly `raw_evidence_and_normalized_topic` and
-  `observation_persistence_and_t1_trigger` can pass; special source scenarios
-  with no executable remain named and blocked instead of inheriting a generic
-  pipeline result.
-- `load` retains the short quota-disabled representative
-  Provider Lab/`ProviderTransport` measurement and additionally executes one
-  concurrent request for every declared HTTP method across four scopes. The
-  artifact includes the exact historical/live/combined operation mixes and
-  separates non-HTTP protocol operations. It runs a provider-safe diagnostic
-  only when
+  the five source-capable history scenarios, or the three source-capable
+  live-only scenarios, can pass; special source scenarios with no executable
+  remain named and blocked instead of inheriting a generic pipeline result.
+- `load` first delegates each historical, live, and combined workload in both
+  provider-safe and Fyralis-ceiling modes to `run_pipeline_load()`. The nested
+  pipeline artifacts bind the full `ExecutableLoadOperation` declaration,
+  callable, evidence, cardinality, cursor, quota, and receipt requirements.
+  Until the R3 exact-pipeline adapter and R5 verified quota configuration
+  exist, executable workloads return a sealed blocked artifact rather than
+  falling back to a route-only load result. WhatsApp historical returns the
+  contract-declared neutral `not_applicable` artifact.
+- `load` also retains a separate short Provider Lab/`ProviderTransport`
+  diagnostic. It schedules typed data-operation labels against strict HTTP
+  request templates across the declared topology and records control-operation
+  scheduling, but it never claims the typed callable ran or emits executable
+  receipt coverage. It runs a provider-safe diagnostic only when
   `FYRALIS_PROVIDER_QUOTAS_JSON` contains an exact, evidence-labelled budget
   for the source; it never guesses a provider rate.
 - `fault_recovery` injects one 503 and one 429 into every retry-safe HTTP
@@ -218,10 +224,13 @@ reference with a run-bound artifact URI. Arbitrary URI strings are rejected.
 Every accepted command result must also include a typed `stage.json`. The
 producer and downloaded-bundle verifier both validate its exact source, stage,
 spec hash, embedded execution-plan hash, command receipt window, and
-stage-owned claims. Artifact schema v1 permits only the two isolated
-raw-to-T1 local scenarios and an operation/cleanup-ledger-backed real canary as
-positive claims. It deliberately rejects passing load and fault claims; those
-need a future schema that independently validates full end-to-end evidence.
+stage-owned claims. Artifact schema v3 permits only the source-capable isolated
+raw-to-T1/replay scenarios (five for history sources and three for the
+live-only source) and an operation/cleanup-ledger-backed real canary as
+positive claims. Its load stage additionally validates all six typed pipeline
+artifacts against the complete declared workload, but deliberately rejects
+passing load and fault claims; a future schema must independently validate
+full end-to-end evidence before those can promote.
 
 Before any artifact or receipt hash is written, the producer scans the result,
 artifact files, stdout, and stderr for the exact non-trivial credential values
@@ -271,10 +280,11 @@ shared endpoints. Each self-hosted producer therefore holds the host-wide
 one-source run. Separate certification hosts may run in parallel only when
 their data-plane service state is isolated.
 
-The workflow intentionally runs only the short, blocked load diagnostic.
-Scheduling 15-minute validations and 60-minute soaks would create no releasable
-evidence today because the built-in runner records
-`pipeline_e2e_proven=false` and stage artifact v1 rejects passing load claims.
-A release-capable offered-load runner and typed schema must first prove S3 raw
-evidence, raw/normalized Kafka, Observation/idempotency, and T1 at the measured
-rate.
+The workflow invokes the typed pipeline runner for every declared suite and
+both load modes, then records a separate short Provider Lab request-boundary
+diagnostic. The built-in adapter is intentionally absent until R3, so the
+pipeline artifacts truthfully remain blocked (or declared `not_applicable`)
+under stage-artifact schema v3. Scheduling release-duration 15-minute
+validations and 60-minute soaks would still create no releasable evidence until
+an exact adapter proves S3 raw evidence, raw/normalized Kafka,
+Observation/idempotency, and T1 at the measured rate.

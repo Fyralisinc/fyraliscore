@@ -31,6 +31,11 @@ from services.ingest.source_certification.models import (
     CertificationInvariantError,
     SourceCertificationSpec,
 )
+from services.ingest.source_certification.pipeline_load_runner import (
+    PipelineLoadArtifactError,
+    diagnostic_pipeline_load_config_from_suite,
+    validate_pipeline_load_artifact,
+)
 from services.ingest.source_certification.pipeline_probe import (
     PIPELINE_PROBE_SCHEMA_VERSION,
     PIPELINE_SCENARIO_IDS,
@@ -78,6 +83,7 @@ _STAGE_FIELDS: Mapping[str, frozenset[str]] = {
             "load_diagnostic",
             "offered_load",
             "declared_load_suites",
+            "pipeline_load_artifacts",
         }
     ),
     "fault_recovery": frozenset(
@@ -267,7 +273,7 @@ def _validate_local(
 ) -> None:
     if promotion_allowed:
         raise StageArtifactError(
-            "stage artifact v2 has no release-capable local schema"
+            "stage artifact v3 has no release-capable local schema"
         )
     if supplied.local_correctness == "passed":
         raise StageArtifactError(
@@ -402,6 +408,171 @@ def _suite_kinds(
     return tuple(suite.kind for suite in supplied.fault_recovery_suites)
 
 
+def _declared_load_suite_plan(spec: SourceCertificationSpec) -> list[dict[str, object]]:
+    """Render the exact typed load subset sealed into the execution plan.
+
+    The execution driver owns the surrounding plan, but the source
+    certification contract owns this subset. Keeping the projection here
+    lets the stage verifier reject an artifact whose self-hashed plan is
+    internally consistent yet omits or rewrites a typed load declaration.
+    """
+
+    return [
+        {
+            "kind": suite.kind,
+            "workload": suite.execution_workload_dict(),
+            # Legacy consumers may still render these labels, but this field
+            # is explicitly not used for scheduling, coverage, or promotion.
+            "compatibility_operation_mix": list(suite.operation_mix),
+            "tenants": suite.tenants,
+            "installations_per_tenant": suite.installations_per_tenant,
+            "replicas": suite.replicas,
+            "warmup_seconds": suite.warmup_seconds,
+            "stable_seconds": suite.stable_seconds,
+            "weekly_soak_seconds": suite.weekly_soak_seconds,
+            "step_percent": suite.step_percent,
+            "search_tolerance_percent": suite.search_tolerance_percent,
+        }
+        for suite in spec.load_suites
+    ]
+
+
+def _validate_pipeline_load_artifacts(
+    raw: Mapping[str, Any],
+    *,
+    spec: SourceCertificationSpec,
+    supplied: CertificationInput,
+) -> None:
+    """Verify the six typed pipeline artifacts owned by a load stage.
+
+    Stage-artifact v3 remains diagnostic-only: it accepts only blocked/failed
+    applicable results and neutral not-applicable results. The nested artifact
+    is nevertheless parsed as a full v2 pipeline artifact so a future driver
+    cannot replace a typed receipt-bound workload with string mix labels.
+    """
+
+    expected_plan = _declared_load_suite_plan(spec)
+    declared = _sequence(
+        raw.get("declared_load_suites"),
+        field="declared_load_suites",
+    )
+    if list(declared) != expected_plan:
+        raise StageArtifactError(
+            "declared_load_suites differ from the full typed source plan"
+        )
+
+    execution_plan = _mapping(raw.get("execution_plan"), field="execution_plan")
+    plan_suites = _sequence(
+        execution_plan.get("load_suites"),
+        field="execution_plan.load_suites",
+    )
+    if list(plan_suites) != expected_plan:
+        raise StageArtifactError(
+            "execution_plan.load_suites differ from the full typed source plan"
+        )
+    if list(declared) != list(plan_suites):
+        raise StageArtifactError(
+            "declared_load_suites differ from execution_plan.load_suites"
+        )
+
+    artifacts = _mapping(
+        raw.get("pipeline_load_artifacts"),
+        field="pipeline_load_artifacts",
+    )
+    _exact_keys(
+        artifacts,
+        frozenset({"provider_safe", "fyralis_ceiling"}),
+        field="pipeline_load_artifacts",
+    )
+    result_sets = {
+        "provider_safe": supplied.provider_safe_suites,
+        "fyralis_ceiling": supplied.fyralis_ceiling_suites,
+    }
+    suites_by_kind = {suite.kind: suite for suite in spec.load_suites}
+
+    for mode, results in result_sets.items():
+        mode_artifacts = _mapping(
+            artifacts.get(mode),
+            field=f"pipeline_load_artifacts.{mode}",
+        )
+        _exact_keys(
+            mode_artifacts,
+            frozenset(suites_by_kind),
+            field=f"pipeline_load_artifacts.{mode}",
+        )
+        results_by_kind = {result.kind: result for result in results}
+        if tuple(results_by_kind) != tuple(suites_by_kind):
+            raise StageArtifactError(
+                f"{mode} suite results differ from the typed source plan"
+            )
+
+        for kind, suite in suites_by_kind.items():
+            artifact = _mapping(
+                mode_artifacts.get(kind),
+                field=f"pipeline_load_artifacts.{mode}.{kind}",
+            )
+            try:
+                validate_pipeline_load_artifact(artifact)
+            except PipelineLoadArtifactError as exc:
+                raise StageArtifactError(
+                    f"pipeline_load_artifacts.{mode}.{kind} is invalid: {exc}"
+                ) from exc
+            if artifact.get("source_id") != spec.source_id:
+                raise StageArtifactError(
+                    f"pipeline_load_artifacts.{mode}.{kind} source differs"
+                )
+            if artifact.get("mode") != mode:
+                raise StageArtifactError(
+                    f"pipeline_load_artifacts.{mode}.{kind} mode differs"
+                )
+            workload = _mapping(
+                artifact.get("workload"),
+                field=f"pipeline_load_artifacts.{mode}.{kind}.workload",
+            )
+            if dict(workload) != suite.execution_workload_dict():
+                raise StageArtifactError(
+                    f"pipeline_load_artifacts.{mode}.{kind} typed workload "
+                    "differs from the source declaration"
+                )
+            state = artifact.get("state")
+            if state == "passed" or artifact.get("promotion_eligible") is True:
+                raise StageArtifactError(
+                    "stage artifact v3 cannot accept promotion-eligible "
+                    "pipeline load claims"
+                )
+            if artifact.get("configuration") != (
+                diagnostic_pipeline_load_config_from_suite(suite).to_dict()
+            ):
+                raise StageArtifactError(
+                    f"pipeline_load_artifacts.{mode}.{kind} configuration "
+                    "differs from the typed source suite"
+                )
+
+            result = results_by_kind[kind]
+            if suite.non_applicability is not None:
+                if state != "not_applicable":
+                    raise StageArtifactError(
+                        f"pipeline_load_artifacts.{mode}.{kind} must be "
+                        "not_applicable for the declared unsupported workload"
+                    )
+                if result.state != "not_applicable":
+                    raise StageArtifactError(
+                        f"{mode}.{kind} SuiteResult must be not_applicable "
+                        "for the declared unsupported workload"
+                    )
+            else:
+                if state == "not_applicable":
+                    raise StageArtifactError(
+                        f"pipeline_load_artifacts.{mode}.{kind} is "
+                        "not_applicable for an executable workload"
+                    )
+                if result.state not in {"blocked", "failed"}:
+                    raise StageArtifactError(
+                        f"{mode}.{kind} SuiteResult must remain blocked or "
+                        "failed under stage artifact v3"
+                    )
+
+
 def _validate_diagnostic_suites(
     raw: Mapping[str, Any],
     *,
@@ -412,7 +583,7 @@ def _validate_diagnostic_suites(
 ) -> None:
     if promotion_allowed:
         raise StageArtifactError(
-            f"stage artifact v2 has no release-capable {stage} schema"
+            f"stage artifact v3 has no release-capable {stage} schema"
         )
     expected = tuple(suite.kind for suite in spec.load_suites)
     actual = _suite_kinds(supplied, stage)
@@ -430,20 +601,19 @@ def _validate_diagnostic_suites(
             f"diagnostic {stage} artifact cannot contain passing claims"
         )
     if stage == "load":
-        declared = _sequence(
-            raw.get("declared_load_suites"),
-            field="declared_load_suites",
+        _validate_pipeline_load_artifacts(
+            raw,
+            spec=spec,
+            supplied=supplied,
         )
-        declared_kinds = tuple(
-            item.get("kind")
-            for item in declared
-            if isinstance(item, Mapping)
-        )
-        if declared_kinds != expected or len(declared) != len(expected):
+        offered = _mapping(raw.get("offered_load"), field="offered_load")
+        if (
+            offered.get("state") in {"passed", "promotion_eligible"}
+            or offered.get("promotion_eligible") is True
+        ):
             raise StageArtifactError(
-                "declared_load_suites differ from the certification spec"
+                "offered_load must remain a non-promoting Provider Lab diagnostic"
             )
-        _mapping(raw.get("offered_load"), field="offered_load")
         _mapping(raw.get("load_diagnostic"), field="load_diagnostic")
     else:
         _mapping(

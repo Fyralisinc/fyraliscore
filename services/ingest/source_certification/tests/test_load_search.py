@@ -19,6 +19,9 @@ from services.ingest.source_certification.load_search import (
     run_artifact_load_search,
 )
 from services.ingest.source_certification.models import LoadSuite
+from services.ingest.source_certification.catalog import (
+    SOURCE_CERTIFICATION_CATALOG,
+)
 from services.ingest.synthetic.provider_lab.calibration import (
     LabCalibrationConfig,
     assess_lab_calibration,
@@ -78,6 +81,14 @@ def _promotion_calibration():
         elapsed_seconds=30,
         latencies_seconds=[0.01] * 60,
         failed_requests=0,
+    )
+
+
+def _typed_suite(kind: str) -> LoadSuite:
+    return next(
+        suite
+        for suite in SOURCE_CERTIFICATION_CATALOG["slack"].load_suites
+        if suite.kind == kind
     )
 
 
@@ -147,20 +158,16 @@ async def test_search_rejects_an_underpowered_provider_lab() -> None:
 async def test_short_virtual_search_writes_a_non_promotable_artifact(
     tmp_path: Path,
 ) -> None:
-    suite = LoadSuite(
-        kind="combined",
-        operation_mix=("live", "backfill", "reconcile", "renew"),
-        warmup_seconds=120,
-        stable_seconds=900,
-        weekly_soak_seconds=3_600,
-    )
+    suite = _typed_suite("combined")
 
     async def run(rate, seconds, phase, mode):  # noqa: ANN001,ANN202
         return replace(
             _measurement(rate, seconds, stable=rate <= 2),
             operation_counts=(
-                ("executed_mix:live", 1),
-                ("executed_mix:backfill", 1),
+                *(
+                    (f"executed_data_operation:{operation.operation_id}", 1)
+                    for operation in suite.data_operations
+                ),
             ),
             wall_elapsed_seconds=0.01,
         )
@@ -182,17 +189,17 @@ async def test_short_virtual_search_writes_a_non_promotable_artifact(
         clock_mode="virtual",
         lab_calibration=_lab_calibration(),
         include_soak=False,
-        operation_coverage_ratio=1.0,
+        verified_executable_operation_coverage_ratio=1.0,
         pipeline_e2e_proven=False,
         artifact_path=artifact_path,
     )
 
     parsed = json.loads(artifact_path.read_text(encoding="utf-8"))
     assert parsed["schema_version"] == LOAD_ARTIFACT_SCHEMA_VERSION
-    assert parsed["operation_mix"] == list(suite.operation_mix)
+    assert parsed["compatibility_operation_mix"] == list(suite.operation_mix)
     assert parsed["promotion_eligible"] is False
     assert artifact.promotion_eligible is False
-    assert artifact.operation_coverage_ratio == 0.5
+    assert artifact.executable_operation_coverage_ratio == 0
     assert {
         trial["phase"] for trial in parsed["envelope"]["trials"]
     } >= {"warmup", "step", "binary_search", "validation"}
@@ -206,9 +213,8 @@ async def test_short_virtual_search_writes_a_non_promotable_artifact(
 
 
 async def test_declared_wall_clock_artifacts_compare_provider_headroom() -> None:
-    suite = LoadSuite(
-        kind="historical",
-        operation_mix=("plan", "fetch", "reconcile"),
+    suite = replace(
+        _typed_suite("historical"),
         tenants=1,
         installations_per_tenant=1,
         replicas=1,
@@ -223,8 +229,18 @@ async def test_declared_wall_clock_artifacts_compare_provider_headroom() -> None
                 _measurement(rate, seconds, stable=rate <= limit),
                 wall_elapsed_seconds=float(seconds),
                 operation_counts=tuple(
-                    (f"executed_mix:{operation}", 1)
-                    for operation in suite.operation_mix
+                    (
+                        f"executed_data_operation:{operation.operation_id}",
+                        1,
+                    )
+                    for operation in suite.data_operations
+                )
+                + tuple(
+                    (
+                        f"executed_control_operation:{operation.operation_id}",
+                        1,
+                    )
+                    for operation in suite.control_operations
                 ),
             )
 
@@ -248,7 +264,7 @@ async def test_declared_wall_clock_artifacts_compare_provider_headroom() -> None
         "clock_mode": "wall",
         "lab_calibration": _promotion_calibration(),
         "include_soak": True,
-        "operation_coverage_ratio": 1.0,
+        "verified_executable_operation_coverage_ratio": 1.0,
         "pipeline_e2e_proven": True,
     }
     provider = await run_artifact_load_search(

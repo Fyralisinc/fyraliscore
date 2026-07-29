@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "bfa58dbfb602428c6946a91ca4173ff882fac695fc0d21cbf36ebb393978f8b4"
+        "be35776d2425e729a076c503cefc2bc29c9ba273439a8399d3473c4fdec19bff"
       ],
       "credential_env": [
         "FYRALIS_CANARY_GITHUB"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "bfa58dbfb602428c6946a91ca4173ff882fac695fc0d21cbf36ebb393978f8b4"
+        "be35776d2425e729a076c503cefc2bc29c9ba273439a8399d3473c4fdec19bff"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "bfa58dbfb602428c6946a91ca4173ff882fac695fc0d21cbf36ebb393978f8b4"
+        "be35776d2425e729a076c503cefc2bc29c9ba273439a8399d3473c4fdec19bff"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "bfa58dbfb602428c6946a91ca4173ff882fac695fc0d21cbf36ebb393978f8b4"
+        "be35776d2425e729a076c503cefc2bc29c9ba273439a8399d3473c4fdec19bff"
       ],
       "credential_env": [],
       "required_env": [],

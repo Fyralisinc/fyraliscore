@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "c8ee4edf914bf332929599991530544403e68e2121aa2b4f743e2aff45d95de0"
+        "210257f5c2a2754ca21dd1a1597186fe1a75b73f03737b06cd9db66eef764403"
       ],
       "credential_env": [
         "FYRALIS_CANARY_FACEBOOK_PAGES"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "c8ee4edf914bf332929599991530544403e68e2121aa2b4f743e2aff45d95de0"
+        "210257f5c2a2754ca21dd1a1597186fe1a75b73f03737b06cd9db66eef764403"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "c8ee4edf914bf332929599991530544403e68e2121aa2b4f743e2aff45d95de0"
+        "210257f5c2a2754ca21dd1a1597186fe1a75b73f03737b06cd9db66eef764403"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "c8ee4edf914bf332929599991530544403e68e2121aa2b4f743e2aff45d95de0"
+        "210257f5c2a2754ca21dd1a1597186fe1a75b73f03737b06cd9db66eef764403"
       ],
       "credential_env": [],
       "required_env": [],

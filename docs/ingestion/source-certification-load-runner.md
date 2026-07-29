@@ -5,27 +5,28 @@ questions and their evidence is not interchangeable.
 
 - The provider request boundary in `execution_driver.py` and `load_search.py`
   proves exact Provider Lab operations, `ProviderTransport` behavior, quota
-  use, retry behavior, and request-boundary capacity. The generated
-  `--stage load` command invokes this boundary.
+  use, retry behavior, and request-boundary capacity. It is a diagnostic-only
+  companion to the generated `--stage load` command.
 - The ingestion data-plane boundary in `pipeline_load_runner.py` can prove
   scheduled offered load through raw S3 evidence, raw Kafka, normalized
-  Kafka, Observation persistence, and T1 triggering. Its orchestration and
-  validation exist, but no concrete exact-pipeline adapter is implemented or
-  wired into the generated load stage.
+  Kafka, Observation persistence, and T1 triggering. The generated stage now
+  delegates every typed workload to this runner, but no concrete exact-pipeline
+  adapter is implemented yet, so applicable workloads seal blocked artifacts.
 
-The existing source certification load stage produces measured Provider Lab
-request envelopes for every canonical source and every declared workload:
+The source certification load stage now records two distinct artifact families
+for every canonical source and every declared workload:
 
 - historical pull/backfill;
 - live ingress; and
 - combined live, backfill, reconciliation, and renewal work.
 
-It is deliberately fail closed. The default command is a short virtual-clock
-diagnostic. It writes useful request-boundary artifacts, but it is not an
-ingestion-throughput certification. Satisfying the request-boundary checks
-does not prove that Fyralis stored raw evidence, consumed either Kafka topic,
-persisted an Observation, triggered T1, maintained tenant isolation, or
-drained downstream backlog at the offered rate.
+It is deliberately fail closed. The typed pipeline runner records the exact
+workload contract in both modes and returns `blocked` until an exact adapter
+and verified quota input exist; WhatsApp historical is the one declared
+`not_applicable` workload. The default Provider Lab measurement is a short
+virtual-clock diagnostic. It cannot prove that Fyralis stored raw evidence,
+consumed either Kafka topic, persisted an Observation, triggered T1, maintained
+tenant isolation, or drained downstream backlog at the offered rate.
 
 ## Provider Lab request-load stage
 
@@ -46,24 +47,24 @@ Fyralis request rate, with p99 response time below 10 percent of the configured
 client timeout. Promotion requires at least 30 seconds of wall-clock
 calibration.
 
-The runner schedules every explicitly bound HTTP operation across the source
-contract's exact tenant, installation, and replica topology. Multiplexed
-routes must declare the operation's exact method, path values, query, headers,
-and body; the runner never labels a route/method Cartesian product as
-operation coverage. Calibration must successfully exercise every declared
-operation × workload-mix case. Replicas for the same installation share the
-same Provider Lab quota scope. Non-HTTP protocol surfaces remain explicit
-coverage gaps until a protocol-specific runner executes them.
+The diagnostic runner pairs every typed per-item data operation with the exact
+strict HTTP request templates exposed by Provider Lab, across the source
+contract's tenant, installation, and replica topology. Multiplexed routes must
+declare the operation's exact method, path values, query, headers, and body.
+Calibration must successfully exercise every typed-data-operation ×
+Provider-Lab-operation diagnostic case. Replicas for the same installation
+share the same Provider Lab quota scope. Non-HTTP protocol surfaces remain
+explicit coverage gaps until a protocol-specific runner executes them.
 
 `--load-offer-limit-rate` is a search safety cap, not a simulated bottleneck.
 If the search remains stable through the cap, the suite is blocked and no
 maximum-stable-rate artifact is claimed.
 
-The built-in boundary runner records high-level workload entries such as
-`normalize` and `persist` as `scheduled_mix:*`, not `executed_mix:*`. Therefore
-its operation-mix coverage is zero and it is never promotable. Only an
-end-to-end runner that actually executes each declared semantic operation may
-emit `executed_mix:*` evidence.
+The built-in boundary runner records `scheduled_data_operation:<id>` and
+`scheduled_control_operation:<id>` labels, never executable receipt labels.
+Therefore its executable-operation coverage is zero and it is never
+promotable. Only an end-to-end runner that actually invokes each declared
+callable and validates durable receipts may emit executable-operation evidence.
 
 ### Diagnostic and promotion-duration modes
 
@@ -92,18 +93,19 @@ uv run python -m services.ingest.source_certification.execution_driver \
   --load-offer-limit-rate 500
 ```
 
-The flag requests promotion-grade durations; it does not make the result
-promotion eligible. The built-in Provider Lab boundary runner records
-`pipeline_e2e_proven=false`, so the evaluator still blocks release. It also
-does not invoke `pipeline_load_runner.py`.
+The flag requests promotion-grade durations for the Provider Lab diagnostic;
+it does not make the result promotion eligible. The typed pipeline runner is
+always invoked first, but without the R3 exact adapter it records a sealed
+blocked artifact rather than a substitute Provider Lab result.
 
 ## Exact-pipeline offered-load framework
 
 `pipeline_load_runner.py` defines the stricter orchestration boundary needed
-to measure ingestion throughput. It is a library API, not a second CLI stage.
-`run_pipeline_load()` accepts a source, a declared workload, isolated
-loopback infrastructure, a mode, and a source-specific
-`PipelineBoundaryAdapter` factory.
+to measure ingestion throughput. `run_pipeline_load()` accepts a source, a
+declared workload, isolated loopback infrastructure, a mode, and a
+source-specific `PipelineBoundaryAdapter` factory. The generated load stage
+uses this API for all six source/suite/mode attempts and persists each
+self-validating result beneath `pipeline_load/`.
 
 Pipeline artifacts use
 `fyralis.source-certification-pipeline-load.v2`. A workload contains typed
@@ -117,16 +119,19 @@ proofs; and declares one of these schedules:
 - `once_per_trial` control work positioned before or after offered load; or
 - periodic control work with an explicit cadence.
 
-The legacy `operation_mix` remains only for the existing request-boundary
-runner. Planning and reconciliation are consequently not round-robined at the
-offered item rate.
+The legacy `operation_mix` remains only as a read-only compatibility projection
+for historical readers. It is excluded from the typed workload hash and cannot
+choose a callable, alter cardinality/cursor/quota requirements, or affect an
+active load decision. Planning and reconciliation are represented as typed
+control operations, never round-robined as offered data work.
 
-There is currently no production `PipelineBoundaryAdapter` factory and no
-execution-driver binding for it. Calling `run_pipeline_load()` without the
-factory returns a self-validating blocked artifact with
-`reason_code=exact_pipeline_adapter_absent`. It does not fall back to the
-Provider Lab request runner, an in-memory simulation, or the batch-oriented
-backfill harness.
+There is currently no production `PipelineBoundaryAdapter` factory. The
+execution driver calls `run_pipeline_load()` with no adapter until R3, which
+returns a self-validating blocked artifact with
+`reason_code=exact_pipeline_adapter_absent` once isolated infrastructure is
+available (or a stricter prerequisite reason when it is not). It does not fall
+back to the Provider Lab request runner, an in-memory simulation, or the
+batch-oriented backfill harness.
 
 ### Exact adapter protocol
 
@@ -342,12 +347,23 @@ provider-safe execution.
 
 ## Provider Lab request artifacts
 
-The load stage writes:
+The load stage writes separate typed-pipeline and Provider Lab diagnostic
+artifacts:
 
 ```text
 artifacts/
 ├── stage.json
-└── load/
+├── pipeline_load/
+│   ├── historical/
+│   │   ├── provider_safe.json
+│   │   └── fyralis_ceiling.json
+│   ├── live/
+│   │   ├── provider_safe.json
+│   │   └── fyralis_ceiling.json
+│   └── combined/
+│       ├── provider_safe.json
+│       └── fyralis_ceiling.json
+└── provider_lab_load/
     ├── historical/
     │   ├── provider_safe.json
     │   └── fyralis_ceiling.json
@@ -359,12 +375,16 @@ artifacts/
         └── fyralis_ceiling.json
 ```
 
-An envelope file is omitted when exact quota configuration is absent or
-invalid, request semantics are uncovered, calibration misses any
-operation/mix case, or the search reaches its safety cap without observing a
-real bottleneck. Every completed measured envelope records:
+The typed pipeline files always exist after the load stage and record a
+contract-bound `blocked` result until the exact adapter is available (or
+`not_applicable` for WhatsApp history). A Provider Lab envelope is omitted when
+exact quota configuration is absent or invalid, request semantics are
+uncovered, calibration misses any typed-data/provider-operation case, or the
+search reaches its safety cap without observing a real bottleneck. Every
+completed Provider Lab envelope records:
 
-- operation mix and topology;
+- typed workload identity, executable/control operation IDs, compatibility
+  operation mix, and topology;
 - clock mode and all configured durations;
 - Provider Lab calibration;
 - every warmup, step, binary-search, validation, and soak trial;
@@ -390,14 +410,16 @@ A passing provider-safe or ceiling suite must independently report:
 - 25 percent stepping and at most 5 percent final tolerance;
 - exact declared tenant/installation/replica topology;
 - at least 30 seconds of passing Provider Lab calibration;
-- complete operation-mix coverage;
+- complete typed executable and control-operation receipt coverage;
 - end-to-end pipeline proof; and
 - a promotion-eligible artifact.
 
 Provider-safe suites additionally require verified quota configuration and at
 least 90 percent utilization of the modeled limiting quota. These checks are
 performed by the evaluator as well as by the artifact builder so a short or
-synthetic-only result cannot be relabelled as passing. The existing stage
-still fails the end-to-end gate because its Provider Lab runner sets
-`pipeline_e2e_proven=false`; the separate pipeline framework is not yet wired
-to replace that value.
+synthetic-only result cannot be relabelled as passing. The current stage still
+fails the end-to-end gate because its typed pipeline artifacts have no exact
+adapter and its Provider Lab runner remains diagnostic only. Stage artifact v3
+validates the nested typed workload identity but rejects any passing load claim
+until a future release-capable schema independently validates exact-pipeline
+receipts.

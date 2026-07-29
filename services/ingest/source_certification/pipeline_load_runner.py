@@ -43,6 +43,7 @@ from services.ingest.source_certification.models import (
     ExecutableLoadOperation,
     LoadOperationContractAbsence,
     LoadQuotaMapping,
+    LoadSuite,
     LoadSuiteNonApplicability,
 )
 from services.ingest.source_certification.pipeline_probe import (
@@ -536,6 +537,31 @@ class DeclaredPipelineWorkload:
         }
 
 
+def declared_pipeline_workload_from_suite(
+    suite: LoadSuite,
+) -> DeclaredPipelineWorkload:
+    """Convert the catalog's typed suite into the runner's exact workload.
+
+    Keeping this conversion in the pipeline runner makes the execution path
+    consume the same immutable declaration that catalog generation serializes.
+    The compatibility ``operation_mix`` is intentionally excluded from both
+    declarations and cannot affect an active load decision.
+    """
+
+    workload = DeclaredPipelineWorkload(
+        kind=suite.kind,
+        executable_operations=suite.executable_operations,
+        contract_absence_assertions=suite.contract_absence_assertions,
+        non_applicability=suite.non_applicability,
+    )
+    if workload.to_dict() != suite.execution_workload_dict():
+        raise PipelineLoadError(
+            "source certification suite and pipeline workload declarations "
+            "differ"
+        )
+    return workload
+
+
 @dataclass(frozen=True, slots=True)
 class QuotaConstraint:
     """One exact evidence-backed limiting quota for a workload item."""
@@ -724,6 +750,38 @@ class PipelineLoadRunConfig:
                 self.quota_maximum_age.total_seconds()
             ),
         }
+
+
+def diagnostic_pipeline_load_config_from_suite(
+    suite: LoadSuite,
+) -> PipelineLoadRunConfig:
+    """Project a catalog suite into R1's exact non-promoting load config.
+
+    The driver and stage-artifact verifier share this projection so a nested
+    pipeline artifact cannot silently change the declared topology, timings,
+    search controls, or release posture.
+    """
+
+    return PipelineLoadRunConfig(
+        topology=PipelineLoadTopology(
+            tenants=suite.tenants,
+            installations_per_tenant=suite.installations_per_tenant,
+            replicas=suite.replicas,
+        ),
+        timing=PipelineLoadTiming(
+            warmup_seconds=float(suite.warmup_seconds),
+            step_seconds=float(suite.warmup_seconds),
+            validation_seconds=float(suite.stable_seconds),
+            soak_seconds=float(suite.weekly_soak_seconds),
+        ),
+        initial_rate=1.0,
+        step_fraction=suite.step_percent / 100,
+        search_tolerance_fraction=suite.search_tolerance_percent / 100,
+        # R1 seals the typed declaration and a fail-closed result. An exact
+        # adapter, wall-clock promotion run, and soak are R3/R6 work.
+        include_soak=False,
+        release=False,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -3406,6 +3464,8 @@ __all__ = [
     "TrialContext",
     "VerifiedQuotaConfiguration",
     "WorkItem",
+    "declared_pipeline_workload_from_suite",
+    "diagnostic_pipeline_load_config_from_suite",
     "resolve_isolated_pipeline_infrastructure",
     "run_pipeline_load",
     "validate_pipeline_load_artifact",

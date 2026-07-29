@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "0b49064e385a820c6a74818eda777f59d1f6e0c0182467791ef55dc251daf795"
+        "3e287798875892fe802c5af9959c7c9023b1827607b382e6a62e57da2301a955"
       ],
       "credential_env": [
         "FYRALIS_CANARY_WHATSAPP"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "0b49064e385a820c6a74818eda777f59d1f6e0c0182467791ef55dc251daf795"
+        "3e287798875892fe802c5af9959c7c9023b1827607b382e6a62e57da2301a955"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "0b49064e385a820c6a74818eda777f59d1f6e0c0182467791ef55dc251daf795"
+        "3e287798875892fe802c5af9959c7c9023b1827607b382e6a62e57da2301a955"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "0b49064e385a820c6a74818eda777f59d1f6e0c0182467791ef55dc251daf795"
+        "3e287798875892fe802c5af9959c7c9023b1827607b382e6a62e57da2301a955"
       ],
       "credential_env": [],
       "required_env": [],
