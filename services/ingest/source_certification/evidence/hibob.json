@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://apidocs.hibob.com/",
       "api_version": "HiBob API",
-      "schema_sha256": "aaa3b6798e28fa16e04f4aa7008c4448beb480676cc5100350ab6ea01cdcc56d",
+      "schema_sha256": "a9ed29a7013d9febd315fc365def3ed0a4bdf4b03d00b9217f6afb66fd6a2aad",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

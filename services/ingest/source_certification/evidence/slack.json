@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://docs.slack.dev/apis/web-api/",
       "api_version": "Web API / Events API",
-      "schema_sha256": "0fa3952d980005ce16bc9e51eed03b8b49a5f00c0a1b6547510826f94a4519e3",
+      "schema_sha256": "11f65001011e8e0f571853eece0e268f21d53080beb86732b734cb8870a492f1",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

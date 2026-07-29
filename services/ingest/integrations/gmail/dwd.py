@@ -72,6 +72,26 @@ _TOKEN_TTL_HEADROOM_S = 5 * 60
 class DwdError(CompanyOSError):
     default_code = "gmail_dwd_error"
 
+    @property
+    def status(self) -> int | None:
+        """Return a normalized token-endpoint status when one is available.
+
+        Most DWD failures are local configuration or signing failures and do
+        not have an HTTP status.  The bounded watch-renewal invokers need to
+        distinguish those unknown failures from a definite provider-side
+        authorization rejection without inspecting a message or retaining a
+        provider response body.
+        """
+
+        raw_status = self.context.get("status")
+        if isinstance(raw_status, bool):
+            return None
+        try:
+            normalized = int(raw_status)
+        except (TypeError, ValueError):
+            return None
+        return normalized if 100 <= normalized <= 599 else None
+
 
 @dataclass(frozen=True)
 class ServiceAccountKey:
@@ -365,11 +385,10 @@ class DwdTokenMinter:
             quota_dimensions=dimensions,
         )
         if resp.status_code != 200:
-            # NEVER echo the assertion or any request detail — it
-            # contains the impersonated user identity.
+            # Never retain provider response text. It can echo opaque request
+            # material, and a DwdError may cross a renewal/error boundary.
             raise DwdError(
-                f"token exchange failed: status={resp.status_code} "
-                f"body={resp.text[:200]!r}",
+                f"token exchange failed: status={resp.status_code}",
                 status=resp.status_code,
             )
         body = resp.json()

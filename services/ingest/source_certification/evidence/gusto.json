@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://docs.gusto.com/embedded-payroll/reference/introduction",
       "api_version": "Gusto Embedded API",
-      "schema_sha256": "6174fa93cfc1a876df50a104ef28484062984d4992b66aebb6e7d7f2b3245d75",
+      "schema_sha256": "4b77f3c331ed794715df13cc6cc52e71bc37c7425e3ca8e3b84f689e7e67eb38",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

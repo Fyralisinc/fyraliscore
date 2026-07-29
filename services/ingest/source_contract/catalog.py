@@ -54,6 +54,7 @@ from services.ingest.source_contract.models import (
     ProviderDefinition,
     RehearsalFinalizeMode,
     RequestPolicy,
+    RenewalDefinition,
     SourceCategory,
     SourceConnectionMethod,
     SourceDefinition,
@@ -263,6 +264,29 @@ def _credential_refresh(
         client_credentials_from_install=client_credentials_from_install,
         scope_env=scope_env,
         default_scope=default_scope,
+    )
+
+
+def _renewal(
+    *,
+    kind: str,
+    operation_id: str,
+    invoker_binding: str,
+    cadence_seconds: float,
+    renewal_window_seconds: int,
+    lease_scope: str,
+    supporting_operation_ids: tuple[str, ...] = (),
+) -> RenewalDefinition:
+    """Build a source-owned bounded renewal declaration."""
+
+    return RenewalDefinition(
+        kind=kind,  # type: ignore[arg-type]
+        operation_id=operation_id,
+        invoker_binding=invoker_binding,
+        cadence_seconds=cadence_seconds,
+        renewal_window_seconds=renewal_window_seconds,
+        lease_scope=lease_scope,  # type: ignore[arg-type]
+        supporting_operation_ids=supporting_operation_ids,
     )
 
 
@@ -822,6 +846,10 @@ _DELIVERY_BY_TRANSPORT: Mapping[LiveTransportKind, DeliveryPolicy] = {
 _PERIODIC_RECONCILER_BINDING = (
     "services.ingest.ingestion.workflows.periodic_reconciler:run_forever"
 )
+_CREDENTIAL_RENEWAL_SCHEDULER_BINDING = (
+    "services.ingest.ingestion.workflows.credential_renewal_scheduler:"
+    "run_forever"
+)
 
 
 def _live_boundary(
@@ -870,6 +898,28 @@ def _periodic_reconciliation(
         cadence_seconds=6 * 60 * 60,
         lease_scope="resource",
         deployment_unit="periodic_reconciler",
+    )
+
+
+def _credential_renewal_scheduler(
+    *,
+    cadence_seconds: float,
+) -> LiveWorkerDefinition:
+    """Declare the shared exact-installation credential renewal worker.
+
+    The source contract still owns the source-specific cadence and invoker.
+    One Fyralis process derives all credential-renewal work from those
+    declarations; it is not a second source registry.
+    """
+
+    return _live_worker(
+        "credential_renewal",
+        "credential_renewal",
+        transport=None,
+        launcher_binding=_CREDENTIAL_RENEWAL_SCHEDULER_BINDING,
+        cadence_seconds=cadence_seconds,
+        lease_scope="installation",
+        deployment_unit="credential_renewal_scheduler",
     )
 
 
@@ -1165,6 +1215,7 @@ def _source(
     installation_status_loader_binding: str | None = None,
     certification_notes: tuple[str, ...] = (),
     credential_refresh: CredentialRefreshDefinition | None = None,
+    renewal: RenewalDefinition | None = None,
     capability_flags: tuple[str, ...] = (),
     idempotent_operation_ids: tuple[str, ...] = (),
     idempotency_key_operation_ids: tuple[str, ...] = (),
@@ -1349,6 +1400,7 @@ def _source(
             generator_group=validation_generator_group,
         ),
         credential_refresh=credential_refresh,
+        renewal=renewal,
         capability_flags=capability_flags,
         operation_policies=operation_policies,
         outbound_endpoint_bindings=endpoint_bindings,
@@ -2071,6 +2123,18 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "watch.create",
             "dwd.token.exchange",
         ),
+        renewal=_renewal(
+            kind="watch",
+            operation_id="watch.create",
+            invoker_binding=(
+                "services.ingest.integrations.gmail.watch_scheduler:"
+                "renew_exact_installation"
+            ),
+            cadence_seconds=15 * 60,
+            renewal_window_seconds=24 * 60 * 60,
+            lease_scope="resource",
+            supporting_operation_ids=("dwd.token.exchange",),
+        ),
         retryable_status_codes=(
             403,
             *_STANDARD_RETRYABLE_HTTP_STATUSES,
@@ -2424,6 +2488,21 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             "dwd.token.exchange",
             "events.watch",
         ),
+        renewal=_renewal(
+            kind="watch",
+            operation_id="events.watch",
+            invoker_binding=(
+                "services.ingest.integrations.google_calendar.watch:"
+                "renew_exact_installation"
+            ),
+            cadence_seconds=15 * 60,
+            renewal_window_seconds=24 * 60 * 60,
+            lease_scope="resource",
+            supporting_operation_ids=(
+                "dwd.token.exchange",
+                "channels.stop",
+            ),
+        ),
         retryable_status_codes=(
             403,
             *_STANDARD_RETRYABLE_HTTP_STATUSES,
@@ -2654,6 +2733,21 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         unsafe_operation_ids=(
             "dwd.token.exchange",
             "changes.watch",
+        ),
+        renewal=_renewal(
+            kind="watch",
+            operation_id="changes.watch",
+            invoker_binding=(
+                "services.ingest.integrations.google_drive.watch:"
+                "renew_exact_installation"
+            ),
+            cadence_seconds=15 * 60,
+            renewal_window_seconds=24 * 60 * 60,
+            lease_scope="resource",
+            supporting_operation_ids=(
+                "dwd.token.exchange",
+                "channels.stop",
+            ),
         ),
         retryable_status_codes=(
             403,
@@ -3007,7 +3101,10 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
                     "quickbooks",
                 ),
             ),
-            workers=(_periodic_reconciliation(transport="api_poll"),),
+            workers=(
+                _credential_renewal_scheduler(cadence_seconds=5 * 60),
+                _periodic_reconciliation(transport="api_poll"),
+            ),
         ),
         onboarding=_onboarding(
             "oauth",
@@ -3065,6 +3162,17 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             rotates_refresh_token=True,
             install_table="quickbooks_installations",
             operation_id="oauth.token.refresh",
+        ),
+        renewal=_renewal(
+            kind="credential",
+            operation_id="oauth.token.refresh",
+            invoker_binding=(
+                "services.ingest.integrations.oauth_renewal:"
+                "renew_quickbooks_installation"
+            ),
+            cadence_seconds=5 * 60,
+            renewal_window_seconds=120,
+            lease_scope="installation",
         ),
         idempotent_operation_ids=(
             "entities.query",
@@ -3557,7 +3665,10 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             boundaries=(
                 _live_boundary("webhook", "webhook_route", "ramp"),
             ),
-            workers=(_periodic_reconciliation(transport="api_poll"),),
+            workers=(
+                _credential_renewal_scheduler(cadence_seconds=5 * 60),
+                _periodic_reconciliation(transport="api_poll"),
+            ),
         ),
         onboarding=_onboarding(
             "oauth_client_credentials",
@@ -3628,6 +3739,17 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
                 "transactions:read reimbursements:read cards:read users:read "
                 "business:read"
             ),
+        ),
+        renewal=_renewal(
+            kind="credential",
+            operation_id="oauth.token.mint",
+            invoker_binding=(
+                "services.ingest.integrations.oauth_renewal:"
+                "renew_ramp_installation"
+            ),
+            cadence_seconds=5 * 60,
+            renewal_window_seconds=120,
+            lease_scope="installation",
         ),
         idempotent_operation_ids=(
             "transactions.list",
@@ -3707,7 +3829,10 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             boundaries=(
                 _live_boundary("webhook", "webhook_route", "gusto"),
             ),
-            workers=(_periodic_reconciliation(transport="api_poll"),),
+            workers=(
+                _credential_renewal_scheduler(cadence_seconds=5 * 60),
+                _periodic_reconciliation(transport="api_poll"),
+            ),
         ),
         onboarding=_onboarding(
             "oauth",
@@ -3762,6 +3887,17 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             install_table="gusto_installations",
             operation_id="oauth.token.refresh",
             default_expires_in=7200,
+        ),
+        renewal=_renewal(
+            kind="credential",
+            operation_id="oauth.token.refresh",
+            invoker_binding=(
+                "services.ingest.integrations.oauth_renewal:"
+                "renew_gusto_installation"
+            ),
+            cadence_seconds=5 * 60,
+            renewal_window_seconds=120,
+            lease_scope="installation",
         ),
         idempotent_operation_ids=(
             "employees.list",
@@ -4624,7 +4760,10 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         trust_tiers=("authoritative",),
         live_transports=("api_poll",),
         live_runtime=_live_runtime(
-            workers=(_periodic_reconciliation(transport="api_poll"),),
+            workers=(
+                _credential_renewal_scheduler(cadence_seconds=5 * 60),
+                _periodic_reconciliation(transport="api_poll"),
+            ),
         ),
         onboarding=_onboarding(
             "oauth",
@@ -4692,6 +4831,17 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
                 "read_issuer_info read_issuer_stakeholders "
                 "read_issuer_shareclasses read_issuer_securities"
             ),
+        ),
+        renewal=_renewal(
+            kind="credential",
+            operation_id="oauth.token.mint",
+            invoker_binding=(
+                "services.ingest.integrations.oauth_renewal:"
+                "renew_carta_installation"
+            ),
+            cadence_seconds=5 * 60,
+            renewal_window_seconds=120,
+            lease_scope="installation",
         ),
         outbound_endpoint_name="carta_api",
         provider_transport_enforced=True,
@@ -4986,7 +5136,10 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
         trust_tiers=("authoritative",),
         live_transports=("api_poll",),
         live_runtime=_live_runtime(
-            workers=(_periodic_reconciliation(transport="api_poll"),),
+            workers=(
+                _credential_renewal_scheduler(cadence_seconds=5 * 60),
+                _periodic_reconciliation(transport="api_poll"),
+            ),
         ),
         onboarding=_onboarding(
             "poll",
@@ -5035,6 +5188,17 @@ SOURCE_DEFINITIONS: tuple[SourceDefinition, ...] = (
             install_table="linkedin_installations",
             operation_id="oauth.token.refresh",
             default_expires_in=86400,
+        ),
+        renewal=_renewal(
+            kind="credential",
+            operation_id="oauth.token.refresh",
+            invoker_binding=(
+                "services.ingest.integrations.oauth_renewal:"
+                "renew_linkedin_installation"
+            ),
+            cadence_seconds=5 * 60,
+            renewal_window_seconds=120,
+            lease_scope="installation",
         ),
         idempotent_operation_ids=(
             "posts.list",

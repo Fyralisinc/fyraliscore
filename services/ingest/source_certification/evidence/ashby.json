@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://developers.ashbyhq.com/reference/introduction",
       "api_version": "Ashby API",
-      "schema_sha256": "1751ba69061cd16ea2489a36280af5913337ad666fdb6edc2bcc2ad4876ba91d",
+      "schema_sha256": "87ccf5701ae7a4f5f9ce221f073848b94593b2d47d685bebedebcc020a4a6c6b",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

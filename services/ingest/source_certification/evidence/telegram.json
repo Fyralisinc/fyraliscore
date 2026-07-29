@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://core.telegram.org/api",
       "api_version": "Telegram MTProto layer (Telethon boundary)",
-      "schema_sha256": "4298d2ce5b44d9c52d58edb33195dc811f68602a3c11ee276b14ed07c2b70bdf",
+      "schema_sha256": "a19380aded61c8c3d93018bde1cabe2ae8d315b8670b950fbee2044ab1c98b20",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

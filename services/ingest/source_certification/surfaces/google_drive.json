@@ -11,7 +11,7 @@
     "services.ingest.ingestion.planners.google_drive": "c6f1d9d9cb7f6a75102bffe526d59fea69d71b838dad06007ac3b300f6206054",
     "services.ingest.ingestion.reconcilers.google_drive": "96bcb0e0f4846cac83d764dc01743fee8d3951c471e524996e346125e54d1edd",
     "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
-    "services.ingest.integrations._google_watch": "1db73db2bbaab06c7107eb00b75e0737035042f356d94e6416c4744601b0be0e",
+    "services.ingest.integrations._google_watch": "9957115fa24d308224bce6523c86995c2893a4fb4e5a812f9b3ae611b7d51ce2",
     "services.ingest.integrations.gmail.push_handler": "e8679de4c3f4b3b2ef7854bb4b325416640d1899e9c293863c68018b60bbfb0e",
     "services.ingest.integrations.google_drive": "0e8d183cc318f93045061acd44f69b86a304bb21720061f10839a6e43bcf9b4e",
     "services.ingest.integrations.google_drive.client": "936bf9a4cb3e5357e3ee12a32835032ad0dfe5b33aa5f4d28b32b96e6d6ca723",
@@ -19,10 +19,10 @@
     "services.ingest.integrations.google_drive.metrics": "81e716cc3199b0fc5a201ac2ccd1cdd3be7b1982cde6bb68eada6c8ab595ab61",
     "services.ingest.integrations.google_drive.oauth": "a18bfc94e237a96f8cab1370b83ffce52b8636ebe566e72da7c4ab2e8776d142",
     "services.ingest.integrations.google_drive.onboarding": "08d5f651c6156c8b29ffa6586b633fe2244eb9af8a26a298efc72ca411267f26",
-    "services.ingest.integrations.google_drive.watch": "e1588f56c1bf0e7d36ade8f1933defcc4990f0f502c2031c6bf9b435e438c9ce",
+    "services.ingest.integrations.google_drive.watch": "ab7f33af3d11dbc1843515e8a7905df2ff3ec1d55e9186d8974ce6c929008e24",
     "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
     "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
-    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.provider_lab.wave_b": "ac34ee5ca429c0f516d01e83f4af8e3c2e33aa994a4f01b1b4a7c93f872ad61b",
     "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
     "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
   },
@@ -1428,6 +1428,18 @@
     "provider_id": "google",
     "provider_transport_enforced": true,
     "reconciler_binding": "services.ingest.ingestion.reconcilers.google_drive:reconcile_google_drive",
+    "renewal": {
+      "cadence_seconds": 900,
+      "invoker_binding": "services.ingest.integrations.google_drive.watch:renew_exact_installation",
+      "kind": "watch",
+      "lease_scope": "resource",
+      "operation_id": "changes.watch",
+      "renewal_window_seconds": 86400,
+      "supporting_operation_ids": [
+        "dwd.token.exchange",
+        "channels.stop"
+      ]
+    },
     "runtime_identifiers": [
       "channel_id",
       "resource_id",

@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://developers.google.com/workspace/calendar/api/v3/reference",
       "api_version": "Calendar API v3",
-      "schema_sha256": "3dfca44342eefb121f629cb6b083c5222db80faab0180f55eba8d608e12f8a23",
+      "schema_sha256": "0505c64ad2e2b768c00818548236f27e4002810402530610f3e167190f2e141e",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

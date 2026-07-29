@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://developers.miro.com/reference/api-reference",
       "api_version": "Miro REST API v2",
-      "schema_sha256": "d993d45843e1c9dffaf39d3423dcbf8e9e1c32559d3985e1a8ae826086015f64",
+      "schema_sha256": "85419d7b5d1656f5f5c2bb0215ede8bd45f292c904fe692c409670263bb02689",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

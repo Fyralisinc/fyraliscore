@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://developers.facebook.com/docs/whatsapp/cloud-api/",
       "api_version": "WhatsApp Cloud API",
-      "schema_sha256": "287e36f376fc21164da0c16779705bcc17d79fcc9cfaf16632c70c48778e7492",
+      "schema_sha256": "16d35af14bbc00930c0be32851cd23e0968a932897a959e64be0334b8d0f2958",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

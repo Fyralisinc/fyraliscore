@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://docs.fireflies.ai/graphql-api/query/",
       "api_version": "Fireflies GraphQL API",
-      "schema_sha256": "0e2235490f9dffb4542e0603b6ff4c779b5ae55a2e4bc5b94f699e17831968df",
+      "schema_sha256": "1c726ea6e8966615a484a7d0cea8543b2b98da633fa82369f45eac2c03a03d28",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

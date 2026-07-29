@@ -11,7 +11,7 @@
     "services.ingest.integrations.whatsapp.signature": "1e2114f289c8380f034d0f1b69a821b482319a260225059f69af1dfea959f208",
     "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
     "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
-    "services.ingest.synthetic.provider_lab.wave_cd": "41c4c2a2e3d41386cae397e018f3cd519f08baae2bdf5e148c00e36c3df41929",
+    "services.ingest.synthetic.provider_lab.wave_cd": "774f0360c70a6704af2baef32f9fbc02ea4c59348c47a18a2a013c223f942a4f",
     "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
     "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
   },
@@ -418,6 +418,7 @@
     "provider_id": "meta",
     "provider_transport_enforced": true,
     "reconciler_binding": null,
+    "renewal": null,
     "runtime_identifiers": [
       "phone_number_id"
     ],

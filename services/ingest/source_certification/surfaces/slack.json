@@ -20,7 +20,7 @@
     "services.ingest.integrations.slack.webhook_ingress": "315810560505002e803e356e06fe4b6c609d5f086df43a52162bf91a6556bea8",
     "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
     "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
-    "services.ingest.synthetic.provider_lab.adapters": "f036c41246c136c64769e9bb5eca1b30345dd5fe926351b75226cc12bcce6843",
+    "services.ingest.synthetic.provider_lab.adapters": "94a5326ca00656ada0c1242397d7c8defe6709d0be04024bbbab6fd001951f94",
     "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
     "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
     "services.platform.runtime.source_browser_agent_setup": "94573ed4fe4021187c94d861adc39dbf7955fa29bc6791c63accc05571a8def2",
@@ -1870,6 +1870,7 @@
     "provider_id": "slack",
     "provider_transport_enforced": true,
     "reconciler_binding": "services.ingest.ingestion.reconcilers.slack:reconcile_slack",
+    "renewal": null,
     "runtime_identifiers": [
       "team_id"
     ],

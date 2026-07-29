@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://docs.mercury.com/reference/welcome-to-mercurys-api",
       "api_version": "Mercury API",
-      "schema_sha256": "f9d5e9f22db0463b457ffb567f39f2e25c1d5abc3324436064c80f57cb251449",
+      "schema_sha256": "63fad9cf08db369ff5ce2c20d59684bfd15ae696377e056a552befa82a556940",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

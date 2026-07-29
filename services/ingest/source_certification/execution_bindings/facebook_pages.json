@@ -1,7 +1,7 @@
 {
   "schema_version": "fyralis.source-certification-execution-binding.v1",
   "source_id": "facebook_pages",
-  "spec_hash": "c7c10346c218306c719ada73f388b8f8f86f624fa9d6a9c5cc2948cf2c2016cc",
+  "spec_hash": "12c1bd567251d44bb94a44dd74ed18adb19f619f5aa88401cb36b85ede4a8131",
   "stages": {
     "canary": {
       "argv": [
@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "210257f5c2a2754ca21dd1a1597186fe1a75b73f03737b06cd9db66eef764403"
+        "de23ead9d06cfb11f30e417af80326407acf1bfd97e82e7e127f388cb099041b"
       ],
       "credential_env": [
         "FYRALIS_CANARY_FACEBOOK_PAGES"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "210257f5c2a2754ca21dd1a1597186fe1a75b73f03737b06cd9db66eef764403"
+        "de23ead9d06cfb11f30e417af80326407acf1bfd97e82e7e127f388cb099041b"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "210257f5c2a2754ca21dd1a1597186fe1a75b73f03737b06cd9db66eef764403"
+        "de23ead9d06cfb11f30e417af80326407acf1bfd97e82e7e127f388cb099041b"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "210257f5c2a2754ca21dd1a1597186fe1a75b73f03737b06cd9db66eef764403"
+        "de23ead9d06cfb11f30e417af80326407acf1bfd97e82e7e127f388cb099041b"
       ],
       "credential_env": [],
       "required_env": [],

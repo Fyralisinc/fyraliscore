@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://developer.brex.com/openapi/",
       "api_version": "Brex API",
-      "schema_sha256": "0bd4a3f7968bdd9728e08b3a0692f7f57927141aec46e30be1fef6c566ab3f1d",
+      "schema_sha256": "aa20a0eef179369b80ddf8767fd4684a7694ca829ffacb00db0e61ab1a5d9c9a",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

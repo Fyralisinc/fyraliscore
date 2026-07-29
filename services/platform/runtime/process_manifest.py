@@ -394,6 +394,18 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         has_healthcheck=True,
     ),
     _proc(
+        "credential_renewal_scheduler",
+        "live-source",
+        ("python", "scripts/run_credential_renewal_scheduler.py"),
+        ("production",),
+        (
+            "Contract-derived exact-installation OAuth refresh and "
+            "client-credential renewal scheduler."
+        ),
+        compose_service="credential_renewal_scheduler",
+        has_healthcheck=True,
+    ),
+    _proc(
         "sage_structural_features_worker",
         "reasoning",
         ("python", "scripts/run_sage_structural_features_worker.py"),

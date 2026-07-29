@@ -20,7 +20,7 @@
     "services.ingest.integrations.mercury.onboarding": "fb063a091c5b232b95f8ee2847826083dc884219e5d9c627de9f2c669c175aed",
     "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
     "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
-    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.provider_lab.wave_b": "ac34ee5ca429c0f516d01e83f4af8e3c2e33aa994a4f01b1b4a7c93f872ad61b",
     "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
     "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
   },
@@ -596,6 +596,7 @@
     "provider_id": "mercury",
     "provider_transport_enforced": true,
     "reconciler_binding": "services.ingest.ingestion.reconcilers.mercury:reconcile_mercury",
+    "renewal": null,
     "runtime_identifiers": [
       "installation_id",
       "account_id"

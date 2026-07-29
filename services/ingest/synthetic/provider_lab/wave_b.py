@@ -22,6 +22,15 @@ from .protocol import (
     ProviderResponse,
     ProviderRoute,
 )
+from .renewal_lifecycle import (
+    LifecycleWatchRegistry,
+    lifecycle_resource_id,
+    lifecycle_token_response,
+    lifecycle_watch_expiration,
+    require_lifecycle_access_token,
+    validate_lifecycle_client_credentials,
+    validate_lifecycle_refresh_grant,
+)
 
 
 def _scope(request: ProviderRequest) -> str:
@@ -271,6 +280,21 @@ class CartaAdapter(_WaveBAdapter):
             "carta.oauth_token",
             "carta.oauth_token_no_slash",
         }:
+            rejected = validate_lifecycle_client_credentials(request)
+            if rejected is not None:
+                return rejected
+            lifecycle = lifecycle_token_response(
+                request,
+                token_type="Bearer",
+                extra={
+                    "scope": (
+                        "read_issuer_info read_issuer_stakeholders "
+                        "read_issuer_shareclasses read_issuer_securities"
+                    )
+                },
+            )
+            if lifecycle is not None:
+                return ProviderResponse.json(lifecycle)
             return ProviderResponse.json(
                 {
                     "access_token": "mock-carta-access-token",
@@ -282,6 +306,9 @@ class CartaAdapter(_WaveBAdapter):
                     "token_type": "Bearer",
                 }
             )
+        rejected = require_lifecycle_access_token(request)
+        if rejected is not None:
+            return rejected
         if not request.headers.get("authorization"):
             return ProviderResponse.json(
                 {"error": "missing Authorization header"}, status_code=401
@@ -897,8 +924,42 @@ class GoogleCalendarAdapter(_WaveBAdapter):
     def default_state(self) -> Mapping[str, Any]:
         return {"calendars": {}}
 
+    def __init__(self) -> None:
+        self._lifecycle_watches = LifecycleWatchRegistry(self.source)
+
+    def reset(self) -> None:
+        self._lifecycle_watches.reset()
+
+    def reset_lifecycle_watches(self) -> None:
+        """Discard opt-in watch state when the control-plane fixture changes."""
+
+        self._lifecycle_watches.reset()
+
+    def watch_lifecycle_snapshot(
+        self,
+        *,
+        now: datetime,
+        source_state: Mapping[str, Any],
+        scope: str | None = None,
+        channel_id: str | None = None,
+        resource_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._lifecycle_watches.snapshot(
+            now=now,
+            source_state=source_state,
+            scope=scope,
+            channel_id=channel_id,
+            resource_id=resource_id,
+        )
+
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
         if request.route.route_id == "google_calendar.token":
+            lifecycle = lifecycle_token_response(
+                request,
+                token_type="Bearer",
+            )
+            if lifecycle is not None:
+                return ProviderResponse.json(lifecycle)
             return ProviderResponse.json(
                 {
                     "access_token": "sandbox-access-token",
@@ -906,6 +967,9 @@ class GoogleCalendarAdapter(_WaveBAdapter):
                     "token_type": "Bearer",
                 }
             )
+        rejected = require_lifecycle_access_token(request)
+        if rejected is not None:
+            return rejected
         if ".directory_" in request.route.route_id:
             return _google_directory_response(request)
         if request.route.route_id == "google_calendar.calendar_list":
@@ -919,6 +983,35 @@ class GoogleCalendarAdapter(_WaveBAdapter):
                 }
             )
         if request.route.route_id == "google_calendar.channels_stop":
+            # Do not parse static-fixture requests: this route historically
+            # returned an idempotent success for the compact fixture surface.
+            # Lifecycle mode validates the real id/resource stop payload.
+            if lifecycle_watch_expiration(request) is not None:
+                try:
+                    body = request.json()
+                except (TypeError, ValueError):
+                    body = None
+                channel_id = (
+                    str(body.get("id"))
+                    if isinstance(body, Mapping) and body.get("id")
+                    else None
+                )
+                resource_id = (
+                    str(body.get("resourceId"))
+                    if isinstance(body, Mapping) and body.get("resourceId")
+                    else None
+                )
+                try:
+                    self._lifecycle_watches.stop(
+                        request,
+                        channel_id=channel_id,
+                        resource_id=resource_id,
+                    )
+                except ValueError as exc:
+                    return ProviderResponse.json(
+                        {"error": {"code": 400, "message": str(exc)}},
+                        status_code=400,
+                    )
             return ProviderResponse.json({})
 
         calendar_id = str(request.path_params["calendar_id"])
@@ -929,6 +1022,29 @@ class GoogleCalendarAdapter(_WaveBAdapter):
                 if isinstance(body, dict) and body.get("id")
                 else "provider-lab-calendar-channel"
             )
+            expiration = lifecycle_watch_expiration(request)
+            if expiration is not None:
+                resource_id = lifecycle_resource_id(
+                    request,
+                    resource_prefix=f"calendar-resource:{calendar_id}",
+                )
+                self._lifecycle_watches.register(
+                    request,
+                    target=f"calendars/{calendar_id}/events",
+                    channel_id=channel_id,
+                    resource_id=resource_id,
+                )
+                return ProviderResponse.json(
+                    {
+                        "id": channel_id,
+                        "resourceId": resource_id,
+                        "resourceUri": (
+                            "https://www.googleapis.com/calendar/v3/calendars/"
+                            f"{calendar_id}/events"
+                        ),
+                        "expiration": expiration,
+                    }
+                )
             return ProviderResponse.json(
                 {
                     "id": channel_id,
@@ -1043,6 +1159,34 @@ class GoogleDriveAdapter(_WaveBAdapter):
         ),
     )
 
+    def __init__(self) -> None:
+        self._lifecycle_watches = LifecycleWatchRegistry(self.source)
+
+    def reset(self) -> None:
+        self._lifecycle_watches.reset()
+
+    def reset_lifecycle_watches(self) -> None:
+        """Discard opt-in watch state when the control-plane fixture changes."""
+
+        self._lifecycle_watches.reset()
+
+    def watch_lifecycle_snapshot(
+        self,
+        *,
+        now: datetime,
+        source_state: Mapping[str, Any],
+        scope: str | None = None,
+        channel_id: str | None = None,
+        resource_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._lifecycle_watches.snapshot(
+            now=now,
+            source_state=source_state,
+            scope=scope,
+            channel_id=channel_id,
+            resource_id=resource_id,
+        )
+
     def default_state(self) -> Mapping[str, Any]:
         return {
             "files": [],
@@ -1073,6 +1217,12 @@ class GoogleDriveAdapter(_WaveBAdapter):
         state = request.source_state
         route_id = request.route.route_id
         if route_id == "google_drive.token":
+            lifecycle = lifecycle_token_response(
+                request,
+                token_type="Bearer",
+            )
+            if lifecycle is not None:
+                return ProviderResponse.json(lifecycle)
             return ProviderResponse.json(
                 {
                     "access_token": "sandbox-access-token",
@@ -1080,6 +1230,9 @@ class GoogleDriveAdapter(_WaveBAdapter):
                     "token_type": "Bearer",
                 }
             )
+        rejected = require_lifecycle_access_token(request)
+        if rejected is not None:
+            return rejected
         if ".directory_" in route_id:
             return _google_directory_response(request)
         fixture = self._fixture(request)
@@ -1121,6 +1274,27 @@ class GoogleDriveAdapter(_WaveBAdapter):
                 if isinstance(body, dict) and body.get("id")
                 else "provider-lab-drive-channel"
             )
+            expiration = lifecycle_watch_expiration(request)
+            if expiration is not None:
+                resource_id = lifecycle_resource_id(
+                    request,
+                    resource_prefix="drive-change-resource",
+                )
+                drive_id = _params(request).get("driveId") or "my-drive"
+                self._lifecycle_watches.register(
+                    request,
+                    target=f"changes/{drive_id}",
+                    channel_id=channel_id,
+                    resource_id=resource_id,
+                )
+                return ProviderResponse.json(
+                    {
+                        "id": channel_id,
+                        "resourceId": resource_id,
+                        "resourceUri": "https://www.googleapis.com/drive/v3/changes",
+                        "expiration": expiration,
+                    }
+                )
             return ProviderResponse.json(
                 {
                     "id": channel_id,
@@ -1130,6 +1304,34 @@ class GoogleDriveAdapter(_WaveBAdapter):
                 }
             )
         if route_id == "google_drive.channels_stop":
+            # Keep the non-lifecycle fixture's historical idempotent response
+            # shape, while lifecycle mode validates and records a real stop.
+            if lifecycle_watch_expiration(request) is not None:
+                try:
+                    body = request.json()
+                except (TypeError, ValueError):
+                    body = None
+                channel_id = (
+                    str(body.get("id"))
+                    if isinstance(body, Mapping) and body.get("id")
+                    else None
+                )
+                resource_id = (
+                    str(body.get("resourceId"))
+                    if isinstance(body, Mapping) and body.get("resourceId")
+                    else None
+                )
+                try:
+                    self._lifecycle_watches.stop(
+                        request,
+                        channel_id=channel_id,
+                        resource_id=resource_id,
+                    )
+                except ValueError as exc:
+                    return ProviderResponse.json(
+                        {"error": {"code": 400, "message": str(exc)}},
+                        status_code=400,
+                    )
             return ProviderResponse.json({})
         if route_id == "google_drive.drives":
             return ProviderResponse.json(
@@ -1346,6 +1548,16 @@ class GustoAdapter(_WaveBAdapter):
         state = request.source_state
         route_id = request.route.route_id
         if route_id == "gusto.oauth_token":
+            rejected = validate_lifecycle_refresh_grant(request)
+            if rejected is not None:
+                return rejected
+            lifecycle = lifecycle_token_response(
+                request,
+                token_type="Bearer",
+                include_refresh_token=True,
+            )
+            if lifecycle is not None:
+                return ProviderResponse.json(lifecycle)
             return ProviderResponse.json(
                 {
                     "access_token": "lab-gusto-access-token",
@@ -1354,6 +1566,9 @@ class GustoAdapter(_WaveBAdapter):
                     "token_type": "Bearer",
                 }
             )
+        rejected = require_lifecycle_access_token(request)
+        if rejected is not None:
+            return rejected
         company_uuid = str(request.path_params["company_uuid"])
         if route_id == "gusto.company":
             company = state.get("company")
@@ -1656,6 +1871,17 @@ class QuickBooksAdapter(_WaveBAdapter):
 
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
         if request.route.route_id == "quickbooks.oauth_token":
+            rejected = validate_lifecycle_refresh_grant(request)
+            if rejected is not None:
+                return rejected
+            lifecycle = lifecycle_token_response(
+                request,
+                token_type="bearer",
+                include_refresh_token=True,
+                refresh_expiry_field="x_refresh_token_expires_in",
+            )
+            if lifecycle is not None:
+                return ProviderResponse.json(lifecycle)
             return ProviderResponse.json(
                 {
                     "access_token": "lab-quickbooks-access-token",
@@ -1665,6 +1891,9 @@ class QuickBooksAdapter(_WaveBAdapter):
                     "token_type": "bearer",
                 }
             )
+        rejected = require_lifecycle_access_token(request)
+        if rejected is not None:
+            return rejected
         if request.route.route_id == "quickbooks.company_info":
             return ProviderResponse.json({"CompanyInfo": {"CompanyName": "Sandbox Co"}})
         sql = request.query_one("query", "") or ""
@@ -1746,6 +1975,21 @@ class RampAdapter(_WaveBAdapter):
         route_id = request.route.route_id
         state = request.source_state
         if route_id == "ramp.token":
+            rejected = validate_lifecycle_client_credentials(request)
+            if rejected is not None:
+                return rejected
+            lifecycle = lifecycle_token_response(
+                request,
+                token_type="Bearer",
+                extra={
+                    "scope": (
+                        "transactions:read reimbursements:read "
+                        "cards:read users:read business:read"
+                    )
+                },
+            )
+            if lifecycle is not None:
+                return ProviderResponse.json(lifecycle)
             return ProviderResponse.json(
                 {
                     "access_token": "mock-ramp-access-token",
@@ -1757,6 +2001,9 @@ class RampAdapter(_WaveBAdapter):
                     ),
                 }
             )
+        rejected = require_lifecycle_access_token(request)
+        if rejected is not None:
+            return rejected
         if route_id == "ramp.business":
             return ProviderResponse.json(
                 {

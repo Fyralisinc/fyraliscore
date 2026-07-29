@@ -33,6 +33,11 @@ from .protocol import (
     ProviderResponse,
     ProviderRoute,
 )
+from .renewal_lifecycle import (
+    lifecycle_token_response,
+    require_lifecycle_access_token,
+    validate_lifecycle_refresh_grant,
+)
 
 
 def _params(request: ProviderRequest) -> dict[str, str]:
@@ -877,6 +882,17 @@ class LinkedinAdapter(_WaveCDAdapter):
 
     async def handle(self, request: ProviderRequest) -> ProviderResponse:
         if request.route.route_id == "linkedin.oauth_token":
+            rejected = validate_lifecycle_refresh_grant(request)
+            if rejected is not None:
+                return rejected
+            lifecycle = lifecycle_token_response(
+                request,
+                token_type=None,
+                include_refresh_token=True,
+                refresh_expiry_field="refresh_token_expires_in",
+            )
+            if lifecycle is not None:
+                return ProviderResponse.json(lifecycle)
             return ProviderResponse.json(
                 {
                     "access_token": "lab-linkedin-access-token",
@@ -885,6 +901,9 @@ class LinkedinAdapter(_WaveCDAdapter):
                     "refresh_token_expires_in": 31_536_000,
                 }
             )
+        rejected = require_lifecycle_access_token(request)
+        if rejected is not None:
+            return rejected
         if not _bearer(request):
             return _unauthorized("LinkedIn requires a Bearer access token")
         version = request.headers.get("linkedin-version")

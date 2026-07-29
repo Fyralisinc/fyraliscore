@@ -140,9 +140,7 @@ def _suite(
     history_supported: bool,
 ) -> LoadSuite:
     source = source_definition(source_id)
-    evidence_id = (
-        f"{source.certification.evidence_id}.fyralis_runtime_contract"
-    )
+    evidence_id = f"{source.certification.evidence_id}.fyralis_runtime_contract"
     quota_mappings = _load_quota_mappings(source_id)
     control_proofs = (
         ("binding_invocation", "quota_mapping")
@@ -160,9 +158,7 @@ def _suite(
         "quota_mapping",
     )
     live_data_proofs = tuple(
-        proof_id
-        for proof_id in data_proofs
-        if proof_id != "quota_mapping"
+        proof_id for proof_id in data_proofs if proof_id != "quota_mapping"
     )
 
     def control(
@@ -185,9 +181,7 @@ def _suite(
             cursor_applicability="not_applicable",
             quota_mappings=quota_mappings if provider_calls else (),
             receipt_proof_requirements=(
-                control_proofs
-                if provider_calls
-                else ("binding_invocation",)
+                control_proofs if provider_calls else ("binding_invocation",)
             ),
         )
 
@@ -195,9 +189,7 @@ def _suite(
         operation_name: str,
     ) -> ExecutableLoadOperation:
         if source.fetcher_binding is None:
-            raise RuntimeError(
-                f"source {source_id!r} has no historical fetch binding"
-            )
+            raise RuntimeError(f"source {source_id!r} has no historical fetch binding")
         return ExecutableLoadOperation(
             operation_id=f"{source_id}.{operation_name}",
             executable_binding=source.fetcher_binding,
@@ -216,16 +208,54 @@ def _suite(
             ),
         )
 
+    def periodic_renewal() -> ExecutableLoadOperation:
+        renewal = source.renewal
+        if renewal is None:
+            raise RuntimeError(f"source {source_id!r} has no bounded renewal contract")
+        renewal_operation_ids = (
+            renewal.operation_id,
+            *renewal.supporting_operation_ids,
+        )
+        renewal_quota_mappings = tuple(
+            mapping
+            for mapping in quota_mappings
+            if mapping.operation_id in renewal_operation_ids
+        )
+        mapped_operation_ids = {
+            mapping.operation_id for mapping in renewal_quota_mappings
+        }
+        if mapped_operation_ids != set(renewal_operation_ids):
+            raise RuntimeError(
+                f"source {source_id!r} renewal operations require exact quota "
+                f"mappings: expected {renewal_operation_ids!r}, got "
+                f"{tuple(sorted(mapped_operation_ids))!r}"
+            )
+        return ExecutableLoadOperation(
+            operation_id=f"{source_id}.token_or_watch_renewal",
+            executable_binding=renewal.invoker_binding,
+            evidence_id=evidence_id,
+            kind="control",
+            execution_frequency="periodic",
+            cadence_seconds=renewal.cadence_seconds,
+            raw_cardinality="none",
+            normalized_cardinality="none",
+            observation_cardinality="none",
+            cursor_applicability="not_applicable",
+            quota_mappings=renewal_quota_mappings,
+            receipt_proof_requirements=(
+                "binding_invocation",
+                "quota_mapping",
+                "renewal_state",
+                "secret_redacted",
+            ),
+        )
+
     validation_runtime = source.certification.validation_runtime
     if validation_runtime is None:
-        raise RuntimeError(
-            f"source {source_id!r} has no validation runtime"
-        )
+        raise RuntimeError(f"source {source_id!r} has no validation runtime")
     live_receive = ExecutableLoadOperation(
         operation_id=(
-            f"{source_id}.receive"
-            if kind == "live"
-            else f"{source_id}.live_receive"
+            f"{source_id}.receive" if kind == "live" else f"{source_id}.live_receive"
         ),
         executable_binding=validation_runtime.live_event_binding,
         evidence_id=evidence_id,
@@ -246,10 +276,7 @@ def _suite(
             else ("assert_history_unsupported",)
         )
         if history_supported:
-            if (
-                source.planner_binding is None
-                or source.reconciler_binding is None
-            ):
+            if source.planner_binding is None or source.reconciler_binding is None:
                 raise RuntimeError(
                     f"source {source_id!r} has incomplete history bindings"
                 )
@@ -281,10 +308,7 @@ def _suite(
             "token_or_watch_renewal",
         )
         if history_supported:
-            if (
-                source.planner_binding is None
-                or source.reconciler_binding is None
-            ):
+            if source.planner_binding is None or source.reconciler_binding is None:
                 raise RuntimeError(
                     f"source {source_id!r} has incomplete history bindings"
                 )
@@ -306,52 +330,40 @@ def _suite(
             )
         else:
             executable_operations = (live_receive,)
-    requires_renewal = (
-        source.credential_refresh is not None
-        or any(
-            worker.role == "watch_renewal"
-            for worker in source.live_runtime.workers
-        )
-    )
+        if source.renewal is not None:
+            executable_operations = (
+                *executable_operations,
+                periodic_renewal(),
+            )
     absence_assertions: tuple[LoadOperationContractAbsence, ...] = ()
-    if kind == "combined":
+    if kind == "combined" and source.renewal is None:
         absence_assertions = (
             LoadOperationContractAbsence(
                 operation_id=f"{source_id}.token_or_watch_renewal",
                 evidence_id=(
-                    f"{source.certification.evidence_id}."
-                    "fyralis_runtime_contract"
+                    f"{source.certification.evidence_id}." "fyralis_runtime_contract"
                 ),
                 missing_contract="bounded_callable",
                 reason=(
-                    (
-                        "the source requires renewal but exposes no bounded "
-                        "one-shot callable; long-running launchers and policy "
-                        "metadata are not offerable load operations"
-                    )
-                    if requires_renewal
-                    else (
-                        "the source contract declares no token or watch "
-                        "renewal semantic"
-                    )
+                    "the source contract declares no token or watch " "renewal semantic"
                 ),
-                blocks_execution=requires_renewal,
+                blocks_execution=False,
             ),
         )
-        if not history_supported:
-            absence_assertions = (
-                LoadOperationContractAbsence(
-                    operation_id=f"{source_id}.history_rejection",
-                    evidence_id=evidence_id,
-                    missing_contract="bounded_callable",
-                    reason=(
-                        "historical ingestion is genuinely not applicable; "
-                        "there is no data-plane history operation to offer"
-                    ),
-                    blocks_execution=False,
+    if kind == "combined" and not history_supported:
+        absence_assertions = (
+            LoadOperationContractAbsence(
+                operation_id=f"{source_id}.history_rejection",
+                evidence_id=evidence_id,
+                missing_contract="bounded_callable",
+                reason=(
+                    "historical ingestion is genuinely not applicable; "
+                    "there is no data-plane history operation to offer"
                 ),
-                *absence_assertions,
-            )
+                blocks_execution=False,
+            ),
+            *absence_assertions,
+        )
     return LoadSuite(
         kind=kind,
         operation_mix=tuple(f"{source_id}.{x}" for x in mix),
@@ -600,9 +612,7 @@ def _validate_source_linkage(spec: SourceCertificationSpec) -> None:
             f"source {spec.source_id!r} {support} history but its "
             "certification callable bindings disagree"
         )
-    if (spec.live_fixture_factory_binding is not None) != (
-        source.history is None
-    ):
+    if (spec.live_fixture_factory_binding is not None) != (source.history is None):
         support = (
             "requires a live fixture"
             if source.history is None

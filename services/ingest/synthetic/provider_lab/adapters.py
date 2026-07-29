@@ -10,6 +10,7 @@ import base64
 import copy
 import json
 import threading
+from datetime import datetime
 from typing import Any, Mapping
 from urllib.parse import parse_qs
 
@@ -22,6 +23,13 @@ from .protocol import (
     ProviderRequest,
     ProviderResponse,
     ProviderRoute,
+)
+from .renewal_lifecycle import (
+    LifecycleWatchRegistry,
+    lifecycle_history_id,
+    lifecycle_token_response,
+    lifecycle_watch_expiration,
+    require_lifecycle_access_token,
 )
 from .wave_b import seed_wave_b_fixtures, wave_b_adapters
 from .wave_cd import seed_wave_cd_fixtures, wave_cd_adapters
@@ -672,10 +680,34 @@ class GmailAdapter:
     def __init__(self) -> None:
         self._pubsub_lock = threading.RLock()
         self._pubsub_iam_policies: dict[str, dict[str, Any]] = {}
+        self._lifecycle_watches = LifecycleWatchRegistry(self.source)
 
     def reset(self) -> None:
         with self._pubsub_lock:
             self._pubsub_iam_policies.clear()
+        self._lifecycle_watches.reset()
+
+    def reset_lifecycle_watches(self) -> None:
+        """Discard opt-in watch state when the control-plane fixture changes."""
+
+        self._lifecycle_watches.reset()
+
+    def watch_lifecycle_snapshot(
+        self,
+        *,
+        now: datetime,
+        source_state: Mapping[str, Any],
+        scope: str | None = None,
+        channel_id: str | None = None,
+        resource_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._lifecycle_watches.snapshot(
+            now=now,
+            source_state=source_state,
+            scope=scope,
+            channel_id=channel_id,
+            resource_id=resource_id,
+        )
 
     def default_state(self) -> Mapping[str, Any]:
         return {
@@ -713,6 +745,12 @@ class GmailAdapter:
             form = parse_qs(request.body.decode("utf-8", "replace"))
             assertion = (form.get("assertion") or [""])[0]
             email = (_decode_jwt_sub(assertion) or "unknown@provider-lab").lower()
+            lifecycle = lifecycle_token_response(
+                request,
+                token_type="Bearer",
+            )
+            if lifecycle is not None:
+                return ProviderResponse.json(lifecycle)
             return ProviderResponse.json(
                 {
                     "access_token": f"lab-gmail::{email}",
@@ -720,6 +758,10 @@ class GmailAdapter:
                     "token_type": "Bearer",
                 }
             )
+
+        rejected = require_lifecycle_access_token(request)
+        if rejected is not None:
+            return rejected
 
         if route_id.startswith("gmail.directory_"):
             return self._directory(request)
@@ -755,6 +797,20 @@ class GmailAdapter:
         if route_id == "gmail.history_list":
             return self._history(request, mailbox)
         if route_id == "gmail.watch":
+            expiration = lifecycle_watch_expiration(request)
+            if expiration is not None:
+                history_id = lifecycle_history_id(request)
+                self._lifecycle_watches.register(
+                    request,
+                    target="users/me",
+                    history_id=history_id,
+                )
+                return ProviderResponse.json(
+                    {
+                        "historyId": history_id,
+                        "expiration": expiration,
+                    }
+                )
             return ProviderResponse.json(
                 {
                     "historyId": str(mailbox["current_history_id"]),
@@ -762,6 +818,7 @@ class GmailAdapter:
                 }
             )
         if route_id == "gmail.stop":
+            self._lifecycle_watches.stop(request)
             return ProviderResponse.json({})
         if route_id in {
             "gmail.pubsub_topic",

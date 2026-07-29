@@ -1,7 +1,7 @@
 {
   "schema_version": "fyralis.source-certification-execution-binding.v1",
   "source_id": "gmail",
-  "spec_hash": "97cc5282befdc1010968c55de4f0783937c9222411b5fbc6f39da98cf0ea3d6a",
+  "spec_hash": "c32f80122de9de1cb6edb91bd1b0da1cca48c046e8cdc42959995b6526091031",
   "stages": {
     "canary": {
       "argv": [
@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "be1ae1ee2335ddd276682fd67303ac77d6558e3f3563f69ad764d2f22aa38322"
+        "081de831ab4becad20d54792beedc418d71e231ccf53771db321f7b061893776"
       ],
       "credential_env": [
         "FYRALIS_CANARY_GMAIL"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "be1ae1ee2335ddd276682fd67303ac77d6558e3f3563f69ad764d2f22aa38322"
+        "081de831ab4becad20d54792beedc418d71e231ccf53771db321f7b061893776"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "be1ae1ee2335ddd276682fd67303ac77d6558e3f3563f69ad764d2f22aa38322"
+        "081de831ab4becad20d54792beedc418d71e231ccf53771db321f7b061893776"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "be1ae1ee2335ddd276682fd67303ac77d6558e3f3563f69ad764d2f22aa38322"
+        "081de831ab4becad20d54792beedc418d71e231ccf53771db321f7b061893776"
       ],
       "credential_env": [],
       "required_env": [],

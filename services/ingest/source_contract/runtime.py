@@ -52,6 +52,7 @@ WebhookSecretLoaderCallable = Callable[..., Any]
 WebhookVerifiedHandlerCallable = Callable[..., Any]
 DedicatedIngressCallable = Callable[..., Any]
 LiveWorkerCallable = Callable[..., Any]
+RenewalInvokerCallable = Callable[..., Any]
 
 _CALLABLE_REF_RE = re.compile(
     r"^(?P<module>[a-z_][a-z0-9_]*(?:\.[a-z_][a-z0-9_]*)*):"
@@ -89,6 +90,10 @@ class InstallationBindingNotFoundError(BindingResolutionError):
 
 class LiveWorkerNotFoundError(BindingResolutionError):
     """A source has no live worker with the requested component identity."""
+
+
+class RenewalNotSupportedError(BindingResolutionError):
+    """The source declares no bounded renewal operation."""
 
 
 class ManagedLiveRuntimeError(BindingResolutionError):
@@ -177,6 +182,17 @@ def resolve_fetcher(source_name: str) -> HistoryCallable:
 
 def resolve_reconciler(source_name: str) -> HistoryCallable:
     return resolve_history_binding(source_name, "reconciler")
+
+
+def resolve_renewal_invoker(source_name: str) -> RenewalInvokerCallable:
+    """Resolve one source's bounded, exact-installation renewal invoker."""
+
+    source = source_definition(source_name)
+    if source.renewal is None:
+        raise RenewalNotSupportedError(
+            f"source {source.source_id!r} has no bounded renewal contract"
+        )
+    return resolve_callable_reference(source.renewal.invoker_binding)
 
 
 def resolve_handler(channel: str) -> NormalizerCallable:
@@ -447,8 +463,7 @@ def build_normalizer_ingress_headers(
     ingress_id, header_projection = matches[0]
     if not isinstance(ingress_metadata, Mapping):
         raise NormalizerIngressMetadataError(
-            f"webhook ingress {ingress_id!r} ingress_metadata must be "
-            "a mapping"
+            f"webhook ingress {ingress_id!r} ingress_metadata must be " "a mapping"
         )
 
     headers: dict[str, str] = {}
@@ -499,8 +514,7 @@ def live_worker_definition(
         return source.live_runtime.worker(component_id)
     except KeyError as exc:
         raise LiveWorkerNotFoundError(
-            f"source {source.source_id!r} has no live worker "
-            f"{component_id!r}"
+            f"source {source.source_id!r} has no live worker " f"{component_id!r}"
         ) from exc
 
 
@@ -611,6 +625,8 @@ def validate_runtime_bindings() -> None:
     for source in SOURCE_DEFINITIONS:
         references.update(source.idempotency_builder_bindings)
         references.update(source.metrics_export_bindings)
+        if source.renewal is not None:
+            references.add(source.renewal.invoker_binding)
         if source.finance_testing_binding is not None:
             references.add(source.finance_testing_binding)
         for worker in source.live_runtime.workers:
@@ -750,6 +766,8 @@ __all__ = [
     "ProviderSetupBuilderCallable",
     "ProviderSetupNotesCallable",
     "RehearsalArtifactBuilderCallable",
+    "RenewalInvokerCallable",
+    "RenewalNotSupportedError",
     "override_history_bindings",
     "resolve_callable_reference",
     "resolve_dedicated_ingress_dispatcher",
@@ -770,6 +788,7 @@ __all__ = [
     "resolve_provider_setup_builder",
     "resolve_provider_setup_notes",
     "resolve_reconciler",
+    "resolve_renewal_invoker",
     "resolve_rehearsal_artifact_builder",
     "resolve_webhook_tenant_extractor",
     "resolve_webhook_ingress_metadata_builder",

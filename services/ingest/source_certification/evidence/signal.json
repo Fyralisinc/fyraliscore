@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://github.com/AsamK/signal-cli/blob/master/man/signal-cli-jsonrpc.5.adoc",
       "api_version": "signal-cli JSON-RPC",
-      "schema_sha256": "da5b2cbc1f9465dc25ff5e3d5437b6a785bd3f0b18ca760fdc00626bae0e1c50",
+      "schema_sha256": "e8bf62b798466c2cc82bc05806144ff851b6f8115e0f73a3fb28589a87ada62f",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

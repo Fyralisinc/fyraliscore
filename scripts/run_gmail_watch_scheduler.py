@@ -18,6 +18,10 @@ from worker_observability import (
 from lib.shared.db import asyncpg_pool_runtime_kwargs, positive_int_env
 from services.app.gateway.db_bootstrap import _register_codecs
 from services.ingest.integrations.gmail.watch_scheduler import run_forever
+from services.ingest.integrations.provider_transport_runtime import (
+    close_provider_transport_runtime,
+    get_provider_transport_runtime,
+)
 
 
 async def _main() -> None:
@@ -45,10 +49,16 @@ async def _main() -> None:
     install_signal_handlers(stop_event)
     health_shutdown = start_worker_health("gmail_watch_scheduler", stop_event)
 
-    log.info("gmail_watch_scheduler.starting")
+    provider_runtime = None
     try:
+        # Watch creation may mint a DWD credential and always performs a
+        # provider request. Treat missing distributed quota configuration as a
+        # process-start failure, never as a per-watch manual-repair outcome.
+        provider_runtime = get_provider_transport_runtime(required=True)
+        log.info("gmail_watch_scheduler.starting")
         await run_forever(pool, stop_event=stop_event)
     finally:
+        await close_provider_transport_runtime(provider_runtime)
         await health_shutdown()
         await pool.close()
 

@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://docs.ramp.com/developer-api/v1/guides/getting-started",
       "api_version": "Ramp Developer API",
-      "schema_sha256": "d78d97c62d07a09910668916b07982786d15b5eb4b401d388d260f7dcfe604dd",
+      "schema_sha256": "d985161216f8ef97c4112278f5b31eb9e91af9d2fef28efdb30c5ebedbd2046c",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

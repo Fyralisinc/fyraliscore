@@ -50,6 +50,7 @@ surface as `RetryLater` when their bounded inline retry budget is exhausted.
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import os
 import time
@@ -61,6 +62,8 @@ import httpx
 import structlog
 
 from lib.observability import counter, histogram
+from lib.shared.env import is_prod
+from lib.shared.errors import SecretNotFoundError
 from lib.shared.provider_transport import (
     ProviderRateLimited,
     ProviderTimeoutError,
@@ -68,6 +71,7 @@ from lib.shared.provider_transport import (
     RetryLater,
     parse_retry_after,
 )
+from lib.shared.tenant_context import bind_tenant
 from services.ingest.integrations.provider_transport import (
     ProviderRequestBinding,
     explicit_local_transport,
@@ -415,7 +419,15 @@ async def refresh_access_token(
         # If the provider rotates but echoed nothing, keep the prior token.
         new_refresh = returned if isinstance(returned, str) and returned else refresh_token
 
-    expires_in = _coerce_int(body.get("expires_in"), config.default_expires_in)
+    try:
+        expires_in = _coerce_int(body.get("expires_in"), config.default_expires_in)
+    except ValueError as exc:
+        _OUTCOMES.inc(provider=config.provider, outcome="invalid_response")
+        raise OAuthRefreshError(
+            config.provider,
+            "token endpoint response has an invalid expires_in",
+            status=422,
+        ) from exc
 
     return RefreshedToken(
         access_token=access,
@@ -456,6 +468,8 @@ async def refresh_and_persist(
     refresh_secret_ref: str | None,
     now: datetime | None = None,
     request_binding: ProviderRequestBinding | None = None,
+    renewal_lease: Any | None = None,
+    minimum_expires_in_seconds: int | None = None,
 ) -> RefreshedToken:
     """Perform the token exchange AND persist the result onto the install row.
 
@@ -467,22 +481,71 @@ async def refresh_and_persist(
 
     Permanent refresh failures raise `OAuthRefreshError`; retryable failures
     raise `RetryLater` so the workflow can persist `next_attempt_at`.
+
+    A bounded lifecycle caller supplies ``renewal_lease``.  In that mode the
+    exact active installation is checked before secret creation and the final
+    installation mutation is fenced by the same owner/version lease.  A stale
+    worker therefore cannot overwrite a rotated credential; any newly-created
+    opaque refs are best-effort deleted if the fenced update loses ownership.
     """
     now = now or datetime.now(timezone.utc)
+    if is_prod() and renewal_lease is None:
+        raise RuntimeError(
+            "production credential refresh must hold an exact renewal lease"
+        )
+    if minimum_expires_in_seconds is not None and (
+        isinstance(minimum_expires_in_seconds, bool)
+        or not isinstance(minimum_expires_in_seconds, int)
+        or minimum_expires_in_seconds <= 0
+    ):
+        raise ValueError("minimum_expires_in_seconds must be a positive integer")
     config = REFRESH_CONFIGS[provider]
+    if renewal_lease is not None:
+        await _assert_active_renewal_lease(
+            pool=pool,
+            provider=provider,
+            config=config,
+            tenant_id=tenant_id,
+            install_row_id=install_row_id,
+            renewal_lease=renewal_lease,
+        )
     client_id, env_client_secret = client_credentials_for(provider)
 
     refresh_token = None
     if config.grant_type == "refresh_token":
-        refresh_token = await _resolve_secret(
-            secret_store, refresh_secret_ref, tenant_id=tenant_id,
-        )
+        try:
+            refresh_token = await _resolve_secret(
+                secret_store,
+                refresh_secret_ref,
+                tenant_id=tenant_id,
+            )
+        except SecretNotFoundError as exc:
+            raise OAuthRefreshError(
+                provider,
+                "refresh credential is unavailable for this installation",
+                status=401,
+            ) from exc
+        if not refresh_token:
+            raise OAuthRefreshError(
+                provider,
+                "refresh credential is unavailable for this installation",
+                status=401,
+            )
 
     client_secret = env_client_secret
     if config.client_credentials_from_install:
-        raw_install_secret = await _resolve_secret(
-            secret_store, refresh_secret_ref, tenant_id=tenant_id,
-        )
+        try:
+            raw_install_secret = await _resolve_secret(
+                secret_store,
+                refresh_secret_ref,
+                tenant_id=tenant_id,
+            )
+        except SecretNotFoundError as exc:
+            raise OAuthRefreshError(
+                provider,
+                "client credential is unavailable for this installation",
+                status=401,
+            ) from exc
         install_client_id, install_client_secret = decode_client_credentials_secret(
             raw_install_secret,
         )
@@ -491,9 +554,18 @@ async def refresh_and_persist(
     elif config.client_secret_from_install:
         # Carta: the client_credentials secret is the per-install material
         # stored under refresh_secret_ref (not an OAuth refresh token).
-        client_secret = await _resolve_secret(
-            secret_store, refresh_secret_ref, tenant_id=tenant_id,
-        ) or env_client_secret
+        try:
+            client_secret = await _resolve_secret(
+                secret_store,
+                refresh_secret_ref,
+                tenant_id=tenant_id,
+            ) or env_client_secret
+        except SecretNotFoundError as exc:
+            raise OAuthRefreshError(
+                provider,
+                "client credential is unavailable for this installation",
+                status=401,
+            ) from exc
 
     if request_binding is None:
         runtime = get_provider_transport_runtime()
@@ -523,35 +595,225 @@ async def refresh_and_persist(
         now=now,
         request_binding=request_binding,
     )
-
-    new_access_ref = await secret_store.put(
-        refreshed.access_token,
-        label=f"{provider}_access_token:{install_row_id}",
-        tenant_id=tenant_id,
-    )
-    new_refresh_ref = refresh_secret_ref
-    if refreshed.refresh_token:
-        new_refresh_ref = await secret_store.put(
-            refreshed.refresh_token,
-            label=f"{provider}_refresh_token:{install_row_id}",
-            tenant_id=tenant_id,
+    if (
+        minimum_expires_in_seconds is not None
+        and refreshed.expires_at
+        <= now + timedelta(seconds=minimum_expires_in_seconds)
+    ):
+        raise OAuthRefreshError(
+            provider,
+            "token endpoint response expires before the renewal safety window",
+            status=422,
         )
 
-    # Column names are identical across the four install tables; the table name
-    # comes from the trusted REFRESH_CONFIGS literal (never user input).
-    await pool.execute(
-        f"UPDATE {config.install_table} "
-        "SET secret_ref = $1, refresh_secret_ref = $2, token_expires_at = $3 "
-        "WHERE id = $4 AND tenant_id = $5",
-        new_access_ref, new_refresh_ref, refreshed.expires_at,
-        install_row_id, tenant_id,
-    )
+    created_refs: list[str] = []
+    try:
+        new_access_ref = await secret_store.put(
+            refreshed.access_token,
+            label=f"{provider}_access_token:{install_row_id}",
+            tenant_id=tenant_id,
+        )
+        created_refs.append(new_access_ref)
+        new_refresh_ref = refresh_secret_ref
+        if refreshed.refresh_token:
+            new_refresh_ref = await secret_store.put(
+                refreshed.refresh_token,
+                label=f"{provider}_refresh_token:{install_row_id}",
+                tenant_id=tenant_id,
+            )
+            created_refs.append(new_refresh_ref)
+
+        if renewal_lease is None:
+            # Column names are identical across the refresh-managed install
+            # tables; the table name comes from REFRESH_CONFIGS, which is
+            # derived from the immutable catalog rather than request data.
+            update_result = await pool.execute(
+                f"UPDATE {config.install_table} "
+                "SET secret_ref = $1, refresh_secret_ref = $2, token_expires_at = $3 "
+                "WHERE id = $4 AND tenant_id = $5 AND disabled_at IS NULL",
+                new_access_ref, new_refresh_ref, refreshed.expires_at,
+                install_row_id, tenant_id,
+            )
+            if update_result == "UPDATE 0":
+                raise OAuthRefreshError(
+                    provider,
+                    "installation unavailable while persisting refreshed credentials",
+                    status=401,
+                )
+        else:
+            await _persist_with_renewal_lease(
+                pool=pool,
+                provider=provider,
+                config=config,
+                tenant_id=tenant_id,
+                install_row_id=install_row_id,
+                access_ref=new_access_ref,
+                refresh_ref=new_refresh_ref,
+                expires_at=refreshed.expires_at,
+                renewal_lease=renewal_lease,
+            )
+    except Exception:
+        # A fenced update can legitimately lose ownership after the provider
+        # exchange.  Do not leave newly-created secret rows orphaned.  Existing
+        # refs are never put into ``created_refs`` and are therefore untouched.
+        delete = getattr(secret_store, "delete", None)
+        if callable(delete):
+            for ref in created_refs:
+                with contextlib.suppress(Exception):  # cleanup must not mask root cause
+                    await delete(ref, tenant_id=tenant_id)
+        raise
     log.info(
         "oauth_refresh.persisted",
         provider=provider, install_row_id=str(install_row_id),
         rotated=bool(refreshed.refresh_token),
     )
     return refreshed
+
+
+def _lease_identity(
+    renewal_lease: Any,
+    *,
+    provider: str,
+    tenant_id: Any,
+    install_row_id: Any,
+) -> tuple[str, int]:
+    """Validate the generic job lease before it fences an install mutation."""
+
+    key = getattr(renewal_lease, "key", None)
+    owner = getattr(renewal_lease, "owner", None)
+    version = getattr(renewal_lease, "version", None)
+    if (
+        key is None
+        or getattr(key, "source_id", None) != provider
+        or str(getattr(key, "tenant_id", "")) != str(tenant_id)
+        or str(getattr(key, "installation_id", "")) != str(install_row_id)
+        or getattr(key, "target_key", None) != "installation"
+        or not isinstance(owner, str)
+        or not owner
+        or isinstance(version, bool)
+        or not isinstance(version, int)
+        or version < 1
+    ):
+        raise OAuthRefreshError(
+            provider,
+            "credential renewal lease does not match the exact installation",
+            status=401,
+        )
+    return owner, version
+
+
+async def _assert_active_renewal_lease(
+    *,
+    pool: Any,
+    provider: str,
+    config: RefreshConfig,
+    tenant_id: Any,
+    install_row_id: Any,
+    renewal_lease: Any,
+) -> None:
+    """Perform a short, pre-secret active-install/fence validation."""
+
+    owner, version = _lease_identity(
+        renewal_lease,
+        provider=provider,
+        tenant_id=tenant_id,
+        install_row_id=install_row_id,
+    )
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            async with bind_tenant(conn, tenant_id) as tctx:
+                row = await tctx.fetchrow(
+                    f"""
+                    SELECT install.id
+                      FROM {config.install_table} install
+                      JOIN source_renewal_jobs job
+                        ON job.source_id = $3
+                       AND job.tenant_id = install.tenant_id
+                       AND job.installation_id = install.id
+                       AND job.target_key = 'installation'
+                       AND job.lease_owner = $4
+                       AND job.lease_version = $5
+                       AND job.lease_expires_at > now()
+                     WHERE install.id = $1
+                       AND install.tenant_id = $2
+                       AND install.disabled_at IS NULL
+                    """,
+                    install_row_id,
+                    tenant_id,
+                    provider,
+                    owner,
+                    version,
+                )
+    if row is None:
+        raise OAuthRefreshError(
+            provider,
+            "installation unavailable before credential renewal",
+            status=401,
+        )
+
+
+async def _persist_with_renewal_lease(
+    *,
+    pool: Any,
+    provider: str,
+    config: RefreshConfig,
+    tenant_id: Any,
+    install_row_id: Any,
+    access_ref: str,
+    refresh_ref: str | None,
+    expires_at: datetime,
+    renewal_lease: Any,
+) -> None:
+    """Fence the final token-ref mutation with the claimed renewal lease."""
+
+    owner, version = _lease_identity(
+        renewal_lease,
+        provider=provider,
+        tenant_id=tenant_id,
+        install_row_id=install_row_id,
+    )
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            async with bind_tenant(conn, tenant_id) as tctx:
+                row = await tctx.fetchrow(
+                    f"""
+                    WITH held_lease AS MATERIALIZED (
+                        SELECT source_id
+                          FROM source_renewal_jobs
+                         WHERE source_id = $6
+                           AND tenant_id = $5
+                           AND installation_id = $4
+                           AND target_key = 'installation'
+                           AND lease_owner = $7
+                           AND lease_version = $8
+                           AND lease_expires_at > now()
+                         FOR UPDATE
+                    )
+                    UPDATE {config.install_table}
+                       SET secret_ref = $1,
+                           refresh_secret_ref = $2,
+                           token_expires_at = $3
+                     WHERE id = $4
+                       AND tenant_id = $5
+                       AND disabled_at IS NULL
+                       AND EXISTS (SELECT 1 FROM held_lease)
+                    RETURNING id
+                    """,
+                    access_ref,
+                    refresh_ref,
+                    expires_at,
+                    install_row_id,
+                    tenant_id,
+                    provider,
+                    owner,
+                    version,
+                )
+    if row is None:
+        raise OAuthRefreshError(
+            provider,
+            "credential renewal lease lost before installation persistence",
+            status=401,
+        )
 
 
 async def ensure_fresh_access_token(
@@ -582,24 +844,128 @@ async def ensure_fresh_access_token(
     """
     now = now or datetime.now(timezone.utc)
     if force or needs_refresh(token_expires_at, now=now, skew_seconds=skew_seconds):
-        refreshed = await refresh_and_persist(
-            provider=provider, pool=pool, secret_store=secret_store, http=http,
-            tenant_id=tenant_id, install_row_id=install_row_id,
-            refresh_secret_ref=refresh_secret_ref, now=now,
+        return await _refresh_through_renewal_job(
+            provider=provider,
+            pool=pool,
+            secret_store=secret_store,
+            http=http,
+            tenant_id=tenant_id,
+            install_row_id=install_row_id,
+            now=now,
+            force=force,
             request_binding=request_binding,
         )
-        return refreshed.access_token
     # Still valid — return the current token plaintext.
     token = await _resolve_secret(secret_store, current_access_ref, tenant_id=tenant_id)
     if token is None:
         # No cached token but not yet expired per the row — refresh to recover.
-        refreshed = await refresh_and_persist(
-            provider=provider, pool=pool, secret_store=secret_store, http=http,
-            tenant_id=tenant_id, install_row_id=install_row_id,
-            refresh_secret_ref=refresh_secret_ref, now=now,
+        return await _refresh_through_renewal_job(
+            provider=provider,
+            pool=pool,
+            secret_store=secret_store,
+            http=http,
+            tenant_id=tenant_id,
+            install_row_id=install_row_id,
+            now=now,
+            force=True,
             request_binding=request_binding,
         )
-        return refreshed.access_token
+    return token
+
+
+async def _refresh_through_renewal_job(
+    *,
+    provider: str,
+    pool: Any,
+    secret_store: Any,
+    http: httpx.AsyncClient,
+    tenant_id: Any,
+    install_row_id: Any,
+    now: datetime,
+    force: bool,
+    request_binding: ProviderRequestBinding | None,
+) -> str:
+    """Use the same exact durable lease for scheduled and reactive refresh.
+
+    A 401-triggered refresh is not an exception to the single-writer rule.
+    It can race the periodic renewal precisely when a rotating refresh token is
+    most vulnerable. The bounded lifecycle owns the provider exchange and
+    fenced persistence; this helper reads the resulting opaque secret only
+    after a successful/no-longer-due settlement.
+    """
+
+    # Local import avoids a module cycle: bounded renewal delegates its actual
+    # token exchange to ``refresh_and_persist`` above.
+    from services.ingest.integrations.bounded_renewal import (
+        RenewalInvocation,
+        run_credential_renewal,
+    )
+
+    outcome = await run_credential_renewal(
+        RenewalInvocation(
+            pool=pool,
+            tenant_id=tenant_id,
+            installation_id=install_row_id,
+            target_key="installation",
+            secret_store=secret_store,
+            http=http,
+            request_binding=request_binding,
+            now=now,
+            force=force,
+        ),
+        source_id=provider,
+    )
+    if outcome.state == "reauthorization_required":
+        raise OAuthRefreshError(
+            provider,
+            "credential renewal requires reauthorization",
+            status=401,
+        )
+    if outcome.state == "manual_reconciliation_required":
+        raise OAuthRefreshError(
+            provider,
+            "credential renewal requires operator reconciliation",
+            status=409,
+        )
+    if outcome.state in {"retry_scheduled", "lease_unavailable"}:
+        raise OAuthRefreshError(
+            provider,
+            "credential renewal is durably pending",
+            status=503,
+        )
+
+    config = REFRESH_CONFIGS[provider]
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            async with bind_tenant(conn, tenant_id) as tctx:
+                row = await tctx.fetchrow(
+                    f"""
+                    SELECT secret_ref
+                      FROM {config.install_table}
+                     WHERE id = $1
+                       AND tenant_id = $2
+                       AND disabled_at IS NULL
+                    """,
+                    install_row_id,
+                    tenant_id,
+                )
+    if row is None:
+        raise OAuthRefreshError(
+            provider,
+            "installation unavailable after credential renewal",
+            status=401,
+        )
+    token = await _resolve_secret(
+        secret_store,
+        row["secret_ref"],
+        tenant_id=tenant_id,
+    )
+    if token is None:
+        raise OAuthRefreshError(
+            provider,
+            "credential renewal did not persist an access token",
+            status=422,
+        )
     return token
 
 
@@ -653,10 +1019,15 @@ def _safe_json(resp: httpx.Response) -> Any:
 
 
 def _coerce_int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
+    if value is None:
         return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        raise ValueError("expires_in must be a positive integer") from None
+    if parsed <= 0:
+        raise ValueError("expires_in must be a positive integer")
+    return parsed
 
 
 __all__ = [

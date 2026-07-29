@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://developers.facebook.com/docs/messenger-platform/",
       "api_version": "Meta Graph API v23.0",
-      "schema_sha256": "625054744bae38896fd34d3789586e9948c40495f1dd380cf13d372b6cfa0a9c",
+      "schema_sha256": "8988267d597e660adcac378c83e1fb3c3d1b242cc06858733e6a3dfec87c7259",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

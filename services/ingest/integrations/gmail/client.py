@@ -410,9 +410,11 @@ class GoogleHttpClient:
                     status=403,
                     retry_after_s=60,
                 )
-        # NEVER log resp.request body / headers — they contain bearer tokens.
+        # Never retain a provider response body here. Error documents can echo
+        # request metadata or opaque credentials, and callers may persist or
+        # render this exception while handling a renewal failure.
         raise GoogleApiError(
-            f"google api error: status={resp.status_code} body={resp.text[:200]!r}",
+            f"google api error: status={resp.status_code}",
             status=resp.status_code,
         )
 

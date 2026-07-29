@@ -33,6 +33,7 @@ from services.ingest.integrations.gmail.client import (
     GoogleHttpClient,
 )
 from services.ingest.integrations.gmail.dwd import (
+    DwdError,
     DwdTokenMinter,
     ServiceAccountKey,
 )
@@ -475,6 +476,45 @@ async def test_gmail_dwd_exchange_has_exact_installation_context() -> None:
         context.tenant_id,
         context.installation_id,
     ) == ("gmail", "dwd.token.exchange", tenant_id, installation_id)
+
+
+async def test_gmail_dwd_failure_never_retains_provider_response_body() -> None:
+    tenant_id = str(uuid4())
+    installation_id = str(uuid4())
+    provider_secret = "provider-body-secret-must-not-escape"
+    http = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _request: httpx.Response(400, text=provider_secret),
+        ),
+    )
+    minter = DwdTokenMinter(
+        ServiceAccountKey(
+            client_email="svc@project.test",
+            private_key_pem="unused",
+            private_key_id="key-1",
+            token_uri="https://oauth.test/token",
+        ),
+        http_client=http,
+        provider_transport=_RecordingTransport(),
+        quota_resolver=_quota,
+    )
+    try:
+        with pytest.raises(DwdError) as raised:
+            await minter._exchange(
+                "signed-assertion",
+                source="gmail",
+                tenant_id=tenant_id,
+                installation_id=installation_id,
+                user_email="admin@example.test",
+                quota_dimensions={"project": "project-1"},
+                require_tenant_installation=True,
+            )
+    finally:
+        await http.aclose()
+
+    assert "status=400" in str(raised.value)
+    assert raised.value.status == 400
+    assert provider_secret not in str(raised.value)
 
 
 async def test_gmail_pubsub_crud_is_transport_charged_per_operation(

@@ -12,7 +12,9 @@
     "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
     "services.ingest.ingestion.planners.ramp": "945ca9f71a4b2dd6766eeb2d330f456d4c48447b4a386f558636afbc71cc61a7",
     "services.ingest.ingestion.reconcilers.ramp": "705117706376c44c0c6d6c433ed039345fa9a7aa72233228b68cf3432fcfffed",
+    "services.ingest.ingestion.workflows.credential_renewal_scheduler": "2d583eb46489347b66f9e7314b42687e465b69cff81e9e1a70eb8bd3b68cc412",
     "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
+    "services.ingest.integrations.oauth_renewal": "b15e01613d7099d1517ae3f94726e8c4d8ee67aafb8b1600aa3c72f53f0f55aa",
     "services.ingest.integrations.ramp": "b57fa8bccf148f0dfb8373f626433647155aff49d5886e670c90b946bec2c8c7",
     "services.ingest.integrations.ramp.client": "0515c8d75c4513553bad2285a434dad7d8877d843cce1c62ba4405e8ada3bfdc",
     "services.ingest.integrations.ramp.metrics": "d1bc55f3a81d63f67d93d99a9db6dc04ca50c278efa57096217a27ffe303acd9",
@@ -20,7 +22,7 @@
     "services.ingest.integrations.ramp.onboarding": "d8ee46656e3436df0d1b1b87fbf34b4998922f03fc2a262575121cee6c164427",
     "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
     "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
-    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.provider_lab.wave_b": "ac34ee5ca429c0f516d01e83f4af8e3c2e33aa994a4f01b1b4a7c93f872ad61b",
     "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
     "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
     "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
@@ -467,6 +469,18 @@
       ],
       "workers": [
         {
+          "cadence_seconds": 300,
+          "component_id": "credential_renewal",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "credential_renewal_scheduler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.credential_renewal_scheduler:run_forever",
+          "lease_scope": "installation",
+          "managed_reason": null,
+          "role": "credential_renewal",
+          "transport": null
+        },
+        {
           "cadence_seconds": 21600,
           "component_id": "periodic_reconciler",
           "deployment_owner": "fyralis_worker",
@@ -779,6 +793,15 @@
     "provider_id": "ramp",
     "provider_transport_enforced": true,
     "reconciler_binding": "services.ingest.ingestion.reconcilers.ramp:reconcile_ramp",
+    "renewal": {
+      "cadence_seconds": 300,
+      "invoker_binding": "services.ingest.integrations.oauth_renewal:renew_ramp_installation",
+      "kind": "credential",
+      "lease_scope": "installation",
+      "operation_id": "oauth.token.mint",
+      "renewal_window_seconds": 120,
+      "supporting_operation_ids": []
+    },
     "runtime_identifiers": [
       "business_id"
     ],

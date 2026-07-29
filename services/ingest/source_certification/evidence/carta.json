@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://docs.carta.com/",
       "api_version": "Carta API v1alpha",
-      "schema_sha256": "6715d062faf754eff2dcf24ae33ec74889ee011e70d58f4ebd2e5edc23f1a8f2",
+      "schema_sha256": "4da8137975d1a4a3a45cee656f6dd8560a862c2bec08168be7af70e07375307a",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

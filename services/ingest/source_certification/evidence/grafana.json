@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://grafana.com/docs/grafana/latest/developers/http_api/",
       "api_version": "Grafana HTTP API",
-      "schema_sha256": "5b1b3fcdc0f3ff03d624058bdd7a59280ad7f1142b3a0946de8bfe5cf3b20fa8",
+      "schema_sha256": "4489bc7f036403dda5e71aa267a9c6bee84e13cbb20450ded42cffb8e36572bc",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

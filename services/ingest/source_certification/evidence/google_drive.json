@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://developers.google.com/workspace/drive/api/reference/rest/v3",
       "api_version": "Drive API v3",
-      "schema_sha256": "d3caea950d2acc6bb5a9ed763cd248d43671d370562d3bf87e83e610e31d07d3",
+      "schema_sha256": "0aa41ea49b1c29f46570f078981604933644db028dde621fb8fadd33962c8210",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

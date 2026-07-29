@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://developers.notion.com/reference/intro",
       "api_version": "Notion API 2022-06-28",
-      "schema_sha256": "879711dc6e28162e20cda6807bb2ad4c3032eec57bc89a94d6c41470b7c1fc86",
+      "schema_sha256": "8b8463a313638fc86f95f2eadd26a42b51bce003a0f2f2ec113ba4926c4660e4",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

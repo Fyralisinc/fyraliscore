@@ -311,3 +311,458 @@ Calendar, Google Drive, QuickBooks, Ramp, Gusto, Carta, and LinkedIn; wire
 their provider calls through `ProviderTransport`; prove persisted renewal,
 retry/reauthorization behavior, and removal of the combined-suite renewal
 blocker in Provider Lab.
+
+---
+
+## Milestone
+
+R2a — Renewal catalog and certification wiring (complete)
+
+---
+
+## Objective
+
+Make the eight contract-declared bounded renewal invokers resolvable at
+runtime and executable as typed periodic controls in combined certification
+workloads, without claiming that the complete durable R2 lifecycle milestone
+has passed.
+
+---
+
+## Tasks Completed
+
+- Added a public runtime resolver for contract-declared renewal invokers and a
+  typed error for sources that intentionally declare no renewal.
+- Included renewal invokers in the cached startup binding guard, so a missing
+  module or renamed callable fails before the runtime accepts work.
+- Added exactly one periodic
+  `<source>.token_or_watch_renewal` combined control for Gmail, Google
+  Calendar, Google Drive, QuickBooks, Ramp, Gusto, Carta, and LinkedIn.
+- Bound each periodic control to its source-owned invoker, declared cadence,
+  exact provider operation/quota mapping, and the required
+  `binding_invocation`, `quota_mapping`, `renewal_state`, and
+  `secret_redacted` receipt proofs.
+- Removed the blocking renewal absence for those eight sources while
+  preserving one explicit nonblocking absence for every source whose contract
+  declares no renewal semantic.
+- Added renewal invokers to the execution driver's source-owned callable
+  inventory and exact execution-plan hash.
+- Added focused runtime, startup-failure, catalog, quota-mapping, absence, and
+  execution-plan tests.
+- Regenerated all contract-hash-affected certification surfaces, evidence
+  packs, and execution bindings with the repository generators.
+
+---
+
+## Decisions Made
+
+- `SourceDefinition.renewal` is the only production selector. Certification
+  derives periodic controls from that declaration rather than introducing a
+  second source-to-invoker map.
+- The certification operation ID remains the stable logical
+  `<source>.token_or_watch_renewal`; quota evidence names the exact underlying
+  provider operation such as `watch.create`, `events.watch`,
+  `changes.watch`, `oauth.token.refresh`, or `oauth.token.mint`.
+- Renewal is a periodic control and never contributes selection weight or
+  offered data rate.
+- A source without a renewal declaration keeps an explicit nonblocking
+  absence. Absence is not relabeled as execution or success.
+
+---
+
+## Files Modified
+
+- `services/ingest/source_contract/runtime.py` and
+  `services/ingest/source_contract/__init__.py` — renewal resolution, startup
+  validation, errors, and public exports.
+- `services/ingest/source_certification/catalog.py` — eight exact periodic
+  combined controls and nonblocking absence behavior.
+- `services/ingest/source_certification/execution_driver.py` — renewal
+  callable inventory and execution-plan binding.
+- Focused source-contract and source-certification tests.
+- Generated source-certification surfaces, evidence packs, and execution
+  bindings.
+
+---
+
+## Tests Executed
+
+- Focused runtime/certification/driver set: `121 passed, 1 skipped`; the skip
+  is the existing opt-in real-Redis diagnostic.
+- Full source-contract plus source-certification suites:
+  `454 passed, 1 skipped`.
+- Source-catalog, certification-surface, and execution-binding generator
+  checks: passed.
+- Ruff check and format validation over the R2a Python changes: passed.
+
+---
+
+## Problems Encountered
+
+- The first focused run found all three Google renewal bindings unresolved
+  while their source-specific invokers were still being added in parallel.
+  This produced five fail-closed test failures and no false pass.
+
+---
+
+## Resolution
+
+- Reran the exact focus set after the Gmail, Google Calendar, and Google Drive
+  invokers landed. Runtime startup validation and every source-isolated
+  callable probe then passed.
+- Regenerated the hash-pinned artifacts only after all eight declared
+  invokers resolved from the shared source state.
+
+---
+
+## Assumptions
+
+- Full R2 completion remains gated on durable renewal jobs, source-specific
+  ProviderTransport execution, lifecycle/fault evidence, Provider Lab
+  behavior, and combined validation owned by the remaining R2 work.
+
+---
+
+## Deviations
+
+No deviations.
+
+---
+
+## Next Planned Work
+
+Complete and validate the remaining R2 durable job, provider invoker,
+Provider Lab lifecycle, retry/reauthorization, and combined execution work
+before marking R2 itself complete.
+
+---
+
+## Milestone
+
+R2b — Source-neutral durable renewal-job substrate (complete)
+
+---
+
+## Objective
+
+Provide the small, durable database boundary needed by every bounded watch or
+credential renewal without introducing a second source registry or storing
+provider credentials in scheduling state.
+
+---
+
+## Tasks Completed
+
+- Added `source_renewal_jobs`, keyed by the exact source, tenant,
+  installation, and non-secret target selector.
+- Added durable next-attempt scheduling, attempt/success timestamps, bounded
+  controlled error codes, explicit reauthorization state, known expiry
+  metadata, and no secret/payload/detail fields.
+- Added source-independent claim, heartbeat, complete, defer, reauthorization,
+  and exact-get operations. Each operation opens only a short RLS-bound
+  transaction; provider work happens outside the substrate.
+- Implemented owner/version lease generations, recovery after expiry, and
+  strict live-lease fencing for complete/defer/reauthorization writes. A stale
+  worker cannot commit after a takeover.
+- Added a durable due/fairness index and a lease-expiry recovery index for the
+  future periodic runner.
+- Added strict tenant RLS with no unbound-context bypass.
+- Added focused migration and integration coverage for idempotence, RLS,
+  durable no-hot-loop scheduling, heartbeat, retry, reauthorization, and
+  stale-generation rejection.
+
+---
+
+## Decisions Made
+
+- The job table stores only a constrained Fyralis error code. It deliberately
+  has no free-form failure text, provider response, secret reference, or token
+  column.
+- `target_key` belongs in the primary key because a resource-scoped Google
+  watch and an installation-scoped OAuth refresh must never compete for a
+  lease merely because they share a tenant/install pair.
+- Heartbeat uses the current owner/version fence so a worker can recover a
+  narrowly expired lease only when no replacement has won. Terminal writes
+  additionally require an unexpired lease, which fails closed if the provider
+  call outruns its heartbeat.
+- Reauthorization clears `next_attempt_at`; it cannot silently re-enter a
+  retry loop until the owning installation is repaired and explicitly
+  reintroduced by its lifecycle path.
+
+---
+
+## Files Added
+
+- `db/migrations/0200_source_renewal_jobs.sql` — exact, RLS-protected durable
+  renewal metadata and lease schema.
+- `services/ingest/ingestion/renewal_jobs.py` — source-neutral async durable
+  job operations.
+- `services/ingest/ingestion/tests/test_renewal_jobs.py` — focused lifecycle
+  and migration coverage.
+
+---
+
+## Tests Executed
+
+- Ruff and Python compile checks for the new module and tests: passed.
+- Focused isolated PostgreSQL integration suite:
+  `4 passed in 6.31s` against the disposable Terra database on port `55446`.
+
+---
+
+## Problems Encountered
+
+- The previously suggested local PostgreSQL port `55434` was not listening.
+  The first restricted test attempt also could not create local TCP sockets.
+
+---
+
+## Resolution
+
+- Located the existing isolated `fyralis-terra-r0-db` container on port
+  `55446` and ran the focused suite there with loopback permission. No shared
+  development database or source provider was used.
+
+---
+
+## Assumptions
+
+- Source-specific lifecycle invokers pass only an exact `RenewalJobKey` and a
+  declared controlled error code to this substrate.
+- Installation tables remain the sole authority for credential references and
+  provider-specific watch state; a later source lifecycle path handles an
+  administrator's successful reauthorization.
+
+---
+
+## R2b Addendum — Provider Lab renewal lifecycle (complete subtask)
+
+### Objective
+
+Make the local Provider Lab capable of deterministic before-expiry, renewal,
+and after-expiry behavior for the eight R2 renewal sources while preserving
+the static default fixtures used by existing client-conformance tests.
+
+### Tasks Completed
+
+- Added an opt-in `renewal_lifecycle` fixture state. It is inactive unless a
+  source test explicitly sets `enabled: true`.
+- Passed the Lab's existing virtual clock into every provider request, so the
+  lifecycle implementation never reads wall-clock time.
+- Added virtual-time/scope-derived DWD access-token responses and dynamic
+  watch expiry/resource metadata for Gmail, Google Calendar, and Google Drive.
+  Their default token and year-2100 watch fixtures remain unchanged.
+- Added virtual-time/scope-derived credential responses for QuickBooks, Ramp,
+  Gusto, Carta, and LinkedIn. QuickBooks, Gusto, and LinkedIn validate a live
+  configured or previously renewed refresh credential; Ramp and Carta validate
+  the client-credentials grant.
+- Added live-access validation on the declared resource routes in lifecycle
+  mode. An expired or wrong-scope lifecycle access credential receives a 401;
+  a renewed credential succeeds.
+- Used opaque, self-validating Lab-only identifiers with bounded expiry rather
+  than persisting provider-like secrets or adding a mutable token registry.
+- Added focused coverage for all eight sources, including scope variance,
+  watch re-renewal after virtual-time advance, expired old OAuth refresh and
+  access credentials, recovery using a renewed refresh credential, and
+  client-credential re-minting.
+
+### Files Added
+
+- `services/ingest/synthetic/provider_lab/renewal_lifecycle.py` — opt-in
+  virtual-clock lifecycle helper.
+- `services/ingest/synthetic/provider_lab/tests/test_renewal_lifecycle.py` —
+  eight-source lifecycle coverage.
+
+### Files Modified
+
+- `services/ingest/synthetic/provider_lab/protocol.py` and `app.py` — carry
+  deterministic virtual time into adapters.
+- `services/ingest/synthetic/provider_lab/adapters.py`, `wave_b.py`, and
+  `wave_cd.py` — activate lifecycle behavior only for the eight declared R2
+  sources.
+
+### Tests Executed
+
+- Focused lifecycle suite: `9 passed in 0.64s`.
+- Full local Provider Lab suite with loopback transport: `104 passed in 5.79s`.
+- Ruff and Python compile checks across the Provider Lab lifecycle changes:
+  passed.
+
+### Scope Boundary
+
+This is a Provider Lab subtask only. It does not mark R2 complete: final R2
+still requires source-invoker lifecycle integration evidence, combined
+certification execution, and broader failure/recovery gates.
+
+---
+
+## Milestone
+
+R2 — Bounded renewal executables for eight sources (complete)
+
+---
+
+## Objective
+
+Finish the handoff-defined, contract-referenced renewal path for Gmail,
+Google Calendar, Google Drive, QuickBooks, Ramp, Gusto, Carta, and LinkedIn.
+The path must use exact tenant and installation identity, the universal
+provider transport, durable schedule/lease state, and a deterministic Provider
+Lab lifecycle without exposing provider secrets.
+
+---
+
+## Tasks Completed
+
+- Declared one `RenewalDefinition` per R2 source in the canonical source
+  catalog, including cadence, lease scope, primary operation, runtime invoker,
+  and Google renewal child operations.
+- Added source-neutral durable renewal jobs keyed by source, tenant,
+  installation, and non-secret target key, with RLS, lease generations,
+  heartbeats, retry scheduling, reauthorization, and explicit manual
+  reconciliation for ambiguous unsafe outcomes.
+- Bound every watch and credential renewal invoker to the exact installation;
+  no renewal path selects a latest or arbitrary active installation.
+- Routed each actual renewal request through `ProviderTransport`, including
+  Google DWD token exchange and Calendar/Drive `channels.stop` cleanup.
+- Added fair watch and credential scheduler selection. Future cooldowns and
+  terminal jobs do not occupy the first candidate batch or starve a later
+  tenant.
+- Implemented Provider Lab lifecycle behavior and source-invoker integration
+  checks for all eight sources: before expiry, renewal, and after expiry.
+- Mapped definite DWD authorization rejections (`400`, `401`, `403`) to a
+  durable exact-installation reauthorization state before an unsafe watch
+  create can occur. DWD response bodies remain excluded from errors and
+  durable state.
+- Added stale-heartbeat/takeover protection: an expired lease that crossed an
+  unsafe provider boundary becomes manual reconciliation rather than being
+  replayed by another worker.
+- Generated and checked catalog, certification-surface, and execution-binding
+  artifacts. The combined certification declarations no longer have a missing
+  renewal semantic for any R2 source.
+
+---
+
+## Decisions Made
+
+- Kept the durable job table source-neutral. Provider credentials, refresh
+  references, watch metadata, and source-specific resource state remain in
+  their existing installation/source tables.
+- Treat a known authorization rejection before an unsafe operation as
+  reauthorization-required. Treat an unknown outcome after an unsafe token
+  rotation or watch creation as manual reconciliation, rather than guessing it
+  is safe to retry.
+- Allow a lease owner to recover a narrowly expired lease only when no other
+  worker has acted; a replacement observation after an unsafe marker
+  terminalizes the job. This preserves fencing without turning normal
+  scheduler jitter into duplicate work.
+- Test real production source invokers against the strict used API surface of
+  Provider Lab. The only injected boundary is the intended local test
+  transport, not a source-specific renewal shortcut.
+
+---
+
+## Files Added
+
+- `db/migrations/0200_source_renewal_jobs.sql` — durable exact-identity
+  renewal schedule and fencing schema.
+- `services/ingest/ingestion/renewal_jobs.py` — source-neutral job/lease API.
+- `services/ingest/ingestion/tests/test_renewal_jobs.py` — migration, RLS,
+  durability, fencing, and terminal-state coverage.
+- `services/ingest/integrations/bounded_renewal.py` — common bounded renewal
+  envelope for source-owned invokers.
+- `services/ingest/integrations/oauth_renewal.py` — five catalog-bound
+  credential-renewal wrappers.
+- `services/ingest/ingestion/workflows/credential_renewal_scheduler.py` and
+  `scripts/run_credential_renewal_scheduler.py` — fair durable credential
+  scheduler and launcher.
+- `services/ingest/synthetic/provider_lab/renewal_lifecycle.py` — deterministic
+  opt-in Provider Lab lifecycle state.
+- Focused renewal, scheduler, and Provider Lab test modules for the above.
+
+---
+
+## Files Modified
+
+- Source-contract models, catalog, runtime resolution, generated artifacts,
+  and certification catalog/driver — make renewal a validated contract-owned
+  executable rather than a side registry.
+- Google/Gmail watch implementations, Gmail DWD/client handling, and OAuth
+  refresh handling — enforce bounded renewal, exact identity, transport use,
+  redaction, and durable outcomes.
+- Provider Lab adapters/runtime/protocol — provide lifecycle behavior on the
+  exact source APIs exercised by production clients.
+- Process manifest, Compose, Prometheus, Google/Gmail launch scripts, and
+  pgbouncer wiring checks — launch the declared renewal workers with the
+  required provider transport runtime.
+- Generated evidence, surfaces, and execution bindings — reflect the renewal
+  operations from the canonical catalog.
+
+---
+
+## Tests Executed
+
+- Durable renewal-job PostgreSQL suite, split only to stay within the local
+  runner's command window: `10 passed`.
+- Source-invoker Provider Lab lifecycle checks: `3 passed` for Gmail/Calendar/
+  Drive and `5 passed` for QuickBooks/Ramp/Gusto/Carta/LinkedIn.
+- DWD authorization-rejection integration coverage: `3 passed`.
+- All-eight-source durable `RetryLater` coverage: `3 + 3 + 2 passed`.
+- All-eight-source contract lease-concurrency coverage: `3 + 3 + 2 passed`.
+- Actual credential-renewal concurrency coverage: `3 + 2 passed`.
+- Gmail/Calendar/Drive sibling-installation isolation: `3 passed`.
+- Unsafe-provider terminal behavior: `3 + 3 + 2 passed`; stale-heartbeat
+  cancellation and replay blocking: `1 passed`.
+- Watch fairness/exact-resource checks: `4 passed` and `2 passed`.
+- Google push ingress/registration suite: `8 passed`.
+- Full local Provider Lab suite: `110 passed`.
+- OAuth refresh and finance transport units: `22 passed`.
+- Catalog, runtime, certification, execution-driver, scheduler, and launcher
+  checks: `192 passed, 1 skipped` (the expected real-Redis diagnostic without
+  `FYRALIS_TEST_REDIS_URL`).
+- Generator round-trip checks, Ruff, Python compile checks, and
+  `git diff --check`: passed.
+
+---
+
+## Problems Encountered
+
+- A single broad database test command can exceed the local command runner's
+  reporting window even though individual test cases are bounded.
+- The first stale-heartbeat test modeled an expired lease without a replacement
+  observation. That is intentionally recoverable by the same owner and did
+  not prove the unsafe takeover path.
+
+---
+
+## Resolution
+
+- Ran the database checks in bounded, named groups; each group has a recorded
+  final result above.
+- Changed the heartbeat test to model the real failure sequence: mark an unsafe
+  provider boundary, expire the lease, let a prospective replacement observe
+  it, require manual reconciliation, and then prove the stale attempt is
+  cancelled.
+
+---
+
+## Assumptions
+
+- Provider Lab remains the permitted saturation/lifecycle environment. This
+  milestone does not claim a real-provider canary or external load result.
+- An operator or source lifecycle repair explicitly resumes a terminal renewal
+  job only after the provider-side state is reconciled.
+
+---
+
+## Deviations
+
+No deviations.
+
+---
+
+## Next Planned Work
+
+Begin R3 exactly as specified in the handoff: implement the long-lived
+exact-pipeline trial supervisor and adapter, with durable stage evidence and
+no synthetic source-dispatch path.

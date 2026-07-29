@@ -130,9 +130,7 @@ _PATH_PARAMETER_RE = re.compile(r"\{([^{}]+)\}")
 _QUOTA_ENV = "FYRALIS_PROVIDER_QUOTAS_JSON"
 _DEFAULT_LOAD_REQUESTS = 64
 _DEFAULT_DIAGNOSTIC_OFFER_LIMIT = 4.0
-_EXECUTION_PLAN_SCHEMA_VERSION = (
-    "fyralis.source-certification-local-execution-plan.v1"
-)
+_EXECUTION_PLAN_SCHEMA_VERSION = "fyralis.source-certification-local-execution-plan.v1"
 
 _SCENARIO_LOCAL_PROBES: Mapping[str, tuple[str, ...]] = {
     "auth_success_and_expiry": (
@@ -156,15 +154,9 @@ _SCENARIO_LOCAL_PROBES: Mapping[str, tuple[str, ...]] = {
         "idempotency_builder_resolution",
         "observation_idempotency_replay",
     ),
-    "out_of_order_delivery": (
-        "deterministic_fixture",
-    ),
-    "provider_429_shared_cooldown": (
-        "all_retry_safe_operations_429_retry",
-    ),
-    "provider_5xx_timeout_and_recovery": (
-        "all_retry_safe_operations_503_retry",
-    ),
+    "out_of_order_delivery": ("deterministic_fixture",),
+    "provider_429_shared_cooldown": ("all_retry_safe_operations_429_retry",),
+    "provider_5xx_timeout_and_recovery": ("all_retry_safe_operations_503_retry",),
     "no_cursor_advance_past_required_hydration_failure": (
         "history_callable_resolution",
     ),
@@ -192,8 +184,7 @@ _SCENARIO_UNPROVEN_REQUIREMENTS: Mapping[str, tuple[str, ...]] = {
         "provider-issued credential expiry and refresh were not executed",
     ),
     "exact_tenant_and_installation_resolution": (
-        "the 2-tenant × 2-installation database-backed topology was not "
-        "executed",
+        "the 2-tenant × 2-installation database-backed topology was not " "executed",
     ),
     "pagination_or_stream_resume": (
         "every provider-specific cursor/delta resume path was not executed",
@@ -318,12 +309,15 @@ def _utc_now() -> datetime:
 
 
 def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        indent=2,
-        sort_keys=True,
-    ) + "\n"
+    return (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
 
 
 def _sha256(value: bytes) -> str:
@@ -355,6 +349,10 @@ def _source_callable_bindings(source_id: str) -> tuple[dict[str, str], ...]:
         ("history:planner", source.planner_binding),
         ("history:fetcher", source.fetcher_binding),
         ("history:reconciler", source.reconciler_binding),
+        (
+            "renewal:invoker",
+            (source.renewal.invoker_binding if source.renewal is not None else None),
+        ),
         (
             "certification:fixture_factory",
             (
@@ -495,9 +493,7 @@ def build_declared_execution_plan(source_id: str) -> dict[str, object]:
         ],
         "live_transports": list(source.live_transports),
         "normalization_inputs": list(source.normalization_inputs),
-        "idempotency_builder_bindings": list(
-            source.idempotency_builder_bindings
-        ),
+        "idempotency_builder_bindings": list(source.idempotency_builder_bindings),
     }
 
 
@@ -688,9 +684,7 @@ def _request_headers(
         authorization = "Session provider-lab-certification"
     return {
         "Authorization": authorization,
-        "X-Provider-Lab-Scope": (
-            scope or f"certification-{source_id}"
-        ),
+        "X-Provider-Lab-Scope": (scope or f"certification-{source_id}"),
     }
 
 
@@ -801,9 +795,7 @@ async def _probe_used_surface(
         inventory_response.raise_for_status()
         inventory = inventory_response.json()
         source_inventory = [
-            item
-            for item in inventory["adapters"]
-            if item["source"] == source_id
+            item for item in inventory["adapters"] if item["source"] == source_id
         ]
         if len(source_inventory) != 1:
             raise ExecutionDriverError(
@@ -856,8 +848,7 @@ async def _probe_used_surface(
             )
             if response.status_code >= 500:
                 raise ExecutionDriverError(
-                    f"{source_id} four-scope probe returned "
-                    f"{response.status_code}",
+                    f"{source_id} four-scope probe returned " f"{response.status_code}",
                 )
             scope_probe_results.append(
                 {
@@ -881,31 +872,22 @@ async def _probe_used_surface(
         limit=1_000,
     )
     foreign_sources = sorted(
-        {
-            str(item.get("source"))
-            for item in ledger
-            if item.get("source") != source_id
-        }
+        {str(item.get("source")) for item in ledger if item.get("source") != source_id}
     )
     if foreign_sources:
         raise ExecutionDriverError(
             f"{source_id} probe touched foreign sources: {foreign_sources}",
         )
     observed_scopes = {
-        str(item["scope"])
-        for item in ledger
-        if item.get("scope") in scope_probe_values
+        str(item["scope"]) for item in ledger if item.get("scope") in scope_probe_values
     }
     if observed_scopes != set(scope_probe_values):
         raise ExecutionDriverError(
-            f"{source_id} four-scope ledger mismatch: "
-            f"{sorted(observed_scopes)}",
+            f"{source_id} four-scope ledger mismatch: " f"{sorted(observed_scopes)}",
         )
 
     owned_operations = {
-        operation_id
-        for route in adapter.routes
-        for operation_id in route.operation_ids
+        operation_id for route in adapter.routes for operation_id in route.operation_ids
     } | {
         operation_id
         for surface in adapter.protocol_surfaces
@@ -966,8 +948,7 @@ def _local_scenario_diagnostics(
         {
             str(item["role"])
             for item in binding_rows
-            if isinstance(item, Mapping)
-            and item.get("state") == "resolved"
+            if isinstance(item, Mapping) and item.get("state") == "resolved"
         }
         if isinstance(binding_rows, list)
         else set()
@@ -1006,11 +987,7 @@ def _local_scenario_diagnostics(
     pipeline_state = pipeline_probe.get("state")
     certified_raw = pipeline_probe.get("certified_scenarios")
     certified_pipeline_scenarios = (
-        {
-            str(value)
-            for value in certified_raw
-            if isinstance(value, str)
-        }
+        {str(value) for value in certified_raw if isinstance(value, str)}
         if isinstance(certified_raw, (list, tuple, set, frozenset))
         else set()
     )
@@ -1052,12 +1029,8 @@ def _local_scenario_diagnostics(
             scenario_id,
             ("source_specific_executor_absent",),
         )
-        measured_for_scenario = tuple(
-            probe for probe in declared if probe in measured
-        )
-        unmeasured = tuple(
-            probe for probe in declared if probe not in measured
-        )
+        measured_for_scenario = tuple(probe for probe in declared if probe in measured)
+        unmeasured = tuple(probe for probe in declared if probe not in measured)
         unproven = _SCENARIO_UNPROVEN_REQUIREMENTS.get(
             scenario_id,
             (
@@ -1092,10 +1065,7 @@ def _local_scenario_diagnostics(
                 }
             )
             continue
-        if (
-            scenario_id in expected_pipeline_scenarios
-            and pipeline_state == "failed"
-        ):
+        if scenario_id in expected_pipeline_scenarios and pipeline_state == "failed":
             reason = (
                 f"{scenario_id} failed: the isolated data-plane probe "
                 f"reported {pipeline_probe.get('error', 'execution failed')}"
@@ -1113,10 +1083,7 @@ def _local_scenario_diagnostics(
                 }
             )
             continue
-        reason = (
-            f"{scenario_id} remains blocked: "
-            + "; ".join(unproven)
-        )
+        reason = f"{scenario_id} remains blocked: " + "; ".join(unproven)
         states[scenario_id] = "blocked"
         failures[scenario_id] = reason
         rows.append(
@@ -1249,7 +1216,8 @@ def _retryable_route_operations(
         if effective_request_policy(
             source_id,
             operation_id,
-        ).max_attempts > 1
+        ).max_attempts
+        > 1
     )
 
 
@@ -1274,9 +1242,7 @@ async def _transport_request(
             response.headers,
             message="Provider Lab injected a rate limit",
             status_code=response.status_code,
-            header_parser_id=(
-                policy.rate_limit_header_parser_id or "http.retry_after"
-            ),
+            header_parser_id=(policy.rate_limit_header_parser_id or "http.retry_after"),
         )
     if response.status_code in {408, 425, 500, 502, 503, 504}:
         raise ProviderTransientError(
@@ -1332,17 +1298,19 @@ def _load_quota_config(
         routes,
         ambient_env=ambient_env,
     )
-    matching = tuple(
-        item for item in evidence if item.bucket == route.quota_bucket
-    )
+    matching = tuple(item for item in evidence if item.bucket == route.quota_bucket)
     if len(matching) != 1:
-        return None, None, (
-            note
-            if not matching
-            else (
-                "the finite provider-safe diagnostic supports one constraint; "
-                "the offered-load runner owns simultaneous quota evidence"
-            )
+        return (
+            None,
+            None,
+            (
+                note
+                if not matching
+                else (
+                    "the finite provider-safe diagnostic supports one constraint; "
+                    "the offered-load runner owns simultaneous quota evidence"
+                )
+            ),
         )
     item = matching[0]
     return (
@@ -1393,9 +1361,8 @@ def _load_quota_evidence(
     source_value = decoded.get(source_id)
     if isinstance(source_value, Mapping):
         entries: Sequence[object] = (source_value,)
-    elif (
-        isinstance(source_value, Sequence)
-        and not isinstance(source_value, (str, bytes, bytearray))
+    elif isinstance(source_value, Sequence) and not isinstance(
+        source_value, (str, bytes, bytearray)
     ):
         entries = source_value
     else:
@@ -1436,9 +1403,7 @@ def _load_quota_evidence(
                 limit_id=str(raw_entry["limit_id"]),
                 cost=raw_entry["cost"],  # type: ignore[arg-type]
                 capacity=raw_entry["capacity"],  # type: ignore[arg-type]
-                refill_per_second=raw_entry[
-                    "refill_per_second"
-                ],  # type: ignore[arg-type]
+                refill_per_second=raw_entry["refill_per_second"],  # type: ignore[arg-type]
                 evidence_uri=str(raw_entry["evidence_uri"]),
                 verified_at=verified_at,
             )
@@ -1448,21 +1413,14 @@ def _load_quota_evidence(
         evidence.append(item)
 
     expected_buckets = {
-        route.quota_bucket
-        for route in routes
-        if route.quota_bucket is not None
+        route.quota_bucket for route in routes if route.quota_bucket is not None
     }
     actual_buckets = {item.bucket for item in evidence}
     identities = [
-        (item.bucket, item.scope.casefold(), item.limit_id)
-        for item in evidence
+        (item.bucket, item.scope.casefold(), item.limit_id) for item in evidence
     ]
     duplicate_constraints = sorted(
-        {
-            identity
-            for identity in identities
-            if identities.count(identity) > 1
-        }
+        {identity for identity in identities if identities.count(identity) > 1}
     )
     if duplicate_constraints:
         errors.append(
@@ -1476,13 +1434,11 @@ def _load_quota_evidence(
     extra = sorted(actual_buckets - expected_buckets)
     if missing:
         errors.append(
-            "quota evidence is missing exercised buckets: "
-            + ", ".join(missing),
+            "quota evidence is missing exercised buckets: " + ", ".join(missing),
         )
     if extra:
         errors.append(
-            "quota evidence contains unexercised buckets: "
-            + ", ".join(extra),
+            "quota evidence contains unexercised buckets: " + ", ".join(extra),
         )
     if errors:
         return (), "; ".join(errors)
@@ -1525,10 +1481,7 @@ class _ProviderLabHttpOperation:
 
     @property
     def label(self) -> str:
-        return (
-            self.operation_id
-            or f"{self.route.route_id}:{self.method.casefold()}"
-        )
+        return self.operation_id or f"{self.route.route_id}:{self.method.casefold()}"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -1571,9 +1524,7 @@ class _LoadLane:
 
     @property
     def installation_scope(self) -> str:
-        return (
-            f"tenant-{self.tenant}:installation-{self.installation}"
-        )
+        return f"tenant-{self.tenant}:installation-{self.installation}"
 
     @property
     def replica_label(self) -> str:
@@ -1851,9 +1802,7 @@ class _ProviderLabOfferedLoadRunner:
                         seconds=duration_seconds / request_count,
                     )
 
-                operation = self.operation_plan[
-                    index % len(self.operation_plan)
-                ]
+                operation = self.operation_plan[index % len(self.operation_plan)]
                 lane = self.lanes[index % len(self.lanes)]
                 requirements = self._quota_requirements(
                     operation=operation,
@@ -1871,15 +1820,11 @@ class _ProviderLabOfferedLoadRunner:
                     binding=operation.binding,
                     quota_requirements=requirements,
                 )
-                latency_ms = (
-                    time.perf_counter() - request_started
-                ) * 1_000
+                latency_ms = (time.perf_counter() - request_started) * 1_000
                 latencies_ms.append(latency_ms)
                 response_bytes += len(response.content)
                 status_label = str(response.status_code)
-                status_counts[status_label] = (
-                    status_counts.get(status_label, 0) + 1
-                )
+                status_counts[status_label] = status_counts.get(status_label, 0) + 1
                 labels = [
                     # This Provider Lab boundary runner schedules a typed
                     # data operation but never invokes its declared callable.
@@ -1893,9 +1838,7 @@ class _ProviderLabOfferedLoadRunner:
                 if response.status_code < 400:
                     labels.append(operation.label)
                 for label in labels:
-                    operation_counts[label] = (
-                        operation_counts.get(label, 0) + 1
-                    )
+                    operation_counts[label] = operation_counts.get(label, 0) + 1
                 if (
                     response.status_code < 400
                     and operation.route.quota_bucket is not None
@@ -1907,9 +1850,7 @@ class _ProviderLabOfferedLoadRunner:
                     )
 
         if self.options.clock_mode == "wall":
-            remaining = duration_seconds - (
-                time.perf_counter() - wall_started
-            )
+            remaining = duration_seconds - (time.perf_counter() - wall_started)
             if remaining > 0:
                 await asyncio.sleep(remaining)
         wall_elapsed = time.perf_counter() - wall_started
@@ -1923,9 +1864,7 @@ class _ProviderLabOfferedLoadRunner:
         backlog_growth = max(0.0, offered_rate - achieved_rate)
         rate_limited = status_counts.get("429", 0)
         server_errors = sum(
-            count
-            for status, count in status_counts.items()
-            if int(status) >= 500
+            count for status, count in status_counts.items() if int(status) >= 500
         )
         client_errors = sum(
             count
@@ -1970,9 +1909,7 @@ class _ProviderLabOfferedLoadRunner:
             cooldown_violations=0,
             cursor_consistency_errors=0,
             dlq_entries=0,
-            cpu_percent=(
-                cpu_elapsed / max(wall_elapsed, 1e-9) * 100
-            ),
+            cpu_percent=(cpu_elapsed / max(wall_elapsed, 1e-9) * 100),
             memory_bytes=int(memory_kib * 1024),
             limiting_component=limiting_component,
             retries=0,
@@ -2001,8 +1938,7 @@ async def _calibrate_offered_load_runner(
             f"{runner.source_id} has no typed Provider Lab calibration cases"
         )
     expected_cases = {
-        (operation.load_operation.operation_id, operation.label)
-        for operation in cases
+        (operation.load_operation.operation_id, operation.label) for operation in cases
     }
     successful_cases: set[tuple[str, str]] = set()
     next_case = 0
@@ -2065,9 +2001,7 @@ async def _calibrate_offered_load_runner(
                 _probe,
                 config=LabCalibrationConfig(
                     target_fyralis_rps=runner.options.offer_limit_rate,
-                    client_timeout_seconds=(
-                        runner.options.client_timeout_seconds
-                    ),
+                    client_timeout_seconds=(runner.options.client_timeout_seconds),
                     probe_seconds=runner.options.calibration_probe_seconds,
                     concurrency=runner.options.calibration_concurrency,
                     minimum_samples=max(
@@ -2083,9 +2017,7 @@ async def _calibrate_offered_load_runner(
                 for load_operation, provider_operation in missing_cases[:8]
             )
             suffix = (
-                f" (+{len(missing_cases) - 8} more)"
-                if len(missing_cases) > 8
-                else ""
+                f" (+{len(missing_cases) - 8} more)" if len(missing_cases) > 8 else ""
             )
             raise ExecutionDriverError(
                 "Provider Lab calibration did not successfully exercise every "
@@ -2109,8 +2041,7 @@ async def _run_offered_load_envelope(
 ) -> LoadArtifact:
     if suite.non_applicability is not None:
         raise ExecutionDriverError(
-            "explicitly non-applicable suites have no Provider Lab load "
-            "diagnostic",
+            "explicitly non-applicable suites have no Provider Lab load " "diagnostic",
         )
     registry = build_lab_adapter_registry()
     app = build_provider_lab_app(
@@ -2177,7 +2108,9 @@ def _typed_operation_coverage(
     def _coverage(operation_ids: tuple[str, ...]) -> float:
         if not operation_ids:
             return 1.0
-        return sum(counts.get(operation_id, 0) > 0 for operation_id in operation_ids) / len(
+        return sum(
+            counts.get(operation_id, 0) > 0 for operation_id in operation_ids
+        ) / len(
             operation_ids,
         )
 
@@ -2214,9 +2147,7 @@ def _suite_result_from_pipeline_load_artifact(
     )
     configuration = artifact.get("configuration")
     topology = (
-        configuration.get("topology")
-        if isinstance(configuration, Mapping)
-        else None
+        configuration.get("topology") if isinstance(configuration, Mapping) else None
     )
     quota_config_verified = float(artifact.get("quota") is not None)
     metrics = (
@@ -2234,7 +2165,9 @@ def _suite_result_from_pipeline_load_artifact(
         ),
         (
             "installations_per_tenant",
-            float(topology.get("installations_per_tenant", suite.installations_per_tenant))
+            float(
+                topology.get("installations_per_tenant", suite.installations_per_tenant)
+            )
             if isinstance(topology, Mapping)
             else float(suite.installations_per_tenant),
         ),
@@ -2338,8 +2271,7 @@ async def _run_typed_pipeline_loads(
                     suite=suite,
                     artifact=artifact,
                     artifact_uri=(
-                        "evidence-file:pipeline_load/"
-                        f"{suite.kind}/{mode}.json"
+                        "evidence-file:pipeline_load/" f"{suite.kind}/{mode}.json"
                     ),
                 ),
             )
@@ -2460,11 +2392,7 @@ async def _offered_load_diagnostic(
                 if comparison_payload is not None
                 else {
                     "state": "blocked",
-                    "reason": (
-                        comparison_failure
-                        or provider_error
-                        or ceiling_error
-                    ),
+                    "reason": (comparison_failure or provider_error or ceiling_error),
                 }
             ),
         }
@@ -2507,10 +2435,7 @@ async def _declared_surface_load_probe(source_id: str) -> dict[str, object]:
     request_plan = [
         (
             operation,
-            (
-                f"tenant-{index % 2 + 1}:"
-                f"installation-{index % 4 // 2 + 1}"
-            ),
+            (f"tenant-{index % 2 + 1}:" f"installation-{index % 4 // 2 + 1}"),
         )
         for index, operation in enumerate(
             _provider_lab_http_operation_plan(source_id),
@@ -2528,6 +2453,7 @@ async def _declared_surface_load_probe(source_id: str) -> dict[str, object]:
         base_url="http://provider-lab",
         timeout=30.0,
     ) as client:
+
         async def _one(
             operation: _ProviderLabHttpOperation,
             scope: str,
@@ -2561,10 +2487,7 @@ async def _declared_surface_load_probe(source_id: str) -> dict[str, object]:
 
         results = list(
             await asyncio.gather(
-                *(
-                    _one(operation, scope)
-                    for operation, scope in request_plan
-                )
+                *(_one(operation, scope) for operation, scope in request_plan)
             )
         )
     elapsed = max(time.perf_counter() - started, 1e-9)
@@ -2584,9 +2507,7 @@ async def _declared_surface_load_probe(source_id: str) -> dict[str, object]:
         ):
             exercised_operations.add(operation_id)
     declared_http_operations = {
-        operation_id
-        for route in adapter.routes
-        for operation_id in route.operation_ids
+        operation_id for route in adapter.routes for operation_id in route.operation_ids
     }
     protocol_operations = {
         operation_id
@@ -2597,9 +2518,7 @@ async def _declared_surface_load_probe(source_id: str) -> dict[str, object]:
         raise ExecutionDriverError(
             f"{source_id} load operation plan drifted from the catalog",
         )
-    uncovered_operations = sorted(
-        declared_http_operations - exercised_operations
-    )
+    uncovered_operations = sorted(declared_http_operations - exercised_operations)
     return {
         "state": "blocked" if uncovered_operations else "diagnostic_only",
         "request_count": len(results),
@@ -2616,9 +2535,7 @@ async def _declared_surface_load_probe(source_id: str) -> dict[str, object]:
         ),
         "declared_operation_ids": sorted(expected_operations),
         "ledger_entries": len(ledger),
-        "scope_values": sorted(
-            {str(item["scope"]) for item in ledger}
-        ),
+        "scope_values": sorted({str(item["scope"]) for item in ledger}),
         "claim_boundary": (
             "One concurrent request per exact route/method/operation binding "
             "is a declared-mix diagnostic, not a stepped "
@@ -2633,21 +2550,15 @@ async def _load_diagnostic(
     request_count: int,
     ambient_env: Mapping[str, str],
 ) -> dict[str, object]:
-    distributed_transport = (
-        await run_distributed_transport_diagnostic_from_env(
-            source_id,
-            ambient_env=ambient_env,
-        )
+    distributed_transport = await run_distributed_transport_diagnostic_from_env(
+        source_id,
+        ambient_env=ambient_env,
     )
     representative = _representative_route(source_id)
     if representative is None:
         adapter = build_lab_adapter_registry().require(source_id)
         ingress_route = next(
-            (
-                route
-                for route in adapter.routes
-                if route.quota_bucket is not None
-            ),
+            (route for route in adapter.routes if route.quota_bucket is not None),
             None,
         )
         if ingress_route is None:
@@ -2680,6 +2591,7 @@ async def _load_diagnostic(
         base_url="http://provider-lab",
         timeout=30.0,
     ) as client:
+
         async def _no_sleep(_delay: float) -> None:
             return None
 
@@ -2730,8 +2642,7 @@ async def _load_diagnostic(
         "p95_latency_ms": _percentile(latencies_ms, 0.95),
         "p99_latency_ms": _percentile(latencies_ms, 0.99),
         "status_counts": {
-            str(status): statuses.count(status)
-            for status in sorted(set(statuses))
+            str(status): statuses.count(status) for status in sorted(set(statuses))
         },
         "route_id": route.route_id,
         "operation_id": operation_id,
@@ -2761,9 +2672,7 @@ async def _load_diagnostic(
                 "loaded quota configuration is missing its weighted cost"
             )
         operation_binding = (
-            route.binding_for(operation_id)
-            if operation_id is not None
-            else None
+            route.binding_for(operation_id) if operation_id is not None else None
         )
         app.state.provider_lab.quotas.configure(quota)
         async with httpx.AsyncClient(
@@ -2771,6 +2680,7 @@ async def _load_diagnostic(
             base_url="http://provider-lab",
             timeout=30.0,
         ) as client:
+
             async def _quota_request() -> int:
                 response = await _provider_request(
                     client,
@@ -2836,11 +2746,9 @@ async def _fault_diagnostic(
     *,
     ambient_env: Mapping[str, str],
 ) -> dict[str, object]:
-    distributed_transport = (
-        await run_distributed_transport_diagnostic_from_env(
-            source_id,
-            ambient_env=ambient_env,
-        )
+    distributed_transport = await run_distributed_transport_diagnostic_from_env(
+        source_id,
+        ambient_env=ambient_env,
     )
     route_operations = _retryable_route_operations(source_id)
     adapter = build_lab_adapter_registry().require(source_id)
@@ -2929,7 +2837,8 @@ async def _fault_diagnostic(
                     if (
                         rule_after["hits"] == 1
                         and after - before >= 2
-                        and terminal_status not in {
+                        and terminal_status
+                        not in {
                             429,
                             500,
                             502,
@@ -3015,10 +2924,7 @@ async def run_stage(
     plan_sha256 = _sha256(
         _canonical_json(execution_plan).encode("utf-8"),
     )
-    if (
-        expected_plan_sha256 is not None
-        and expected_plan_sha256 != plan_sha256
-    ):
+    if expected_plan_sha256 is not None and expected_plan_sha256 != plan_sha256:
         raise ExecutionDriverError(
             f"{source_id} execution plan hash is stale: "
             f"expected {expected_plan_sha256}, current {plan_sha256}",
@@ -3051,13 +2957,11 @@ async def run_stage(
             scenario_diagnostics,
             scenario_failures,
             scenario_states,
-        ) = (
-            _local_scenario_diagnostics(
-                spec,
-                fixture_probe=fixture_probe,
-                used_surface=used_surface,
-                pipeline_probe=pipeline,
-            )
+        ) = _local_scenario_diagnostics(
+            spec,
+            fixture_probe=fixture_probe,
+            used_surface=used_surface,
+            pipeline_probe=pipeline,
         )
         pipeline_state = pipeline.get("state")
         if pipeline_state == "passed":
@@ -3090,9 +2994,7 @@ async def run_stage(
             reason=reason,
             scenario_failures=scenario_failures,
             scenario_states=scenario_states,
-            local_correctness=(
-                "failed" if pipeline_state == "failed" else "blocked"
-            ),
+            local_correctness=("failed" if pipeline_state == "failed" else "blocked"),
         )
     elif stage == "load":
         diagnostic = await _load_diagnostic(

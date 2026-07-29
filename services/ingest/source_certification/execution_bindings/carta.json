@@ -1,7 +1,7 @@
 {
   "schema_version": "fyralis.source-certification-execution-binding.v1",
   "source_id": "carta",
-  "spec_hash": "7f5b325819e6053a6ce7986b1f12252986c45140ca81cad0e0ffe93e46d0c865",
+  "spec_hash": "e4cf29b49a2b252e496f713e056a785b74c5e80136e4d3eeb37da784fa1c4087",
   "stages": {
     "canary": {
       "argv": [
@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "a21b46818f2935fabdce870babea1dff2b100225c2a56f7c8fc55f201a596438"
+        "aa3b5b38ee77c168a4f44e65fa66f0c420fd8716992d937f20f3c71bf082284c"
       ],
       "credential_env": [
         "FYRALIS_CANARY_CARTA"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "a21b46818f2935fabdce870babea1dff2b100225c2a56f7c8fc55f201a596438"
+        "aa3b5b38ee77c168a4f44e65fa66f0c420fd8716992d937f20f3c71bf082284c"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "a21b46818f2935fabdce870babea1dff2b100225c2a56f7c8fc55f201a596438"
+        "aa3b5b38ee77c168a4f44e65fa66f0c420fd8716992d937f20f3c71bf082284c"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "a21b46818f2935fabdce870babea1dff2b100225c2a56f7c8fc55f201a596438"
+        "aa3b5b38ee77c168a4f44e65fa66f0c420fd8716992d937f20f3c71bf082284c"
       ],
       "credential_env": [],
       "required_env": [],

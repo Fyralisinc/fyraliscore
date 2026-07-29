@@ -11,7 +11,7 @@
     "services.ingest.ingestion.planners.google_calendar": "73985fcfc765dc7d775f8e49a256fce8f5a769bfc43486dd330103c4306de358",
     "services.ingest.ingestion.reconcilers.google_calendar": "253eddd28d33deaabc908c4b1e9edb5077de8ea0bcb08e5c8e30851bdf2ad0f7",
     "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
-    "services.ingest.integrations._google_watch": "1db73db2bbaab06c7107eb00b75e0737035042f356d94e6416c4744601b0be0e",
+    "services.ingest.integrations._google_watch": "9957115fa24d308224bce6523c86995c2893a4fb4e5a812f9b3ae611b7d51ce2",
     "services.ingest.integrations.gmail.push_handler": "e8679de4c3f4b3b2ef7854bb4b325416640d1899e9c293863c68018b60bbfb0e",
     "services.ingest.integrations.google_calendar": "09ce24ab17b1aebb71ccc1b6ff1cd120a0f1e868f023b270c432a0d1461502da",
     "services.ingest.integrations.google_calendar.client": "946b0e1106ae3cd3861210aea289238b49e1a92db1a0cda4a037237a3865c227",
@@ -19,10 +19,10 @@
     "services.ingest.integrations.google_calendar.metrics": "5cf38b0a70db2c05ad0f4903c95d8713018d3a8e67b085f3722df3a31cda97ce",
     "services.ingest.integrations.google_calendar.oauth": "3a0d78d93af3fd9d8b458eba779e179dda88afd158393e9b69018e05bcb6c101",
     "services.ingest.integrations.google_calendar.onboarding": "ed05dd19f92ff376061f02d0d6393137b3e5370c08e90c3abab89c6de1cf408a",
-    "services.ingest.integrations.google_calendar.watch": "004e27905f01ae06186b25f7703313cc73f763abd6ebc46731175654ccf714b4",
+    "services.ingest.integrations.google_calendar.watch": "560c95d3d26f3fd14ff4fe7060f5b6a2657f28fa55f6e571088cc18342317677",
     "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
     "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
-    "services.ingest.synthetic.provider_lab.wave_b": "365e4d65156e923d5b224d8fd04b2945bed1075ad0ba1ea5a0fe7d912b9f416f",
+    "services.ingest.synthetic.provider_lab.wave_b": "ac34ee5ca429c0f516d01e83f4af8e3c2e33aa994a4f01b1b4a7c93f872ad61b",
     "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
     "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
   },
@@ -1178,6 +1178,18 @@
     "provider_id": "google",
     "provider_transport_enforced": true,
     "reconciler_binding": "services.ingest.ingestion.reconcilers.google_calendar:reconcile_google_calendar",
+    "renewal": {
+      "cadence_seconds": 900,
+      "invoker_binding": "services.ingest.integrations.google_calendar.watch:renew_exact_installation",
+      "kind": "watch",
+      "lease_scope": "resource",
+      "operation_id": "events.watch",
+      "renewal_window_seconds": 86400,
+      "supporting_operation_ids": [
+        "dwd.token.exchange",
+        "channels.stop"
+      ]
+    },
     "runtime_identifiers": [
       "channel_id",
       "resource_id",

@@ -1,7 +1,7 @@
 {
   "schema_version": "fyralis.source-certification-execution-binding.v1",
   "source_id": "google_calendar",
-  "spec_hash": "780f22c39bd1a30f9695044c90204e7f1049f979609ead77efb2fd6f28eba975",
+  "spec_hash": "f46012ee5e0fb2d7ec5db2c3a6835364c064ca1c18516776c20489c64f34a110",
   "stages": {
     "canary": {
       "argv": [
@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "0d2070ac740fc5cae84389726406f193ff868cc4e7e58e62e5b62f4745195452"
+        "e5366f07f5eee96051551c3c0381d1715526a2e038ec48a7cedc1f72b4bee93a"
       ],
       "credential_env": [
         "FYRALIS_CANARY_GOOGLE_CALENDAR"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "0d2070ac740fc5cae84389726406f193ff868cc4e7e58e62e5b62f4745195452"
+        "e5366f07f5eee96051551c3c0381d1715526a2e038ec48a7cedc1f72b4bee93a"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "0d2070ac740fc5cae84389726406f193ff868cc4e7e58e62e5b62f4745195452"
+        "e5366f07f5eee96051551c3c0381d1715526a2e038ec48a7cedc1f72b4bee93a"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "0d2070ac740fc5cae84389726406f193ff868cc4e7e58e62e5b62f4745195452"
+        "e5366f07f5eee96051551c3c0381d1715526a2e038ec48a7cedc1f72b4bee93a"
       ],
       "credential_env": [],
       "required_env": [],

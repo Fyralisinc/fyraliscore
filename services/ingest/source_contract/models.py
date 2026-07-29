@@ -33,6 +33,7 @@ LiveWorkerRole = Literal[
     "persistent_gateway",
     "incremental_poll",
     "watch_renewal",
+    "credential_renewal",
     "periodic_reconciliation",
     "managed_dispatch",
 ]
@@ -94,6 +95,8 @@ DedicatedKafkaMode = Literal[
 OAuthIngressMountMode = Literal["shared_router", "native_router"]
 CredentialGrantType = Literal["refresh_token", "client_credentials"]
 CredentialAuthStyle = Literal["basic", "body"]
+RenewalKind = Literal["watch", "credential"]
+RenewalLeaseScope = Literal["installation", "resource"]
 SourceCategory = Literal[
     "Communication",
     "Engineering",
@@ -153,6 +156,7 @@ _LIVE_WORKER_ROLES = frozenset(
         "persistent_gateway",
         "incremental_poll",
         "watch_renewal",
+        "credential_renewal",
         "periodic_reconciliation",
         "managed_dispatch",
     }
@@ -231,6 +235,8 @@ _DEDICATED_KAFKA_MODES = frozenset(
 _OAUTH_INGRESS_MOUNT_MODES = frozenset({"shared_router", "native_router"})
 _CREDENTIAL_GRANT_TYPES = frozenset({"refresh_token", "client_credentials"})
 _CREDENTIAL_AUTH_STYLES = frozenset({"basic", "body"})
+_RENEWAL_KINDS = frozenset({"watch", "credential"})
+_RENEWAL_LEASE_SCOPES = frozenset({"installation", "resource"})
 _SOURCE_CATEGORIES = frozenset(
     {
         "Communication",
@@ -525,6 +531,7 @@ class LiveWorkerDefinition:
         cadence_roles = {
             "incremental_poll",
             "watch_renewal",
+            "credential_renewal",
             "periodic_reconciliation",
         }
         if self.role in cadence_roles and self.cadence_seconds is None:
@@ -552,6 +559,16 @@ class LiveWorkerDefinition:
             raise ValueError(
                 "watch renewal is supplemental and must use transport=None"
             )
+        if self.role == "credential_renewal":
+            if self.transport is not None:
+                raise ValueError(
+                    "credential renewal is supplemental and must use "
+                    "transport=None"
+                )
+            if self.lease_scope != "installation":
+                raise ValueError(
+                    "credential renewal requires lease_scope='installation'"
+                )
         if (
             self.role == "periodic_reconciliation"
             and self.transport not in {None, "api_poll"}
@@ -2098,6 +2115,68 @@ class CredentialRefreshDefinition:
 
 
 @dataclass(frozen=True, slots=True)
+class RenewalDefinition:
+    """One bounded, exact-installation renewal operation.
+
+    ``CredentialRefreshDefinition`` describes an OAuth token-endpoint protocol;
+    ``RenewalDefinition`` describes the executable lifecycle operation that
+    Fyralis schedules.  Keeping them separate avoids treating Google watch
+    renewal as an OAuth refresh while giving credential and watch lifecycles
+    the same contract-owned callable, cadence, and fenced lease semantics.
+    """
+
+    kind: RenewalKind
+    operation_id: str
+    invoker_binding: str
+    cadence_seconds: float
+    renewal_window_seconds: int
+    lease_scope: RenewalLeaseScope
+    supporting_operation_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.kind not in _RENEWAL_KINDS:
+            raise ValueError(f"unknown renewal kind {self.kind!r}")
+        _require_operation_id(
+            self.operation_id,
+            field_name="renewal operation_id",
+        )
+        _require_callable_ref(
+            self.invoker_binding,
+            field_name="renewal invoker_binding",
+        )
+        if (
+            isinstance(self.cadence_seconds, bool)
+            or not isinstance(self.cadence_seconds, (int, float))
+            or self.cadence_seconds <= 0
+        ):
+            raise ValueError("renewal cadence_seconds must be positive")
+        if (
+            isinstance(self.renewal_window_seconds, bool)
+            or not isinstance(self.renewal_window_seconds, int)
+            or self.renewal_window_seconds <= 0
+        ):
+            raise ValueError("renewal renewal_window_seconds must be positive")
+        if self.lease_scope not in _RENEWAL_LEASE_SCOPES:
+            raise ValueError(
+                f"unknown renewal lease_scope {self.lease_scope!r}"
+            )
+        if not isinstance(self.supporting_operation_ids, tuple):
+            raise TypeError("renewal supporting_operation_ids must be a tuple")
+        seen_operation_ids = {self.operation_id}
+        for operation_id in self.supporting_operation_ids:
+            _require_operation_id(
+                operation_id,
+                field_name="renewal supporting operation_id",
+            )
+            if operation_id in seen_operation_ids:
+                raise ValueError(
+                    "renewal supporting_operation_ids must be unique and "
+                    "must not repeat renewal operation_id"
+                )
+            seen_operation_ids.add(operation_id)
+
+
+@dataclass(frozen=True, slots=True)
 class IngressRoute:
     """One raw-envelope ingress kind routed to one source-owned channel."""
 
@@ -2202,6 +2281,7 @@ class SourceDefinition:
     onboarding: OnboardingDefinition
     certification: Certification
     credential_refresh: CredentialRefreshDefinition | None = None
+    renewal: RenewalDefinition | None = None
     capability_flags: tuple[str, ...] = ()
     operation_policies: tuple[OperationPolicyDefinition, ...] = ()
     outbound_endpoint_bindings: tuple[OutboundEndpointBinding, ...] = ()
@@ -2467,6 +2547,63 @@ class SourceDefinition:
                 "credential refresh operation must be declared in "
                 "operation_policy_ids"
             )
+        if self.renewal is not None and not isinstance(
+            self.renewal,
+            RenewalDefinition,
+        ):
+            raise TypeError("renewal must be RenewalDefinition")
+        if self.renewal is not None and not {
+            self.renewal.operation_id,
+            *self.renewal.supporting_operation_ids,
+        }.issubset(self.operation_policy_ids):
+            raise ValueError(
+                "renewal operations must be declared in operation_policy_ids"
+            )
+        if self.renewal is not None and self.renewal.kind == "credential":
+            if self.credential_refresh is None:
+                raise ValueError(
+                    "credential renewal requires CredentialRefreshDefinition"
+                )
+            if self.renewal.operation_id != self.credential_refresh.operation_id:
+                raise ValueError(
+                    "credential renewal operation must match credential refresh"
+                )
+            credential_workers = tuple(
+                worker
+                for worker in self.live_runtime.workers
+                if worker.role == "credential_renewal"
+            )
+            if len(credential_workers) != 1:
+                raise ValueError(
+                    "credential renewal requires exactly one "
+                    "credential_renewal live worker"
+                )
+            worker = credential_workers[0]
+            if worker.cadence_seconds != self.renewal.cadence_seconds:
+                raise ValueError(
+                    "credential renewal worker cadence must match "
+                    "RenewalDefinition cadence_seconds"
+                )
+            if worker.lease_scope != self.renewal.lease_scope:
+                raise ValueError(
+                    "credential renewal worker lease_scope must match "
+                    "RenewalDefinition lease_scope"
+                )
+        elif any(
+            worker.role == "credential_renewal"
+            for worker in self.live_runtime.workers
+        ):
+            raise ValueError(
+                "credential_renewal live workers require a credential renewal"
+            )
+        if self.renewal is not None and self.renewal.kind == "watch":
+            if not any(
+                worker.role == "watch_renewal"
+                for worker in self.live_runtime.workers
+            ):
+                raise ValueError(
+                    "watch renewal requires a watch_renewal live worker"
+                )
         _require_unique_strings(
             self.capability_flags,
             field_name="capability_flags",
@@ -2490,11 +2627,12 @@ class SourceDefinition:
         if no_outbound_requests and (
             self.history is not None
             or self.credential_refresh is not None
+            or self.renewal is not None
             or self.operation_policy_ids
         ):
             raise ValueError(
                 "no_outbound_provider_requests requires history=None, no "
-                "credential refresh, and no provider operation IDs"
+                "credential refresh/renewal, and no provider operation IDs"
             )
         _require_tuple(
             self.operation_policies,

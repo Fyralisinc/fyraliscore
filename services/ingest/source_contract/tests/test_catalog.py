@@ -190,6 +190,7 @@ def test_live_runtime_declares_real_deployment_and_managed_boundaries() -> None:
             if worker.role in {
                 "incremental_poll",
                 "watch_renewal",
+                "credential_renewal",
                 "periodic_reconciliation",
             }:
                 assert worker.cadence_seconds
@@ -217,12 +218,45 @@ def test_google_push_sources_declare_watch_renewal_workers() -> None:
         "google_calendar": ("google_calendar_watch_scheduler", 15 * 60),
         "google_drive": ("google_drive_watch_scheduler", 15 * 60),
     }
+    expected_supporting_operations = {
+        "gmail": ("dwd.token.exchange",),
+        "google_calendar": ("dwd.token.exchange", "channels.stop"),
+        "google_drive": ("dwd.token.exchange", "channels.stop"),
+    }
     for source_id, (component_id, cadence) in expected.items():
-        worker = source_definition(source_id).live_runtime.worker(component_id)
+        source = source_definition(source_id)
+        worker = source.live_runtime.worker(component_id)
         assert worker.role == "watch_renewal"
         assert worker.transport is None
         assert worker.cadence_seconds == cadence
         assert worker.lease_scope == "resource"
+        assert source.renewal is not None
+        assert source.renewal.kind == "watch"
+        # A cold DWD cache mints a credential before the watch request. The
+        # bounded renewal contract must declare that conditional child call so
+        # load/certification accounting cannot undercount provider quota.
+        assert (
+            source.renewal.supporting_operation_ids
+            == expected_supporting_operations[source_id]
+        )
+
+
+def test_credential_renewal_sources_declare_the_shared_fyralis_worker() -> None:
+    credential_sources = tuple(
+        source
+        for source in SOURCE_DEFINITIONS
+        if source.renewal is not None and source.renewal.kind == "credential"
+    )
+
+    assert len(credential_sources) == 5
+    for source in credential_sources:
+        assert source.credential_refresh is not None
+        worker = source.live_runtime.worker("credential_renewal")
+        assert worker.role == "credential_renewal"
+        assert worker.transport is None
+        assert worker.lease_scope == "installation"
+        assert worker.cadence_seconds == source.renewal.cadence_seconds
+        assert worker.deployment_unit == "credential_renewal_scheduler"
 
 
 def test_onboarding_contracts_cover_all_sources_and_routes() -> None:

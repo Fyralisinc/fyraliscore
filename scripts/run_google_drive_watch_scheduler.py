@@ -20,6 +20,10 @@ from worker_observability import (
 from lib.shared.db import asyncpg_pool_runtime_kwargs, positive_int_env
 from services.app.gateway.db_bootstrap import _register_codecs
 from services.ingest.integrations.google_drive.watch import run_forever
+from services.ingest.integrations.provider_transport_runtime import (
+    close_provider_transport_runtime,
+    get_provider_transport_runtime,
+)
 
 
 async def _main() -> None:
@@ -52,10 +56,15 @@ async def _main() -> None:
         "google_drive_watch_scheduler", stop_event
     )
 
-    log.info("google_drive_watch_scheduler.starting")
+    provider_runtime = None
     try:
+        # The renewal path owns both DWD minting and changes.watch. Require
+        # the shared quota runtime before claiming any source renewal work.
+        provider_runtime = get_provider_transport_runtime(required=True)
+        log.info("google_drive_watch_scheduler.starting")
         await run_forever(pool, stop_event=stop_event)
     finally:
+        await close_provider_transport_runtime(provider_runtime)
         await health_shutdown()
         await pool.close()
 

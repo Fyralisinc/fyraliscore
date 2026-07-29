@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://developer.deel.com/docs/welcome",
       "api_version": "Deel API",
-      "schema_sha256": "1f02935d6b557e63f3510bcc84e8a12856602ce7dd648647e6462d92abf4b87b",
+      "schema_sha256": "60559d0326e900479907b53d99ce371f1386381ebd400eee356f328cd6f74eef",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://docs.discord.com/developers/reference",
       "api_version": "HTTP v10 / Gateway v10",
-      "schema_sha256": "a669f361e0954c40c0084e721f38578b8c4988048e1203e3d0951abc1edd3921",
+      "schema_sha256": "e700a54b9392d7e89d810b204a0548cef6118349f26c879a372542df71daf844",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

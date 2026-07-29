@@ -3,6 +3,7 @@
 Control plane (not written to the provider request ledger):
 
 * ``/_lab/state`` and ``/_lab/sources/{source}/state``
+* ``/_lab/sources/{source}/watch-lifecycle``
 * ``/_lab/clock`` and ``/_lab/clock/advance``
 * ``/_lab/quotas``
 * ``/_lab/faults``
@@ -519,6 +520,68 @@ def build_provider_lab_app(
         )
         return response
 
+    @app.get("/_lab/sources/{source}/watch-lifecycle")
+    async def source_watch_lifecycle(
+        source: str,
+        scope: str | None = Query(default=None, min_length=1, max_length=256),
+        channel_id: str | None = Query(
+            default=None,
+            min_length=1,
+            max_length=512,
+        ),
+        resource_id: str | None = Query(
+            default=None,
+            min_length=1,
+            max_length=512,
+        ),
+    ) -> Response:
+        """Inspect opt-in watch delivery state without touching the ledger.
+
+        This is a deterministic Provider Lab control-plane assertion point, not
+        a provider route. It exists so lifecycle certification can verify a
+        real Google/Gmail renewal sequence without adding test-only fields to
+        the provider-shaped API responses.
+        """
+
+        adapter = runtime.registry.get(source)
+        if adapter is None:
+            return _materialize(
+                _problem(
+                    status_code=404,
+                    code="unknown_source",
+                    message=f"Source {source!r} is not registered",
+                )
+            )[0]
+        snapshot = getattr(adapter, "watch_lifecycle_snapshot", None)
+        if not callable(snapshot):
+            return _materialize(
+                _problem(
+                    status_code=404,
+                    code="watch_lifecycle_unsupported",
+                    message=(
+                        f"Source {source!r} does not expose an opt-in "
+                        "watch lifecycle"
+                    ),
+                )
+            )[0]
+        try:
+            body = snapshot(
+                now=runtime.clock.now(),
+                source_state=runtime.get_source_state(source),
+                scope=scope,
+                channel_id=channel_id,
+                resource_id=resource_id,
+            )
+        except ValueError as exc:
+            return _materialize(
+                _problem(
+                    status_code=422,
+                    code="invalid_renewal_lifecycle",
+                    message=str(exc),
+                )
+            )[0]
+        return _materialize(ProviderResponse.json(body))[0]
+
     @app.get("/_lab/clock")
     async def get_clock() -> dict[str, Any]:
         return runtime.clock.snapshot()
@@ -771,6 +834,7 @@ def build_provider_lab_app(
             body=body,
             scope="global",
             source_state=source_state,
+            now=runtime.clock.now(),
         )
         try:
             scope = matched_adapter.resolve_scope(preliminary)

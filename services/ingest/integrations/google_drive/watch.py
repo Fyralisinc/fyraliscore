@@ -13,7 +13,12 @@ import asyncpg
 
 from services.ingest.integrations._google_watch import (
     WatchSpec,
+    renew_exact_resource,
     run_watch_scheduler as _run_scheduler,
+)
+from services.ingest.integrations.bounded_renewal import (
+    RenewalInvocation,
+    RenewalOutcome,
 )
 from services.ingest.integrations.google_drive.client import (
     GoogleDriveClient,
@@ -103,4 +108,12 @@ async def run_forever(pool: asyncpg.Pool, **kw) -> None:
     await _run_scheduler(pool, SPEC, **kw)
 
 
-__all__ = ["SPEC", "run_forever"]
+async def renew_exact_installation(
+    invocation: RenewalInvocation,
+) -> RenewalOutcome:
+    """Contract binding for one exact Drive watch resource renewal."""
+
+    return await renew_exact_resource(invocation, SPEC)
+
+
+__all__ = ["SPEC", "renew_exact_installation", "run_forever"]

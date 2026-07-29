@@ -671,6 +671,7 @@ class LabRuntime:
         with self._lock:
             self._source_state[source] = copied
             self._source_revisions[source] += 1
+            self._reset_lifecycle_watches_locked(source)
             return {
                 "source": source,
                 "revision": self._source_revisions[source],
@@ -686,6 +687,24 @@ class LabRuntime:
             self._defaults[source] = copy.deepcopy(copied)
             self._source_state[source] = copied
             self._source_revisions[source] = 0
+            self._reset_lifecycle_watches_locked(source)
+
+    def _reset_lifecycle_watches_locked(self, source: str) -> None:
+        """Notify only adapters that model opt-in watch lifecycle state.
+
+        Replacing a fixture is a new isolated Provider Lab scenario.  Stateful
+        normal fixtures intentionally keep their existing semantics, while the
+        R2 lifecycle registry must never leak a previous scenario's live
+        channel into the replacement configuration.
+        """
+
+        reset_lifecycle_watches = getattr(
+            self.registry.require(source),
+            "reset_lifecycle_watches",
+            None,
+        )
+        if callable(reset_lifecycle_watches):
+            reset_lifecycle_watches()
 
     def reset_source_state(self, source: str) -> dict[str, Any]:
         self.require_source(source)

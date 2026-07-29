@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import KW_ONLY, dataclass, field
+from datetime import datetime
 from typing import Any, Collection, Literal, Mapping, Protocol, runtime_checkable
 
 from starlette.routing import compile_path
@@ -276,6 +277,9 @@ class ProviderRequest:
     body: bytes
     scope: str
     source_state: Mapping[str, Any]
+    # The Provider Lab owns this deterministic virtual time. Adapters must not
+    # read wall-clock time when modeling expiry, renewal, quotas, or retries.
+    now: datetime
 
     def query_one(self, name: str, default: str | None = None) -> str | None:
         for key, value in self.query_items:

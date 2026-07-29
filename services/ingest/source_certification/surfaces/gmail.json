@@ -11,12 +11,12 @@
     "services.ingest.ingestion.planners.gmail": "2896662d5f4c022f0184b4c7db9c55ca70d6d89d201ef7247c6b8b762f3cc184",
     "services.ingest.ingestion.reconcilers.gmail": "3f985d4ae6f6a485f9c9cc329d4b427b10373d142c6a47afebd5b256303550c8",
     "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
-    "services.ingest.integrations._google_watch": "1db73db2bbaab06c7107eb00b75e0737035042f356d94e6416c4744601b0be0e",
+    "services.ingest.integrations._google_watch": "9957115fa24d308224bce6523c86995c2893a4fb4e5a812f9b3ae611b7d51ce2",
     "services.ingest.integrations.gmail": "c870ffc10f43dc2894edd5ab5ae3e58b76e6b973ea1f9efcf06169a2e42b9e3a",
     "services.ingest.integrations.gmail.audit": "fc10358270074fe4d596445a9bb5e325195d788fae8e78ba7fa3e435967cf210",
-    "services.ingest.integrations.gmail.client": "ce95c28daf1bf0fdd2a5ec1b5b7e80991c771211ea6e70386e722e107d2a16ba",
+    "services.ingest.integrations.gmail.client": "2e5ab9d0ad57d22289adc534974e273645a7e2eb831784a39419cae942200701",
     "services.ingest.integrations.gmail.directory": "8fa4da93f8f695da1fd7055b7ba7e6b9e4b85a968edf9ca988b1c3b54a764426",
-    "services.ingest.integrations.gmail.dwd": "dcbf40810833b289f182f73282db0a6092dbc02b96f20db4ebe8e50e840ba19c",
+    "services.ingest.integrations.gmail.dwd": "d8cd73134376a1c95b662ef75b403fcf8f9ae1d05055c8bf01d6c0dc5a171586",
     "services.ingest.integrations.gmail.fetcher": "b41095b6b485d67c5b5b9aaded5ffa5b81b18a80b4eb605367439fc8e79e66d6",
     "services.ingest.integrations.gmail.history_poller": "293c3a0ecd2779aed226980cef9d0558c517184545eead43bdf940e885f073f4",
     "services.ingest.integrations.gmail.oauth": "db12ba30d318c1cde497453317fe464af9a5bce1d26e5706c935888bc81d44e3",
@@ -27,10 +27,10 @@
     "services.ingest.integrations.gmail.threading": "6cdfd56c4f105fa492093cfb4854ad8e6b2b5be56dc19d96521152f727d4815f",
     "services.ingest.integrations.gmail.uninstall": "690286ca3a7ab2a75345e0af9717ad13aaa5df27319028d24a13d4ed6c129225",
     "services.ingest.integrations.gmail.watch": "b1eb64fe7c1a7e370f064f44e80eb4197d2fc8d980e8d31b158a5ab1fc7d953a",
-    "services.ingest.integrations.gmail.watch_scheduler": "00643cecb5b28c52d5acf3826a342ebc572be62d7ca5b9699fa4c185b7a9f79b",
+    "services.ingest.integrations.gmail.watch_scheduler": "ca29acaf2b91cb3cc5e916dec83a4a5db0e7e7cde01ddf23cee06245aec0411a",
     "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
     "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
-    "services.ingest.synthetic.provider_lab.adapters": "f036c41246c136c64769e9bb5eca1b30345dd5fe926351b75226cc12bcce6843",
+    "services.ingest.synthetic.provider_lab.adapters": "94a5326ca00656ada0c1242397d7c8defe6709d0be04024bbbab6fd001951f94",
     "services.ingest.synthetic.validation_runs.preflight": "d73ee28cbce02e9d8057e0f089b26f8b7b0db6e2bac895d0e824b9a3c450d87a",
     "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
     "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
@@ -1723,6 +1723,17 @@
     "provider_id": "google",
     "provider_transport_enforced": true,
     "reconciler_binding": "services.ingest.ingestion.reconcilers.gmail:reconcile_gmail",
+    "renewal": {
+      "cadence_seconds": 900,
+      "invoker_binding": "services.ingest.integrations.gmail.watch_scheduler:renew_exact_installation",
+      "kind": "watch",
+      "lease_scope": "resource",
+      "operation_id": "watch.create",
+      "renewal_window_seconds": 86400,
+      "supporting_operation_ids": [
+        "dwd.token.exchange"
+      ]
+    },
     "runtime_identifiers": [
       "gmail_installation_id",
       "email_address"

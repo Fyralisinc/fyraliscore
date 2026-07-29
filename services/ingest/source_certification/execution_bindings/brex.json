@@ -1,7 +1,7 @@
 {
   "schema_version": "fyralis.source-certification-execution-binding.v1",
   "source_id": "brex",
-  "spec_hash": "3b9765b224eae2251fca97daddcd79df831c82467aaf142d6ee03b2328aeca78",
+  "spec_hash": "3e941f80409d65afb25a13f79bfb608e5d543323fefd7eacf1081fc37623b78b",
   "stages": {
     "canary": {
       "argv": [
@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "b6553aa44152fe9e890595124f4698ea3aa7829668e89453dcdc571400b77638"
+        "072aa7539eef0159b0983dd88c084d6fdfd4978f2c26ac3a06aa425a8f50a71a"
       ],
       "credential_env": [
         "FYRALIS_CANARY_BREX"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "b6553aa44152fe9e890595124f4698ea3aa7829668e89453dcdc571400b77638"
+        "072aa7539eef0159b0983dd88c084d6fdfd4978f2c26ac3a06aa425a8f50a71a"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "b6553aa44152fe9e890595124f4698ea3aa7829668e89453dcdc571400b77638"
+        "072aa7539eef0159b0983dd88c084d6fdfd4978f2c26ac3a06aa425a8f50a71a"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "b6553aa44152fe9e890595124f4698ea3aa7829668e89453dcdc571400b77638"
+        "072aa7539eef0159b0983dd88c084d6fdfd4978f2c26ac3a06aa425a8f50a71a"
       ],
       "credential_env": [],
       "required_env": [],

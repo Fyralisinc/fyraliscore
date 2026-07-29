@@ -1,7 +1,7 @@
 {
   "schema_version": "fyralis.source-certification-execution-binding.v1",
   "source_id": "github",
-  "spec_hash": "49d001299369db8f67ba02198b26e7b0ede625ffe7815a915f90b498272f7708",
+  "spec_hash": "70160a14c122c8a5178b0df692593aa56f7c8a9c92773e1416a871b8fc0d518e",
   "stages": {
     "canary": {
       "argv": [
@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "be35776d2425e729a076c503cefc2bc29c9ba273439a8399d3473c4fdec19bff"
+        "c92050a5d8a3abbc0681bc7d91cd473db6c8a816cc02e035c1df74cf1c63eefa"
       ],
       "credential_env": [
         "FYRALIS_CANARY_GITHUB"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "be35776d2425e729a076c503cefc2bc29c9ba273439a8399d3473c4fdec19bff"
+        "c92050a5d8a3abbc0681bc7d91cd473db6c8a816cc02e035c1df74cf1c63eefa"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "be35776d2425e729a076c503cefc2bc29c9ba273439a8399d3473c4fdec19bff"
+        "c92050a5d8a3abbc0681bc7d91cd473db6c8a816cc02e035c1df74cf1c63eefa"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "be35776d2425e729a076c503cefc2bc29c9ba273439a8399d3473c4fdec19bff"
+        "c92050a5d8a3abbc0681bc7d91cd473db6c8a816cc02e035c1df74cf1c63eefa"
       ],
       "credential_env": [],
       "required_env": [],

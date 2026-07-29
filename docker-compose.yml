@@ -11,7 +11,8 @@
 #             signal_gateway_worker,
 #             gmail_watch_scheduler, gmail_history_poller,
 #             google_calendar_live_poller, google_drive_live_poller,
-#             google_calendar_watch_scheduler, google_drive_watch_scheduler
+#             google_calendar_watch_scheduler, google_drive_watch_scheduler,
+#             credential_renewal_scheduler
 #   backfill: oauth_poller, tenant_onboarding, source_onboarding,
 #             shard_fetch, reconciler, feels_onboarded_monitor
 #   consume : normalizer, observation_writer, dlq_writer,
@@ -420,6 +421,14 @@ services:
   google_drive_watch_scheduler:
     <<: *worker
     command: python scripts/run_google_drive_watch_scheduler.py
+    healthcheck: *consumer-healthcheck
+
+  # Shared, contract-derived renewal loop for QuickBooks, Ramp, Gusto,
+  # Carta, LinkedIn, and future credential-renewal sources. Each provider
+  # exchange is still fenced by its exact installation renewal-job lease.
+  credential_renewal_scheduler:
+    <<: *worker
+    command: python scripts/run_credential_renewal_scheduler.py
     healthcheck: *consumer-healthcheck
 
   # ---- think / post-commit application workers ---------------------

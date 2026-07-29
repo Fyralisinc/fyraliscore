@@ -1,7 +1,7 @@
 {
   "schema_version": "fyralis.source-certification-execution-binding.v1",
   "source_id": "telegram",
-  "spec_hash": "6ce684030872eda3bd532208c85831165ffae429e5b69a4b0cd51030c549f335",
+  "spec_hash": "9e1bf10443b7fb5e2c7a1ef6ee07bcb1cb1133b4f39ea31049849bd763441e57",
   "stages": {
     "canary": {
       "argv": [
@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "e3da3d41f2a61ad3263470ad56f4d763cbf340afeb796e2923a11dc2a736f64e"
+        "982454552b0c6bd3ea232e48dd5d3db7712c4522d7119aaa1e66de33ba5cff89"
       ],
       "credential_env": [
         "FYRALIS_CANARY_TELEGRAM"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "e3da3d41f2a61ad3263470ad56f4d763cbf340afeb796e2923a11dc2a736f64e"
+        "982454552b0c6bd3ea232e48dd5d3db7712c4522d7119aaa1e66de33ba5cff89"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "e3da3d41f2a61ad3263470ad56f4d763cbf340afeb796e2923a11dc2a736f64e"
+        "982454552b0c6bd3ea232e48dd5d3db7712c4522d7119aaa1e66de33ba5cff89"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "e3da3d41f2a61ad3263470ad56f4d763cbf340afeb796e2923a11dc2a736f64e"
+        "982454552b0c6bd3ea232e48dd5d3db7712c4522d7119aaa1e66de33ba5cff89"
       ],
       "credential_env": [],
       "required_env": [],

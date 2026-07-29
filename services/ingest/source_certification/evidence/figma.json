@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://developers.figma.com/docs/rest-api/",
       "api_version": "Figma REST API v1",
-      "schema_sha256": "5fcdb971ecd82dc4e8153bc27f866652828a9398269bed53bc52c0e150e7baac",
+      "schema_sha256": "9276dd3fcb9ee3e2ef0e3659dbf6feeeaa167d42e28e8c11637ecc11b246bfae",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

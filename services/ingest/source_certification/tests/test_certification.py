@@ -208,43 +208,91 @@ def test_every_source_declares_all_three_load_shapes() -> None:
             )
             for operation in suite.executable_operations:
                 assert operation.operation_id.startswith(f"{spec.source_id}.")
-                assert operation.evidence_id.startswith(
-                    f"{spec.evidence_pack_id}."
-                )
+                assert operation.evidence_id.startswith(f"{spec.evidence_pack_id}.")
     whatsapp = SOURCE_CERTIFICATION_CATALOG["whatsapp"]
     historical = next(s for s in whatsapp.load_suites if s.kind == "historical")
-    assert historical.operation_mix == (
-        "whatsapp.assert_history_unsupported",
-    )
+    assert historical.operation_mix == ("whatsapp.assert_history_unsupported",)
     assert historical.executable_operations == ()
     assert historical.non_applicability is not None
 
 
-def test_required_renewal_contract_gaps_block_combined_execution() -> None:
-    renewal_sources = {
-        "gmail",
-        "google_calendar",
-        "google_drive",
-        "quickbooks",
-        "ramp",
-        "gusto",
-        "carta",
-        "linkedin",
+def test_combined_suites_wire_exact_bounded_renewal_operations() -> None:
+    renewal_contracts = {
+        "gmail": ("watch.create", "gmail-api", ("dwd.token.exchange",)),
+        "google_calendar": (
+            "events.watch",
+            "calendar-api",
+            ("dwd.token.exchange", "channels.stop"),
+        ),
+        "google_drive": (
+            "changes.watch",
+            "drive-api",
+            ("dwd.token.exchange", "channels.stop"),
+        ),
+        "quickbooks": ("oauth.token.refresh", "oauth", ()),
+        "ramp": ("oauth.token.mint", None, ()),
+        "gusto": ("oauth.token.refresh", "oauth", ()),
+        "carta": ("oauth.token.mint", None, ()),
+        "linkedin": ("oauth.token.refresh", "oauth", ()),
     }
     for spec in SOURCE_CERTIFICATION_SPECS:
-        combined = next(
-            suite for suite in spec.load_suites if suite.kind == "combined"
+        source = source_definition(spec.source_id)
+        combined = next(suite for suite in spec.load_suites if suite.kind == "combined")
+        renewal_operations = tuple(
+            operation
+            for operation in combined.executable_operations
+            if operation.operation_id.endswith(".token_or_watch_renewal")
         )
-        renewal = next(
+        renewal_absences = tuple(
             assertion
             for assertion in combined.contract_absence_assertions
-            if assertion.operation_id.endswith(
-                ".token_or_watch_renewal"
-            )
+            if assertion.operation_id.endswith(".token_or_watch_renewal")
         )
-        assert renewal.blocks_execution == (
-            spec.source_id in renewal_sources
+
+        if spec.source_id not in renewal_contracts:
+            assert source.renewal is None
+            assert renewal_operations == ()
+            assert len(renewal_absences) == 1
+            assert renewal_absences[0].blocks_execution is False
+            continue
+
+        (
+            provider_operation_id,
+            quota_bucket,
+            supporting_operation_ids,
+        ) = renewal_contracts[spec.source_id]
+        assert source.renewal is not None
+        assert source.renewal.operation_id == provider_operation_id
+        assert source.renewal.supporting_operation_ids == supporting_operation_ids
+        assert renewal_absences == ()
+        assert len(renewal_operations) == 1
+        renewal = renewal_operations[0]
+        assert renewal.operation_id == (f"{spec.source_id}.token_or_watch_renewal")
+        assert renewal.executable_binding == source.renewal.invoker_binding
+        assert renewal.kind == "control"
+        assert renewal.execution_frequency == "periodic"
+        assert renewal.cadence_seconds == source.renewal.cadence_seconds
+        assert renewal.trial_position is None
+        assert renewal.raw_cardinality == "none"
+        assert renewal.normalized_cardinality == "none"
+        assert renewal.observation_cardinality == "none"
+        assert renewal.cursor_applicability == "not_applicable"
+        assert renewal.receipt_proof_requirements == (
+            "binding_invocation",
+            "quota_mapping",
+            "renewal_state",
+            "secret_redacted",
         )
+        assert {
+            mapping.operation_id for mapping in renewal.quota_mappings
+        } == {provider_operation_id, *supporting_operation_ids}
+        primary_mapping = next(
+            mapping
+            for mapping in renewal.quota_mappings
+            if mapping.operation_id == provider_operation_id
+        )
+        assert primary_mapping.quota_bucket == quota_bucket
+        assert primary_mapping.units_per_request == 1.0
 
 
 def test_operation_mix_is_compatibility_only_for_typed_execution() -> None:
@@ -265,10 +313,7 @@ def test_operation_mix_is_compatibility_only_for_typed_execution() -> None:
         combined.execution_workload_sha256
     )
     assert compatibility_projection.data_operations == combined.data_operations
-    assert (
-        compatibility_projection.control_operations
-        == combined.control_operations
-    )
+    assert compatibility_projection.control_operations == combined.control_operations
 
 
 def test_historical_data_operations_require_positive_pipeline_outputs() -> None:
@@ -335,9 +380,7 @@ def test_historical_suite_rejects_missing_quota_or_cursor_declarations(
     )
     fetch = next(iter(historical.data_operations))
     removed_proof = (
-        "quota_mapping"
-        if "quota_mappings" in changes
-        else "cursor_consistency"
+        "quota_mapping" if "quota_mappings" in changes else "cursor_consistency"
     )
     replacement = replace(
         fetch,
@@ -366,10 +409,7 @@ def test_canary_operations_cover_contract_requests_and_live_transports() -> None
                 f"provider_request.{operation_id}"
                 for operation_id in source.operation_policy_ids
             ),
-            *(
-                f"live_transport.{transport}"
-                for transport in source.live_transports
-            ),
+            *(f"live_transport.{transport}" for transport in source.live_transports),
         )
         assert len(spec.canary.required_operations) <= spec.canary.max_requests
 
@@ -377,15 +417,11 @@ def test_canary_operations_cover_contract_requests_and_live_transports() -> None
 def test_canary_mutability_uses_exact_http_binding_and_fails_closed() -> None:
     slack = SOURCE_CERTIFICATION_CATALOG["slack"].canary
     assert (
-        slack.operation_contract_for(
-            "provider_request.conversations.list"
-        ).mutability
+        slack.operation_contract_for("provider_request.conversations.list").mutability
         == "read"
     )
     assert (
-        slack.operation_contract_for(
-            "provider_request.chat.postMessage"
-        ).mutability
+        slack.operation_contract_for("provider_request.chat.postMessage").mutability
         == "unclassified"
     )
     assert (
@@ -402,16 +438,13 @@ def test_canary_mutability_uses_exact_http_binding_and_fails_closed() -> None:
         == "unclassified"
     )
     assert (
-        facebook.operation_contract_for("live_transport.api_poll").mutability
-        == "read"
+        facebook.operation_contract_for("live_transport.api_poll").mutability == "read"
     )
 
     # Protocol-only operations have no HTTP-method evidence to infer from.
     telegram = SOURCE_CERTIFICATION_CATALOG["telegram"].canary
     assert (
-        telegram.operation_contract_for(
-            "provider_request.session.connect"
-        ).mutability
+        telegram.operation_contract_for("provider_request.session.connect").mutability
         == "unclassified"
     )
     assert (
@@ -431,9 +464,7 @@ def test_unlocked_evidence_blocks_even_otherwise_passing_results() -> None:
     assert any("unverified evidence" in failure for failure in decision.failures)
     assert not any("schema checksum" in failure for failure in decision.failures)
     surface = next(
-        item
-        for item in spec.evidence
-        if item.behavior_id == "used_api_surface"
+        item for item in spec.evidence if item.behavior_id == "used_api_surface"
     )
     assert surface.schema_sha256 is not None
 
@@ -568,8 +599,7 @@ def test_passing_suite_requires_a_complete_execution_window() -> None:
 
     assert decision.state == "blocked"
     assert (
-        "provider_safe.live requires started_at and completed_at"
-        in decision.failures
+        "provider_safe.live requires started_at and completed_at" in decision.failures
     )
 
 
@@ -606,9 +636,7 @@ def test_passing_canary_timestamp_must_be_fresh_and_not_future(
 def test_suite_topology_must_match_catalog_declaration() -> None:
     spec = _lock_evidence(SOURCE_CERTIFICATION_CATALOG["slack"])
     passing = _passing_input(spec)
-    live = next(
-        suite for suite in passing.provider_safe_suites if suite.kind == "live"
-    )
+    live = next(suite for suite in passing.provider_safe_suites if suite.kind == "live")
     metrics = dict(live.metrics)
     metrics["replicas"] = 1.0
     supplied = replace(
@@ -633,9 +661,7 @@ def test_suite_topology_must_match_catalog_declaration() -> None:
 def test_short_or_synthetic_load_provenance_cannot_pass() -> None:
     spec = _lock_evidence(SOURCE_CERTIFICATION_CATALOG["slack"])
     passing = _passing_input(spec)
-    live = next(
-        suite for suite in passing.provider_safe_suites if suite.kind == "live"
-    )
+    live = next(suite for suite in passing.provider_safe_suites if suite.kind == "live")
     metrics = dict(live.metrics)
     metrics.update(
         clock_mode_wall=0.0,
@@ -715,9 +741,7 @@ def test_ceiling_and_headroom_must_match_measured_stable_rates(
     decision = evaluate_certification(spec, supplied, now=NOW)
 
     assert decision.state == "blocked"
-    assert any(
-        expected_failure in failure for failure in decision.failures
-    )
+    assert any(expected_failure in failure for failure in decision.failures)
 
 
 def test_no_todos_skips_or_legacy_references_can_be_waived() -> None:
@@ -796,8 +820,7 @@ def test_canary_requires_exact_artifact_backed_operation_coverage() -> None:
     decision = evaluate_certification(spec, missing, now=NOW)
     assert decision.state == "blocked"
     assert any(
-        "canary operation coverage missing" in item
-        for item in decision.failures
+        "canary operation coverage missing" in item for item in decision.failures
     )
 
     extra = replace(
@@ -855,9 +878,7 @@ def test_canary_request_budget_is_enforced_by_the_evaluator() -> None:
     decision = evaluate_certification(spec, supplied, now=NOW)
 
     assert decision.state == "blocked"
-    assert any(
-        "request count exceeds" in failure for failure in decision.failures
-    )
+    assert any("request count exceeds" in failure for failure in decision.failures)
 
 
 def test_canary_with_unclassified_operation_cannot_pass() -> None:

@@ -15,6 +15,7 @@ from services.ingest.source_certification.execution_driver import (
     ExecutionDriverError,
     LoadStageOptions,
     STAGE_ARTIFACT_SCHEMA_VERSION,
+    build_declared_execution_plan,
     declared_execution_plan_sha256,
     run_stage,
 )
@@ -38,7 +39,10 @@ from services.ingest.source_certification.stage_artifacts import (
 from services.ingest.source_certification.catalog import (
     SOURCE_CERTIFICATION_CATALOG,
 )
-from services.ingest.source_contract.catalog import CANONICAL_SOURCE_IDS
+from services.ingest.source_contract.catalog import (
+    CANONICAL_SOURCE_IDS,
+    source_definition,
+)
 
 
 def _passing_pipeline_probe(source_id: str) -> dict[str, object]:
@@ -55,6 +59,46 @@ def test_idempotency_replay_promotion_applies_to_all_27_sources() -> None:
     assert "duplicate_delivery_and_idempotency" in PIPELINE_SCENARIO_IDS
 
 
+def test_execution_plans_include_only_contract_declared_renewal_invokers() -> None:
+    renewal_sources = {
+        "gmail",
+        "google_calendar",
+        "google_drive",
+        "quickbooks",
+        "ramp",
+        "gusto",
+        "carta",
+        "linkedin",
+    }
+
+    for source_id in CANONICAL_SOURCE_IDS:
+        source = source_definition(source_id)
+        plan = build_declared_execution_plan(source_id)
+        callable_bindings = {
+            binding["role"]: binding["reference"]
+            for binding in plan["callable_bindings"]
+        }
+        combined = next(
+            suite for suite in plan["load_suites"] if suite["kind"] == "combined"
+        )
+        renewal_operations = [
+            operation
+            for operation in combined["workload"]["executable_operations"]
+            if operation["operation_id"].endswith(".token_or_watch_renewal")
+        ]
+
+        if source_id in renewal_sources:
+            assert source.renewal is not None
+            assert callable_bindings["renewal:invoker"] == (
+                source.renewal.invoker_binding
+            )
+            assert len(renewal_operations) == 1
+        else:
+            assert source.renewal is None
+            assert "renewal:invoker" not in callable_bindings
+            assert renewal_operations == []
+
+
 async def test_all_catalog_load_suites_emit_typed_pipeline_artifacts(
     tmp_path: Path,
 ) -> None:
@@ -63,17 +107,22 @@ async def test_all_catalog_load_suites_emit_typed_pipeline_artifacts(
     )
 
     for source_id, spec in SOURCE_CERTIFICATION_CATALOG.items():
-        artifacts, provider_safe, fyralis_ceiling = (
-            await driver._run_typed_pipeline_loads(  # noqa: SLF001
-                source_id,
-                ambient_env={},
-                artifact_dir=tmp_path / source_id,
-                adapter_factory=None,
-            )
+        (
+            artifacts,
+            provider_safe,
+            fyralis_ceiling,
+        ) = await driver._run_typed_pipeline_loads(  # noqa: SLF001
+            source_id,
+            ambient_env={},
+            artifact_dir=tmp_path / source_id,
+            adapter_factory=None,
         )
         declared_kinds = {suite.kind for suite in spec.load_suites}
         assert set(artifacts) == {"provider_safe", "fyralis_ceiling"}
-        assert all(set(mode_artifacts) == declared_kinds for mode_artifacts in artifacts.values())
+        assert all(
+            set(mode_artifacts) == declared_kinds
+            for mode_artifacts in artifacts.values()
+        )
         assert {result.kind for result in provider_safe} == declared_kinds
         assert {result.kind for result in fyralis_ceiling} == declared_kinds
         for suite in spec.load_suites:
@@ -106,9 +155,7 @@ async def test_local_driver_writes_strict_source_isolated_used_surface_evidence(
     )
 
     parsed = load_certification_input(result_path)
-    artifact = json.loads(
-        (artifact_dir / "stage.json").read_text(encoding="utf-8")
-    )
+    artifact = json.loads((artifact_dir / "stage.json").read_text(encoding="utf-8"))
     surface = artifact["provider_lab_used_surface"]
     assert parsed == supplied
     assert parsed.local_correctness == "blocked"
@@ -128,9 +175,7 @@ async def test_local_driver_writes_strict_source_isolated_used_surface_evidence(
     assert surface["source_isolation"] is True
     assert surface["unknown_route_status"] == 501
     assert surface["four_scope_request_ledger"]["passed"] is True
-    assert {
-        result["route_id"] for result in surface["route_results"]
-    } == {
+    assert {result["route_id"] for result in surface["route_results"]} == {
         "slack.conversations_list",
         "slack.conversations_history",
         "slack.conversations_info",
@@ -142,18 +187,14 @@ async def test_local_driver_writes_strict_source_isolated_used_surface_evidence(
     assert [row["scenario_id"] for row in scenario_rows] == [
         result.scenario_id for result in supplied.scenario_results
     ]
-    assert all(
-        row["certification_state"] == "blocked" for row in scenario_rows
-    )
+    assert all(row["certification_state"] == "blocked" for row in scenario_rows)
     special = next(
         row
         for row in scenario_rows
         if row["scenario_id"] == "thread_refetch_and_full_thread_upsert"
     )
     assert special["measured_probe_ids"] == []
-    assert special["unmeasured_probe_ids"] == [
-        "source_specific_executor_absent"
-    ]
+    assert special["unmeasured_probe_ids"] == ["source_specific_executor_absent"]
 
 
 async def test_local_driver_promotes_only_executed_pipeline_scenarios(
@@ -164,8 +205,7 @@ async def test_local_driver_promotes_only_executed_pipeline_scenarios(
         return _passing_pipeline_probe("slack")
 
     monkeypatch.setattr(
-        "services.ingest.source_certification.execution_driver."
-        "run_pipeline_probe",
+        "services.ingest.source_certification.execution_driver." "run_pipeline_probe",
         _pipeline,
     )
     supplied = await run_stage(
@@ -176,14 +216,10 @@ async def test_local_driver_promotes_only_executed_pipeline_scenarios(
         ambient_env={},
     )
 
-    by_id = {
-        result.scenario_id: result for result in supplied.scenario_results
-    }
+    by_id = {result.scenario_id: result for result in supplied.scenario_results}
     assert supplied.local_correctness == "blocked"
     assert {
-        scenario_id
-        for scenario_id, result in by_id.items()
-        if result.state == "passed"
+        scenario_id for scenario_id, result in by_id.items() if result.state == "passed"
     } == PIPELINE_SCENARIO_IDS
     assert all(
         result.failures == ()
@@ -205,9 +241,7 @@ async def test_local_driver_promotes_only_executed_pipeline_scenarios(
         for row in artifact["scenario_execution_ledger"]
     }
     assert {
-        scenario_id
-        for scenario_id, state in states.items()
-        if state == "passed"
+        scenario_id for scenario_id, state in states.items() if state == "passed"
     } == PIPELINE_SCENARIO_IDS
     duplicate = next(
         row
@@ -231,8 +265,7 @@ async def test_whatsapp_ledger_keeps_history_topology_explicitly_blocked(
         return _passing_pipeline_probe("whatsapp")
 
     monkeypatch.setattr(
-        "services.ingest.source_certification.execution_driver."
-        "run_pipeline_probe",
+        "services.ingest.source_certification.execution_driver." "run_pipeline_probe",
         _pipeline,
     )
     supplied = await run_stage(
@@ -287,22 +320,14 @@ async def test_load_driver_measures_lab_but_does_not_guess_provider_quota(
         load_request_count=4,
     )
 
-    artifact = json.loads(
-        (artifact_dir / "stage.json").read_text(encoding="utf-8")
-    )
+    artifact = json.loads((artifact_dir / "stage.json").read_text(encoding="utf-8"))
     diagnostic = artifact["load_diagnostic"]
-    assert all(
-        suite.state == "blocked" for suite in supplied.provider_safe_suites
-    )
-    assert all(
-        suite.state == "blocked" for suite in supplied.fyralis_ceiling_suites
-    )
+    assert all(suite.state == "blocked" for suite in supplied.provider_safe_suites)
+    assert all(suite.state == "blocked" for suite in supplied.fyralis_ceiling_suites)
     assert diagnostic["quota_disabled"]["request_count"] == 4
     assert diagnostic["quota_disabled"]["requests_per_second"] > 0
     assert diagnostic["declared_surface_mix"]["state"] == "diagnostic_only"
-    assert set(
-        diagnostic["declared_surface_mix"]["http_operation_ids"]
-    ) == set(
+    assert set(diagnostic["declared_surface_mix"]["http_operation_ids"]) == set(
         diagnostic["declared_surface_mix"]["declared_operation_ids"]
     )
     assert diagnostic["provider_safe"]["state"] == "blocked"
@@ -315,9 +340,11 @@ async def test_load_driver_measures_lab_but_does_not_guess_provider_quota(
     assert offered["state"] == "diagnostic_only"
     assert offered["clock_mode"] == "virtual"
     assert offered["quota_configuration"]["state"] == "blocked"
-    assert {
-        suite["kind"] for suite in offered["suites"]
-    } == {"historical", "live", "combined"}
+    assert {suite["kind"] for suite in offered["suites"]} == {
+        "historical",
+        "live",
+        "combined",
+    }
     typed = artifact["pipeline_load_artifacts"]
     assert set(typed) == {"provider_safe", "fyralis_ceiling"}
     assert all(
@@ -333,10 +360,7 @@ async def test_load_driver_measures_lab_but_does_not_guess_provider_quota(
             or "calibration did not successfully exercise every" in ceiling["reason"]
         )
         assert not (
-            artifact_dir
-            / "provider_lab_load"
-            / suite["kind"]
-            / "fyralis_ceiling.json"
+            artifact_dir / "provider_lab_load" / suite["kind"] / "fyralis_ceiling.json"
         ).exists()
 
 
@@ -367,33 +391,23 @@ async def test_provider_safe_diagnostic_requires_exact_evidence_labelled_budget(
         load_request_count=3,
     )
 
-    artifact = json.loads(
-        (artifact_dir / "stage.json").read_text(encoding="utf-8")
-    )
+    artifact = json.loads((artifact_dir / "stage.json").read_text(encoding="utf-8"))
     diagnostic = artifact["load_diagnostic"]["provider_safe"]
     assert diagnostic["state"] == "diagnostic_only"
     assert diagnostic["status_counts"] == {"200": 1, "429": 2}
-    assert all(
-        suite.state == "blocked" for suite in supplied.provider_safe_suites
-    )
+    assert all(suite.state == "blocked" for suite in supplied.provider_safe_suites)
     for suite in artifact["offered_load"]["suites"]:
         provider_safe = suite["provider_lab_diagnostic"]["provider_safe"]
         assert provider_safe["state"] == "blocked"
         assert "safety cap" in provider_safe["reason"]
         assert not (
-            artifact_dir
-            / "provider_lab_load"
-            / suite["kind"]
-            / "provider_safe.json"
+            artifact_dir / "provider_lab_load" / suite["kind"] / "provider_safe.json"
         ).exists()
     quota_configuration = artifact["offered_load"]["quota_configuration"]
     assert quota_configuration["state"] == "verified"
     assert quota_configuration["evidence"][0]["bucket"] == "web-api"
     assert quota_configuration["evidence"][0]["cost"] == 1
-    assert (
-        quota_configuration["evidence"][0]["limit_id"]
-        == "web-api-steady"
-    )
+    assert quota_configuration["evidence"][0]["limit_id"] == "web-api-steady"
     assert all(
         dict(suite.metrics)["quota_config_verified"] == 0
         for suite in supplied.provider_safe_suites
@@ -421,9 +435,7 @@ async def test_live_only_ingress_load_uses_lab_without_inventing_an_operation(
         load_request_count=3,
     )
 
-    artifact = json.loads(
-        (artifact_dir / "stage.json").read_text(encoding="utf-8")
-    )
+    artifact = json.loads((artifact_dir / "stage.json").read_text(encoding="utf-8"))
     diagnostic = artifact["load_diagnostic"]["quota_disabled"]
     assert diagnostic["execution_boundary"] == "provider_lab_live_ingress"
     assert diagnostic["operation_id"] is None
@@ -481,16 +493,12 @@ def test_provider_lab_http_plan_uses_exact_operation_bindings() -> None:
         if operation.route.route_id == "gmail.pubsub_topic"
     ]
 
-    assert [
-        (operation.operation_id, operation.method)
-        for operation in topic
-    ] == [
+    assert [(operation.operation_id, operation.method) for operation in topic] == [
         ("pubsub.topic.create", "PUT"),
         ("pubsub.topic.delete", "DELETE"),
     ]
     assert all(
-        operation.binding
-        == operation.route.binding_for(operation.operation_id)
+        operation.binding == operation.route.binding_for(operation.operation_id)
         for operation in gmail
         if operation.operation_id is not None
     )
@@ -778,9 +786,7 @@ async def test_fault_driver_uses_provider_transport_without_claiming_full_recove
         ambient_env={},
     )
 
-    artifact = json.loads(
-        (artifact_dir / "stage.json").read_text(encoding="utf-8")
-    )
+    artifact = json.loads((artifact_dir / "stage.json").read_text(encoding="utf-8"))
     recovered = artifact["fault_recovery_diagnostic"]["recovered_faults"]
     assert artifact["fault_recovery_diagnostic"]["retry_safe_operation_count"] == 4
     assert len(recovered) == 8
@@ -800,9 +806,7 @@ async def test_fault_driver_uses_provider_transport_without_claiming_full_recove
     assert distributed["state"] == "blocked"
     assert distributed["exact_assertions_passed"] is False
     assert distributed["synthetic_promotion_allowed"] is False
-    assert all(
-        suite.state == "blocked" for suite in supplied.fault_recovery_suites
-    )
+    assert all(suite.state == "blocked" for suite in supplied.fault_recovery_suites)
 
 
 @pytest.mark.requires_infra
@@ -845,15 +849,11 @@ async def test_load_and_fault_artifacts_record_exact_two_replica_redis_proof(
         assert all(distributed["assertions"].values())
         assert distributed["replica_count"] == 2
         assert len(set(distributed["redis_connection_ids"])) == 2
+        assert distributed["cooldown"]["observer_callback_count_before_deadline"] == 0
         assert (
-            distributed["cooldown"][
-                "observer_callback_count_before_deadline"
-            ]
-            == 0
+            distributed["weighted_tenant_isolation"]["tenant_b_second_result"]
+            == "tenant-b-2"
         )
-        assert distributed["weighted_tenant_isolation"][
-            "tenant_b_second_result"
-        ] == "tenant-b-2"
         assert distributed["synthetic_promotion_allowed"] is False
         assert artifact["synthetic_promotion_allowed"] is False
         assert all(
@@ -896,12 +896,9 @@ async def test_canary_is_fail_closed_even_when_source_credentials_are_present(
     )
     assert supplied.canary.state == "blocked"
     assert all(
-        operation.state == "blocked"
-        for operation in supplied.canary.operation_results
+        operation.state == "blocked" for operation in supplied.canary.operation_results
     )
-    assert artifact["credential_environment_names_present"] == [
-        "FYRALIS_CANARY_SLACK"
-    ]
+    assert artifact["credential_environment_names_present"] == ["FYRALIS_CANARY_SLACK"]
     assert artifact["credential_values_recorded"] is False
     assert artifact["real_provider_requests_sent"] == 0
     execution = artifact["canary_execution"]
@@ -911,12 +908,8 @@ async def test_canary_is_fail_closed_even_when_source_credentials_are_present(
         "canary_id": SOURCE_CERTIFICATION_CATALOG["slack"].canary.canary_id,
         "promotion_eligible": False,
         "account_identity_sha256": None,
-        "account_type": SOURCE_CERTIFICATION_CATALOG[
-            "slack"
-        ].canary.account_type,
-        "api_version": SOURCE_CERTIFICATION_CATALOG[
-            "slack"
-        ].provider_api_version,
+        "account_type": SOURCE_CERTIFICATION_CATALOG["slack"].canary.account_type,
+        "api_version": SOURCE_CERTIFICATION_CATALOG["slack"].provider_api_version,
         "started_at": execution["started_at"],
         "completed_at": execution["completed_at"],
         "request_ledger": [],
@@ -927,9 +920,9 @@ async def test_canary_is_fail_closed_even_when_source_credentials_are_present(
             "actions": [],
         },
     }
-    assert datetime.fromisoformat(
-        execution["completed_at"]
-    ) >= datetime.fromisoformat(execution["started_at"])
+    assert datetime.fromisoformat(execution["completed_at"]) >= datetime.fromisoformat(
+        execution["started_at"]
+    )
     assert secret not in artifact_text
 
 
@@ -1006,14 +999,11 @@ async def test_every_source_executes_its_exact_local_plan(
         assert probe["installation_seeder_resolved"] is False
     assert artifact["provider_lab_used_surface"]["source_isolation"] is True
     assert (
-        artifact["provider_lab_used_surface"]["four_scope_request_ledger"][
-            "passed"
-        ]
+        artifact["provider_lab_used_surface"]["four_scope_request_ledger"]["passed"]
         is True
     )
     assert [
-        row["scenario_id"]
-        for row in artifact["scenario_execution_ledger"]
+        row["scenario_id"] for row in artifact["scenario_execution_ledger"]
     ] == list(
         SOURCE_CERTIFICATION_CATALOG[source_id].required_scenarios,
     )
@@ -1065,9 +1055,7 @@ async def test_all_27_sources_execute_declared_load_and_fault_diagnostics(
             for kind, pipeline_artifact in mode.items():
                 declared = next(
                     suite
-                    for suite in SOURCE_CERTIFICATION_CATALOG[
-                        source_id
-                    ].load_suites
+                    for suite in SOURCE_CERTIFICATION_CATALOG[source_id].load_suites
                     if suite.kind == kind
                 )
                 assert pipeline_artifact["workload"] == (

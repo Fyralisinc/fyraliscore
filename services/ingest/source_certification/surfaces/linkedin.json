@@ -7,6 +7,7 @@
     "services.ingest.ingestion.installations": "59caedd47bbd118a3fe3393c9974ac4730ad081ed346c1644a396348fffd7153",
     "services.ingest.ingestion.planners.linkedin": "d5ec1dd763e49186151964d7e30ac522266d8f2d2f5fdb9aeb0ed93bbb7048f1",
     "services.ingest.ingestion.reconcilers.linkedin": "a203843fb579e934f0ddaa898350f0852f40d5b4984a0e83cd2338d6c23fbce9",
+    "services.ingest.ingestion.workflows.credential_renewal_scheduler": "2d583eb46489347b66f9e7314b42687e465b69cff81e9e1a70eb8bd3b68cc412",
     "services.ingest.ingestion.workflows.periodic_reconciler": "7d5d2e311309dda79ffe29629ac83d079eb7bde0cf407b947dddf9923eac9ce8",
     "services.ingest.integrations.linkedin": "3b17d41bc9ea03b814a8d813e91698b23a35d357e9a57f259e444e3809e9e785",
     "services.ingest.integrations.linkedin.client": "3181d30190297e9eb27717cb3a4d10b5b8620a325095e9c0fda701886db3c8aa",
@@ -14,9 +15,10 @@
     "services.ingest.integrations.linkedin.oauth": "e26b5e0e64ea99e5d8fbbea508b88162e1b7de532c3228dbc219a25c5c719306",
     "services.ingest.integrations.linkedin.onboarding": "4a66b83de8c9eb7b613a29921d227d6e5b1531982b9efbaa7f353c2e0e69bcdf",
     "services.ingest.integrations.linkedin.poll": "cfb8f2a9f6173610f740994933f85fe5312cc9f8cf1ed5e04f33aa4cc2f684ca",
+    "services.ingest.integrations.oauth_renewal": "b15e01613d7099d1517ae3f94726e8c4d8ee67aafb8b1600aa3c72f53f0f55aa",
     "services.ingest.source_contract.onboarding_handoffs": "971bde32a69cfdfcb4525055719eaca476ef41c6aa69480c7c1a42f0abb9b7fe",
     "services.ingest.synthetic.fixtures.certification": "cd55e177b1a42af1e19766ffd0271c07bbd18b587f48cdab958f4083798aba36",
-    "services.ingest.synthetic.provider_lab.wave_cd": "41c4c2a2e3d41386cae397e018f3cd519f08baae2bdf5e148c00e36c3df41929",
+    "services.ingest.synthetic.provider_lab.wave_cd": "774f0360c70a6704af2baef32f9fbc02ea4c59348c47a18a2a013c223f942a4f",
     "services.ingest.synthetic.validation_runs.source_bindings": "46001079bcd89cc5d2f977b582920ee9abafe27457890011bac82d5022cce97e",
     "services.platform.runtime.source_rehearsal_contract": "1139876d997c4084bb3e1cd2ec5041ea6ab59407606c8d33127e958ee0e62f97"
   },
@@ -348,6 +350,18 @@
       "ingress_boundaries": [],
       "workers": [
         {
+          "cadence_seconds": 300,
+          "component_id": "credential_renewal",
+          "deployment_owner": "fyralis_worker",
+          "deployment_unit": "credential_renewal_scheduler",
+          "dispatch_binding": null,
+          "launcher_binding": "services.ingest.ingestion.workflows.credential_renewal_scheduler:run_forever",
+          "lease_scope": "installation",
+          "managed_reason": null,
+          "role": "credential_renewal",
+          "transport": null
+        },
+        {
           "cadence_seconds": 21600,
           "component_id": "periodic_reconciler",
           "deployment_owner": "fyralis_worker",
@@ -617,6 +631,15 @@
     "provider_id": "linkedin",
     "provider_transport_enforced": true,
     "reconciler_binding": "services.ingest.ingestion.reconcilers.linkedin:reconcile_linkedin",
+    "renewal": {
+      "cadence_seconds": 300,
+      "invoker_binding": "services.ingest.integrations.oauth_renewal:renew_linkedin_installation",
+      "kind": "credential",
+      "lease_scope": "installation",
+      "operation_id": "oauth.token.refresh",
+      "renewal_window_seconds": 120,
+      "supporting_operation_ids": []
+    },
     "runtime_identifiers": [
       "organization_urn"
     ],

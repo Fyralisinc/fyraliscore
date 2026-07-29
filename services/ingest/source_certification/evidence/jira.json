@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/",
       "api_version": "Jira Cloud REST API v3",
-      "schema_sha256": "92998cba63e6b8b1f6ffabf188d31f4a78fda7f5832475a1c61506abbe99e588",
+      "schema_sha256": "acf0d6a6a4250fadf754d607bd5e9d8f72a8d83ab950d5f906de3e504bc3b83c",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

@@ -17,6 +17,7 @@ from lib.shared.provider_transport import (
     RetryLater,
     RetryReason,
 )
+from services.ingest.integrations import oauth_refresh
 from services.ingest.integrations.gusto.client import GustoClient
 from services.ingest.integrations.linkedin.client import LinkedinClient
 from services.ingest.integrations.quickbooks.client import QuickBooksClient
@@ -321,29 +322,17 @@ async def test_quickbooks_reactive_refresh_uses_the_same_exact_binding(
 ) -> None:
     tenant_id, installation_id = _identity()
     recorder = _Recorder()
-    monkeypatch.setenv("QUICKBOOKS_CLIENT_ID", "client-id")
-    monkeypatch.setenv("QUICKBOOKS_CLIENT_SECRET", "client-secret")
+    renewal_calls: list[dict[str, object]] = []
 
-    class _Store:
-        async def get(self, ref: str, *, tenant_id: UUID) -> bytes:
-            assert ref == "refresh-ref"
-            return b"refresh-token"
+    async def through_durable_renewal(**kwargs: object) -> str:
+        renewal_calls.append(kwargs)
+        return "fresh-token"
 
-        async def put(
-            self,
-            value: str,
-            *,
-            label: str,
-            tenant_id: UUID,
-        ) -> str:
-            assert value in {"fresh-token", "rotated-refresh"}
-            return f"ref:{label}"
-
-    class _Pool:
-        async def execute(self, query: str, *args: object) -> str:
-            assert "UPDATE quickbooks_installations" in query
-            assert args[-2:] == (installation_id, tenant_id)
-            return "UPDATE 1"
+    monkeypatch.setattr(
+        oauth_refresh,
+        "_refresh_through_renewal_job",
+        through_durable_renewal,
+    )
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/tokens/bearer"):
@@ -368,8 +357,8 @@ async def test_quickbooks_reactive_refresh_uses_the_same_exact_binding(
         client = QuickBooksClient(
             base_url="https://quickbooks.test",
             realm_id="realm-1",
-            pool=_Pool(),
-            secret_store=_Store(),
+            pool=object(),
+            secret_store=object(),
             tenant_id=tenant_id,
             install_row_id=installation_id,
             secret_ref="access-ref",
@@ -384,7 +373,6 @@ async def test_quickbooks_reactive_refresh_uses_the_same_exact_binding(
 
     assert [context.operation for context in recorder.contexts] == [
         "entities.query",
-        "oauth.token.refresh",
         "entities.query",
     ]
     assert all(
@@ -392,6 +380,13 @@ async def test_quickbooks_reactive_refresh_uses_the_same_exact_binding(
         and context.installation_id == str(installation_id)
         for context in recorder.contexts
     )
+    assert len(renewal_calls) == 1
+    renewal = renewal_calls[0]
+    binding = renewal["request_binding"]
+    assert getattr(binding, "_source") == "quickbooks"
+    assert getattr(binding, "_tenant_id") == str(tenant_id)
+    assert getattr(binding, "_installation_id") == str(installation_id)
+    assert getattr(binding, "_transport") is recorder
 
 
 @pytest.mark.parametrize(

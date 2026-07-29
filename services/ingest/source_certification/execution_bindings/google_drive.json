@@ -1,7 +1,7 @@
 {
   "schema_version": "fyralis.source-certification-execution-binding.v1",
   "source_id": "google_drive",
-  "spec_hash": "2a0b55e06d5d214d64912d34e510c916e395ffd3575c339c45066eb867f16a20",
+  "spec_hash": "1c690715ffe0d9c699febf28bdef3fad15656564663e894fbbf34cd9bec1b645",
   "stages": {
     "canary": {
       "argv": [
@@ -13,7 +13,7 @@
         "--stage",
         "canary",
         "--plan-sha256",
-        "2de3405cbc0e003b43fda33f4a9aef8005f87efaf2393b2a10924305efc7976d"
+        "7cf4d6eed67d0ee61a0871cd29dd5f95fe8d1085d831f6454fde7d69b7c75b06"
       ],
       "credential_env": [
         "FYRALIS_CANARY_GOOGLE_DRIVE"
@@ -33,7 +33,7 @@
         "--stage",
         "fault_recovery",
         "--plan-sha256",
-        "2de3405cbc0e003b43fda33f4a9aef8005f87efaf2393b2a10924305efc7976d"
+        "7cf4d6eed67d0ee61a0871cd29dd5f95fe8d1085d831f6454fde7d69b7c75b06"
       ],
       "credential_env": [],
       "required_env": [],
@@ -49,7 +49,7 @@
         "--stage",
         "load",
         "--plan-sha256",
-        "2de3405cbc0e003b43fda33f4a9aef8005f87efaf2393b2a10924305efc7976d"
+        "7cf4d6eed67d0ee61a0871cd29dd5f95fe8d1085d831f6454fde7d69b7c75b06"
       ],
       "credential_env": [],
       "required_env": [],
@@ -65,7 +65,7 @@
         "--stage",
         "local_correctness",
         "--plan-sha256",
-        "2de3405cbc0e003b43fda33f4a9aef8005f87efaf2393b2a10924305efc7976d"
+        "7cf4d6eed67d0ee61a0871cd29dd5f95fe8d1085d831f6454fde7d69b7c75b06"
       ],
       "credential_env": [],
       "required_env": [],

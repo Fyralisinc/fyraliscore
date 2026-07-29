@@ -20,6 +20,7 @@ from services.ingest.source_contract.runtime import (
     ManagedLiveRuntimeError,
     NormalizationChannelNotFoundError,
     NormalizerIngressMetadataError,
+    RenewalNotSupportedError,
     override_history_bindings,
     resolve_callable_reference,
     resolve_fetcher,
@@ -34,9 +35,22 @@ from services.ingest.source_contract.runtime import (
     resolve_provider_setup_builder,
     resolve_provider_setup_notes,
     resolve_reconciler,
+    resolve_renewal_invoker,
     resolve_rehearsal_artifact_builder,
     split_callable_reference,
     validate_runtime_bindings,
+)
+
+
+_RENEWAL_SOURCE_IDS = (
+    "gmail",
+    "google_calendar",
+    "google_drive",
+    "quickbooks",
+    "ramp",
+    "gusto",
+    "carta",
+    "linkedin",
 )
 
 
@@ -94,6 +108,41 @@ def test_access_status_binding_is_source_owned_and_optional() -> None:
 
 def test_startup_guard_resolves_every_contract_callable() -> None:
     validate_runtime_bindings()
+
+
+def test_every_declared_renewal_invoker_resolves_to_a_callable() -> None:
+    renewal_sources = tuple(
+        source.source_id for source in SOURCE_DEFINITIONS if source.renewal is not None
+    )
+
+    assert renewal_sources == _RENEWAL_SOURCE_IDS
+    for source_id in renewal_sources:
+        assert callable(resolve_renewal_invoker(source_id))
+
+
+def test_credential_renewal_workers_resolve_from_each_source_contract() -> None:
+    credential_sources = tuple(
+        source
+        for source in SOURCE_DEFINITIONS
+        if source.renewal is not None and source.renewal.kind == "credential"
+    )
+
+    assert len(credential_sources) == 5
+    for source in credential_sources:
+        assert callable(
+            resolve_live_worker_launcher(
+                source.source_id,
+                "credential_renewal",
+            )
+        )
+
+
+def test_source_without_renewal_fails_explicitly() -> None:
+    with pytest.raises(
+        RenewalNotSupportedError,
+        match="no bounded renewal contract",
+    ):
+        resolve_renewal_invoker("slack")
 
 
 def test_every_live_runtime_callable_resolves_or_declares_managed_boundary() -> None:
@@ -164,16 +213,13 @@ def test_startup_guard_fails_closed_on_broken_live_launcher(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = next(
-        candidate
-        for candidate in SOURCE_DEFINITIONS
-        if candidate.source_id == "gmail"
+        candidate for candidate in SOURCE_DEFINITIONS if candidate.source_id == "gmail"
     )
     worker = source.live_runtime.worker("gmail_history_poller")
     broken_worker = replace(
         worker,
         launcher_binding=(
-            "services.ingest.source_contract.catalog:"
-            "not_a_real_live_launcher"
+            "services.ingest.source_contract.catalog:" "not_a_real_live_launcher"
         ),
     )
     replacement = replace(
@@ -183,6 +229,38 @@ def test_startup_guard_fails_closed_on_broken_live_launcher(
             workers=tuple(
                 broken_worker if candidate is worker else candidate
                 for candidate in source.live_runtime.workers
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        source_runtime,
+        "SOURCE_DEFINITIONS",
+        tuple(
+            replacement if candidate is source else candidate
+            for candidate in SOURCE_DEFINITIONS
+        ),
+    )
+    source_runtime.validate_runtime_bindings.cache_clear()
+    try:
+        with pytest.raises(BindingResolutionError, match="has no attribute"):
+            source_runtime.validate_runtime_bindings()
+    finally:
+        source_runtime.validate_runtime_bindings.cache_clear()
+
+
+def test_startup_guard_fails_closed_on_broken_renewal_invoker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = next(
+        candidate for candidate in SOURCE_DEFINITIONS if candidate.source_id == "gmail"
+    )
+    assert source.renewal is not None
+    replacement = replace(
+        source,
+        renewal=replace(
+            source.renewal,
+            invoker_binding=(
+                "services.ingest.source_contract.catalog:" "not_a_real_renewal_invoker"
             ),
         ),
     )

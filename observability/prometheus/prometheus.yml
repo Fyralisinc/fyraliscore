@@ -87,6 +87,8 @@ scrape_configs:
         labels: { worker: google_calendar_watch_scheduler }
       - targets: ["google_drive_watch_scheduler:9300"]
         labels: { worker: google_drive_watch_scheduler }
+      - targets: ["credential_renewal_scheduler:9300"]
+        labels: { worker: credential_renewal_scheduler }
       - targets: ["sage_structural_features_worker:9300"]
         labels: { worker: sage_structural_features_worker }
       - targets: ["sage_topology_optimizer_worker:9300"]

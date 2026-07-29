@@ -20,6 +20,7 @@ from lib.shared.ids import uuid7
 from services.ingest.integrations import _google_watch
 from services.ingest.integrations._google_watch import register_watch, resolve_push
 from services.ingest.integrations.google_calendar.watch import SPEC as CAL_SPEC
+from services.ingest.integrations.gmail.client import GoogleApiError
 from services.ingest.ingestion.fetchers import FetchResult
 
 
@@ -128,9 +129,10 @@ async def test_register_watch_persists_channel_state(fresh_db: asyncpg.Pool) -> 
 
     test_spec = dataclasses.replace(CAL_SPEC, make_client=_make_client)
 
-    # Lease the resource (drives the real leasing SQL) then register.
-    async with fresh_db.acquire() as conn:
-        leased = await _google_watch._lease_due_watches(conn, test_spec, limit=10)
+    # Select the resource through the fair, durable-job-aware scheduler path
+    # before registering it. The first watch has no job row yet, so it is
+    # immediately claimable by the contract-owned renewal invoker.
+    leased = await _google_watch._lease_due_watches(fresh_db, test_spec, limit=10)
     assert len(leased) == 1
     await register_watch(fresh_db, test_spec, leased[0], address="https://app.test/webhooks/google_calendar/push")
 
@@ -159,6 +161,48 @@ async def test_register_watch_persists_channel_state(fresh_db: asyncpg.Pool) -> 
     assert row["watch_token"] == watched["token"]
     assert row["watch_expiration"] is not None
     assert row["watch_state"] == "active"
+
+
+async def test_register_watch_failure_persists_only_a_controlled_error_code(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    """Provider error bodies must not reach durable watch failure state."""
+
+    tenant, cal = await _seed_calendar(fresh_db)
+    provider_secret = "provider-body-secret-must-not-persist"
+
+    class _FailingClient:
+        async def watch_events(self, **kwargs):  # noqa: ARG002
+            raise GoogleApiError(f"provider rejected token={provider_secret}", status=400)
+
+        async def stop_channel(self, **kwargs):  # noqa: ARG002
+            return None
+
+    async def _make_client(scope, *, tenant_id, installation_id):  # noqa: ARG001
+        async def _close():
+            return None
+
+        return _FailingClient(), _close
+
+    test_spec = dataclasses.replace(CAL_SPEC, make_client=_make_client)
+    leased = await _google_watch._lease_due_watches(fresh_db, test_spec, limit=10)
+    assert len(leased) == 1
+
+    assert await register_watch(
+        fresh_db,
+        test_spec,
+        leased[0],
+        address="https://app.test/webhooks/google_calendar/push",
+    ) is None
+    row = await fresh_db.fetchrow(
+        "SELECT live_last_error FROM google_calendar_calendars WHERE id = $1 "
+        "AND tenant_id = $2",
+        cal,
+        tenant,
+    )
+    assert row is not None
+    assert row["live_last_error"] == "google_watch_api_error"
+    assert provider_secret not in repr(row)
 
 
 # ---------------------------------------------------------------------

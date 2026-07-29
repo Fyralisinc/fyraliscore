@@ -9,7 +9,7 @@
       "kind": "documented",
       "uri": "https://learn.microsoft.com/en-us/linkedin/shared/api-guide/concepts/protocol-version",
       "api_version": "LinkedIn Rest.li",
-      "schema_sha256": "eb4aeff883fc5d77e25a2529700b701ac1b93dde1c90c35a6bbef71167454da3",
+      "schema_sha256": "cc337f1ffbc334936a40fcbae875db201a80f32b0e1b3dd6aeb4cb16167bcdbc",
       "quota_uri": null,
       "verified_at": null,
       "notes": "Exact local contract, implementation modules, Provider Lab routes, and sanitized golden fixture are pinned by scripts/generate_source_certification_surfaces.py; provider-document and live-account verification remain pending."

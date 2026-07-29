@@ -19,6 +19,7 @@ from services.ingest.integrations.oauth_refresh import (
     needs_refresh,
     refresh_and_persist,
 )
+from services.ingest.integrations import oauth_refresh
 
 pytestmark = pytest.mark.asyncio
 
@@ -231,7 +232,8 @@ async def test_refresh_configs_cover_all_refresh_backed_install_tables():
 # --- ensure_fresh_access_token: proactive vs reactive ---------------------
 
 async def test_ensure_fresh_skips_when_token_valid(monkeypatch):
-    monkeypatch.setenv("RAMP_CLIENT_ID", "r"); monkeypatch.setenv("RAMP_CLIENT_SECRET", "s")
+    monkeypatch.setenv("RAMP_CLIENT_ID", "r")
+    monkeypatch.setenv("RAMP_CLIENT_SECRET", "s")
     store = FakeStore({"access-ref": "still-valid-token"})
     pool = FakePool()
     # No HTTP transport needed — a valid token must NOT call the endpoint.
@@ -248,11 +250,22 @@ async def test_ensure_fresh_skips_when_token_valid(monkeypatch):
 
 
 async def test_ensure_fresh_force_refreshes_even_if_valid(monkeypatch):
-    monkeypatch.setenv("RAMP_CLIENT_ID", "r"); monkeypatch.setenv("RAMP_CLIENT_SECRET", "s")
+    monkeypatch.setenv("RAMP_CLIENT_ID", "r")
+    monkeypatch.setenv("RAMP_CLIENT_SECRET", "s")
     store = FakeStore({"access-ref": "old", "rr": "ramp-refresh"})
     pool = FakePool()
-    body = {"access_token": "fresh-after-401", "refresh_token": "rr2", "expires_in": 7200}
-    async with _http(body) as http:
+    calls: list[dict[str, object]] = []
+
+    async def durable_refresh(**kwargs: object) -> str:
+        calls.append(kwargs)
+        return "fresh-after-401"
+
+    monkeypatch.setattr(
+        oauth_refresh,
+        "_refresh_through_renewal_job",
+        durable_refresh,
+    )
+    async with httpx.AsyncClient() as http:
         token = await ensure_fresh_access_token(
             provider="ramp", pool=pool, secret_store=store, http=http,
             tenant_id=TENANT, install_row_id=INSTALL,
@@ -260,13 +273,27 @@ async def test_ensure_fresh_force_refreshes_even_if_valid(monkeypatch):
             token_expires_at=NOW + timedelta(hours=1), force=True, now=NOW,
         )
     assert token == "fresh-after-401"           # reactive 401 path refreshed
-    assert len(pool.executed) == 1
+    assert pool.executed == []
+    assert calls == [
+        {
+            "provider": "ramp",
+            "pool": pool,
+            "secret_store": store,
+            "http": http,
+            "tenant_id": TENANT,
+            "install_row_id": INSTALL,
+            "now": NOW,
+            "force": True,
+            "request_binding": None,
+        }
+    ]
 
 
 # --- degraded-on-failure (never crash, never silently drop) ---------------
 
 async def test_failed_refresh_raises_degraded_signal(monkeypatch):
-    monkeypatch.setenv("GUSTO_CLIENT_ID", "g"); monkeypatch.setenv("GUSTO_CLIENT_SECRET", "x")
+    monkeypatch.setenv("GUSTO_CLIENT_ID", "g")
+    monkeypatch.setenv("GUSTO_CLIENT_SECRET", "x")
     store = FakeStore({"rr": "revoked-refresh"})
     pool = FakePool()
     async with _http({"error": "invalid_grant"}, status=400) as http:
