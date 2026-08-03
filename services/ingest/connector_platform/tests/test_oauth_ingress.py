@@ -14,6 +14,7 @@ from services.ingest.connector_platform.oauth_ingress import (
     execute_oauth_install,
 )
 from services.ingest.connector_platform.pilots import build_pilot_composition
+from services.ingest.connector_runtime.policy import ExecutionMode, RoutingPolicy
 
 
 class _Pool:
@@ -89,7 +90,9 @@ def _state_app(pool: _Pool, secrets: _Secrets) -> FastAPI:
     app = FastAPI()
     app.state.pool = pool
     app.state.secret_store = secrets
-    app.state.source_connector_runtime = build_pilot_composition()
+    app.state.source_connector_runtime = build_pilot_composition(
+        RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)
+    )
     return app
 
 

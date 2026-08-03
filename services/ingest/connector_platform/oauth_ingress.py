@@ -25,6 +25,7 @@ from services.ingest.connector_platform.production_host_services import (
     build_production_host_services_factory,
 )
 from services.ingest.connector_runtime.policy import ExecutionMode, RouteRequest
+from services.ingest.connector_runtime.authority import scope_authority
 from services.ingest.source_contract.capabilities import OAUTH2_V1
 from services.ingest.source_contract.capabilities.installation import (
     OAuthBeginRequest,
@@ -156,7 +157,7 @@ async def _bound_oauth(
     durable = await PostgresAuthorityRepository(pool).load(installation_id)
     if durable is None:
         raise RuntimeError("OAuth bootstrap authority was not persisted")
-    authority = durable.validate_for(installation)
+    authority = scope_authority(manifest, durable.validate_for(installation))
     client = httpx.AsyncClient(follow_redirects=False, timeout=15.0)
     services = build_production_host_services_factory(
         ProductionHostBackends(
@@ -432,9 +433,7 @@ async def _persist_result(
                         team_id=external_id,
                         user_id=user_id,
                         user_token_secret_ref=user_ref,
-                        granted_user_scopes=result.metadata.get(
-                            "granted_user_scopes"
-                        ),
+                        granted_user_scopes=result.metadata.get("granted_user_scopes"),
                     )
             else:
                 installation_id, inserted = await notion_oauth._upsert_installation(
@@ -480,7 +479,10 @@ async def _persist_result(
     )
     notion_oauth._invalidate_resolver_cache(request, external_id)
     from services.ingest.integrations.notion.client import short_workspace_hash
-    return f"/integrations/notion/installed?workspace={short_workspace_hash(external_id)}"
+
+    return (
+        f"/integrations/notion/installed?workspace={short_workspace_hash(external_id)}"
+    )
 
 
 async def execute_oauth_callback(

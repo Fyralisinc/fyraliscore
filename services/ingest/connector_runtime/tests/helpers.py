@@ -31,9 +31,7 @@ class ExampleConnector:
         binding_factory: Callable[[BindingContext], BoundConnector] | None = None,
     ) -> None:
         self._manifest = manifest
-        self._capabilities = dict(
-            capabilities or {IDENTITY_V1.ref: ExampleIdentity()}
-        )
+        self._capabilities = dict(capabilities or {IDENTITY_V1.ref: ExampleIdentity()})
         self._binding_factory = binding_factory
         self.bind_calls = 0
 
@@ -48,15 +46,17 @@ class ExampleConnector:
         return StaticBoundConnector(context.installation, self._capabilities)
 
 
+def build_example_connector() -> ExampleConnector:
+    return ExampleConnector(make_manifest())
+
+
 def make_manifest(
     *,
     connector_id: str = "fyralis/example",
     source: str = "example",
     aliases: tuple[str, ...] = (),
     contract: str = ">=1.0,<2.0",
-    capabilities: tuple[tuple[str, int, bool], ...] = (
-        ("semantic.identity", 1, True),
-    ),
+    capabilities: tuple[tuple[str, int, bool], ...] = (("semantic.identity", 1, True),),
 ) -> ConnectorManifest:
     return ConnectorManifest.model_validate(
         {
@@ -114,6 +114,7 @@ def make_candidate(
 __all__ = [
     "ExampleConnector",
     "ExampleIdentity",
+    "build_example_connector",
     "make_candidate",
     "make_manifest",
 ]

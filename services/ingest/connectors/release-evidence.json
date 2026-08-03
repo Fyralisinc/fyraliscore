@@ -1,0 +1,31 @@
+{
+  "schema": "sources.fyralis.io/release-evidence/v1",
+  "connectors": [
+    {"connectorId": "fyralis/ashby", "connectorVersion": "0.1.0", "structuralFingerprint": "ad9d430b8dec968c46d61d7e8434bef65bffb77c4bc17fadd84eb5aab309180e"},
+    {"connectorId": "fyralis/aws", "connectorVersion": "0.1.0", "structuralFingerprint": "485c8271543ed5f2546820b3daa63f1352540b2bd1132deda334cef194b39476"},
+    {"connectorId": "fyralis/brex", "connectorVersion": "0.1.0", "structuralFingerprint": "503325ea7d547b7447359cbb49b574b87bc43f9c8f958f45dc70a7b60234ff1f"},
+    {"connectorId": "fyralis/carta", "connectorVersion": "0.1.0", "structuralFingerprint": "6f72ace86f827c91bbf8c6b9d055b6421e639e3f8afdc31d58ca5d3356f15c86"},
+    {"connectorId": "fyralis/deel", "connectorVersion": "0.1.0", "structuralFingerprint": "83fc7d5fa62965acd18e540aa1a78e0fce4a30aed1e4ed335cc7571047953930"},
+    {"connectorId": "fyralis/discord", "connectorVersion": "0.1.0", "structuralFingerprint": "c9dfa23f8e65926e2c421e13883198fd2244f4984d9906094699ba7409c5fed4"},
+    {"connectorId": "fyralis/figma", "connectorVersion": "0.1.0", "structuralFingerprint": "3abcaba84f4484de676061e387527d4e18cd9199cc4cf1e70a97c39054973b51"},
+    {"connectorId": "fyralis/fireflies", "connectorVersion": "0.1.0", "structuralFingerprint": "467a1b037bedfb2992647ebfa51d575b25725e7ea1ceb0422bc4530b08f8e8a3"},
+    {"connectorId": "fyralis/github", "connectorVersion": "0.1.0", "structuralFingerprint": "06180c977eb48b4223f11ebbb13b7d054b367b9503a1540cefafd47a29823709"},
+    {"connectorId": "fyralis/gmail", "connectorVersion": "0.1.0", "structuralFingerprint": "b07fe805e28995deb0fd7912c24e39604077ec1727e20a68710295b4a914b9c5"},
+    {"connectorId": "fyralis/google_calendar", "connectorVersion": "0.1.0", "structuralFingerprint": "a128705a8d8fb6c6085e66145e55ca9e7deeeec7159e9a6ea2f7b3405c57b149"},
+    {"connectorId": "fyralis/google_drive", "connectorVersion": "0.1.0", "structuralFingerprint": "aaae05874d27e16f90ce29965d8a8a821020dbd5e63d15925a522d1a2a0f4379"},
+    {"connectorId": "fyralis/grafana", "connectorVersion": "0.1.0", "structuralFingerprint": "12627cb6356fb7a54c091d8070aae6ee02aac714f5c9cfd0b4d525e7342ae645"},
+    {"connectorId": "fyralis/gusto", "connectorVersion": "0.1.0", "structuralFingerprint": "635a3534ce241bfa4db1656136c1315a105d31cb6a8de26ef2a6ac556c92fa64"},
+    {"connectorId": "fyralis/hibob", "connectorVersion": "0.1.0", "structuralFingerprint": "a7a2f409ff7a2a52da586276666e3b63f0cc7890a7a5546805e4cfd5e7023676"},
+    {"connectorId": "fyralis/jira", "connectorVersion": "0.1.0", "structuralFingerprint": "2de356ab0eda0c02fac18b7e48adad8003dd0539c349615338f25c62fd8ed575"},
+    {"connectorId": "fyralis/linkedin", "connectorVersion": "0.1.0", "structuralFingerprint": "99925fd5fe93570410ece78cd97d559acc6c5a20a2dc50cf5b67bd7043fff50d"},
+    {"connectorId": "fyralis/mercury", "connectorVersion": "0.1.0", "structuralFingerprint": "697d7cfd1e3d7ed58222c0c05dd3225c3dfc44c6db247250e65b2427573db491"},
+    {"connectorId": "fyralis/miro", "connectorVersion": "0.1.0", "structuralFingerprint": "8b168d7a21ce7e57bac18126a80c005bf17258e2f59003f177594e69a9eeb8fa"},
+    {"connectorId": "fyralis/notion", "connectorVersion": "1.0.0", "structuralFingerprint": "6c4cb10137ae7316a634386fdbdd358dfd6611a687aea6ebecbe670c2ef092da"},
+    {"connectorId": "fyralis/quickbooks", "connectorVersion": "0.1.0", "structuralFingerprint": "7052f1b2dc80aed51b59514091b11153ebcdc9f9a4c747a201c7f44f58d7d48f"},
+    {"connectorId": "fyralis/ramp", "connectorVersion": "0.1.0", "structuralFingerprint": "0b207d4c6bd7f4c39f874f795aba7acc588e69537c13b27cd42ab902a9381d42"},
+    {"connectorId": "fyralis/signal", "connectorVersion": "0.1.0", "structuralFingerprint": "6a921c64dcdcb157659dc8cfb91d30f836281075cf24ca63b4e678e1b81c4aa8"},
+    {"connectorId": "fyralis/slack", "connectorVersion": "1.0.0", "structuralFingerprint": "55642c48566add01143eabdebc4f98e8aba580498256a2871691a7c7f4ad1706"},
+    {"connectorId": "fyralis/telegram", "connectorVersion": "0.1.0", "structuralFingerprint": "b2625ad440f0ce113a7cd91a9bcf743e8e90bbce1150ae69d6a73220f38bfd30"},
+    {"connectorId": "fyralis/whatsapp", "connectorVersion": "1.0.0", "structuralFingerprint": "f88ff63ec52ce8a525ab64d8d962c074ddc502b0a92b36c85fabd07703b684c5"}
+  ]
+}

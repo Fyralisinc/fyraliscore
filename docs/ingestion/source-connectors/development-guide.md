@@ -12,7 +12,7 @@ A connector is an immutable `SourceConnector` definition with:
 - factories for the versioned capability facets it implements;
 - installation-scoped binding through `BindingContext`;
 - access only to host services granted by its manifest and durable authority;
-- a conformance fingerprint produced before registry registration.
+- a conformance fingerprint independently approved before registry registration.
 
 Connectors decode provider behavior. The host still owns tenant selection,
 durable raw publication, Kafka acknowledgement, checkpoints, retry policy,
@@ -25,7 +25,8 @@ Using Stripe as an example:
 1. Add `stripe` to the canonical raw-envelope source literal and to
    `CONNECTOR_CATALOG`, with its real ingress kinds (`webhook`, `backfill`, or
    `poll`). Do not add a second source registry.
-2. Define a manifest with ID `fyralis/stripe`, semantic connector version,
+2. Add a JSON manifest under `services/ingest/connectors/manifests` with ID
+   `fyralis/stripe`, semantic connector version,
    supported contract range, declared capabilities, secret slots, OAuth scopes,
    outbound hosts, trust ceiling, and isolation profile.
 3. Implement a root `SourceConnector`. Its `bind()` method must return facets
@@ -42,11 +43,12 @@ Using Stripe as an example:
    the connector.
 7. Define stable external identity and normalization behavior. Preserve the
    existing `RawEnvelope` and `NormalizedEnvelope` semantics.
-8. Run the conformance suite and attach the resulting fingerprint to the
-   `ConnectorCandidate`. Registration fails if conformance evidence is absent
-   or unapproved.
+8. Run structural and behavioral conformance, review the result, and add its
+   independently approved fingerprint to `release-evidence.json`. Registration
+   fails if computed and approved evidence differ.
 9. Add signed artifact provenance and enable the artifact record only after its
-   manifest digest, conformance fingerprint, builder, and signature are valid.
+   measured implementation digest, manifest digest, conformance fingerprint,
+   builder, and signature are valid.
 10. Keep the legacy Stripe path available while running shadow, canary, cohort,
     and full rollout. Remove it only after every ingress surface has production
     evidence and a rollback drill has passed.
@@ -128,6 +130,10 @@ The minimum repository gate is:
   services/ingest/connector_platform/tests
 ```
 
+Also run `python scripts/check_source_connector_release_gate.py`; it verifies
+the complete inventory, factories, independent evidence, measurable artifacts,
+and legacy-safe bootstrap policy.
+
 ## Review checklist
 
 - One canonical source and connector ID exist.
@@ -138,4 +144,3 @@ The minimum repository gate is:
 - Raw durability and checkpoint ordering stay host-owned.
 - Tenant isolation is covered by binding and persistence tests.
 - Shadow comparison and rollback are ready before connector routing is enabled.
-

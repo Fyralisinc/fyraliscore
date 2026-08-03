@@ -5,10 +5,12 @@ execution without weakening ingestion guarantees.
 
 ## Current migration boundary
 
-The immutable catalog contains all 26 source families. Slack, Notion, and
-WhatsApp have native roots and default to connector execution. The other 23
-catalog entries are conformed compatibility candidates and deliberately resolve
-to legacy execution until their complete ingress surfaces are migrated.
+The immutable catalog contains all 26 source families. Every source defaults to
+legacy execution. Slack, Notion, and WhatsApp have transitional native roots,
+declarative manifests, and structural release evidence, but require explicit
+opt-in routing and are not eligible for production promotion until their ambient
+legacy dependencies and behavioral/operational gates are completed. The other
+23 catalog entries are conformed compatibility candidates.
 
 Catalog authority is not permission to delete legacy code. A source is native
 only when all of its planner, fetcher, poller, webhook/gateway, reconciler,
@@ -36,8 +38,9 @@ for.
 7. Integrate each ingress owner through registry resolution and the capability
    executor. Keep S3-first publication, Kafka ordering, acknowledgements, and
    checkpoints in the host.
-8. Pass static and behavioral conformance. Sign the artifact and enable its
-   attestation. Startup quarantine must be clear.
+8. Pass static and behavioral conformance. Update the independently reviewed
+   release-evidence record. Sign the measured artifact and enable its
+   attestation. Startup and continuous quarantine must be clear.
 9. Roll out in stages: shadow, canary tenants, bounded cohort, then full.
 10. Hold full routing while gathering production evidence across backfill,
     incremental/live ingress, reconciliation, lifecycle, and uninstall.
@@ -86,4 +89,3 @@ Retire a source path only when all are true:
 
 Until then, compatibility code is intentional rollback infrastructure, not dead
 code.
-

@@ -3,7 +3,12 @@ from uuid import uuid4
 
 import pytest
 
-from services.ingest.connector_runtime.authority import InstallationAuthority
+from services.ingest.connector_runtime.authority import (
+    InstallationAuthority,
+    scope_authority,
+)
+from services.ingest.connector_runtime.tests.helpers import make_manifest
+from services.ingest.source_contract.connector import GrantedAuthority
 from services.ingest.source_contract.errors import BindingError
 from services.ingest.source_contract.models import InstallationRef
 
@@ -53,3 +58,26 @@ def test_durable_authority_fails_closed(failure: str) -> None:
 
     with pytest.raises(BindingError):
         authority.validate_for(installation)
+
+
+def test_authority_is_reduced_to_manifest_permissions_and_trust_ceiling() -> None:
+    manifest = make_manifest()
+    scoped = scope_authority(
+        manifest,
+        GrantedAuthority(
+            secret_slots=frozenset({"api_token", "unrelated_secret"}),
+            outbound_hosts=frozenset({"api.example.com", "unrelated.example.com"}),
+            scopes=frozenset({"events:read", "admin:everything"}),
+            maximum_trust_tier="authoritative",
+        ),
+    )
+
+    assert scoped.secret_slots == frozenset({"api_token"})
+    assert scoped.outbound_hosts == frozenset({"api.example.com"})
+    assert scoped.scopes == frozenset({"events:read"})
+    assert scoped.maximum_trust_tier == manifest.spec.trust.maximum_tier
+
+
+def test_authority_scope_rejects_missing_permissions() -> None:
+    with pytest.raises(BindingError, match="does not satisfy"):
+        scope_authority(make_manifest(), GrantedAuthority())

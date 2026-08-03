@@ -1,5 +1,10 @@
 # Source connector rollout playbook
 
+> Completion Phase 1 note: this is the required target procedure. Promotion is
+> blocked until Phase 2 connects persistent shadow/metric writers to rollout
+> evaluation and proves continuous admission propagation across execution
+> owners.
+
 ## Goal
 
 Move one complete connector surface to native execution with measurable parity,
@@ -95,4 +100,3 @@ Full routing is not legacy retirement. Remove source-specific dispatch and
 compatibility code only after the migration guide's full criteria and the
 agreed production soak. If any ingress owner still calls a source-specific map
 directly, the source is not eligible for retirement.
-

@@ -5,6 +5,7 @@ The runtime already fails closed for several missing production settings. This
 static check keeps `.env.production.example` aligned with those fail-closed
 paths so operators see the required keys before deploy time.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -128,6 +129,9 @@ REQUIRED_KEYS = frozenset(
         "DEBUG_ARTIFACT_CAPTURE",
         "SHARD_FETCH_RATE_LIMIT",
         "SHARD_FETCH_RATE_LIMIT_MAX_WAIT_SEC",
+        "SOURCE_CONNECTOR_REQUIRE_SIGNED_ARTIFACTS",
+        "SOURCE_CONNECTOR_TRUSTED_SIGNERS_JSON",
+        "SOURCE_CONNECTOR_ALLOWED_BUILDERS",
     }
 )
 
@@ -153,6 +157,7 @@ REQUIRED_EXACT_VALUES = {
     "DEBUG_ARTIFACT_CAPTURE": "0",
     "SHARD_FETCH_RATE_LIMIT": "1",
     "HOUSEKEEPER_ENABLE_EXPENSIVE_JOBS": "0",
+    "SOURCE_CONNECTOR_REQUIRE_SIGNED_ARTIFACTS": "1",
 }
 REQUIRED_ALLOWED_VALUES = {
     "FYRALIS_DEPLOYMENT_MODE": {"single-tenant", "byoc"},
@@ -441,8 +446,7 @@ def check_env_contract(path: Path = DEFAULT_ENV_TEMPLATE) -> list[EnvContractVio
                     key=key,
                     line_number=forbidden_entry.line_number,
                     message=(
-                        f"must not use known unsafe value "
-                        f"{forbidden_entry.value!r}"
+                        f"must not use known unsafe value " f"{forbidden_entry.value!r}"
                     ),
                 )
             )
@@ -579,9 +583,7 @@ def check_env_contract(path: Path = DEFAULT_ENV_TEMPLATE) -> list[EnvContractVio
                         path=path,
                         key=key,
                         line_number=entry.line_number,
-                        message=(
-                            f"expected one of {allowed}; found {entry.value!r}"
-                        ),
+                        message=(f"expected one of {allowed}; found {entry.value!r}"),
                     )
                 )
 

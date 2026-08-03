@@ -162,9 +162,7 @@ def test_contract_incompatibility_does_not_activate_factory() -> None:
 
 
 def test_required_unsupported_capability_rejects_candidate() -> None:
-    manifest = make_manifest(
-        capabilities=(("experimental.unknown", 1, True),)
-    )
+    manifest = make_manifest(capabilities=(("experimental.unknown", 1, True),))
 
     @runtime_checkable
     class UnknownCapability(Protocol):
@@ -187,9 +185,7 @@ def test_required_unsupported_capability_rejects_candidate() -> None:
 
 
 def test_optional_unsupported_capability_is_omitted_with_warning() -> None:
-    manifest = make_manifest(
-        capabilities=(("experimental.unknown", 1, False),)
-    )
+    manifest = make_manifest(capabilities=(("experimental.unknown", 1, False),))
 
     @runtime_checkable
     class UnknownCapability(Protocol):
@@ -212,8 +208,7 @@ def test_optional_unsupported_capability_is_omitted_with_warning() -> None:
     assert health.status is RegistryStatus.DEGRADED
     assert not health.healthy
     assert any(
-        item.code == "optional_capability_omitted"
-        for item in health.diagnostics
+        item.code == "optional_capability_omitted" for item in health.diagnostics
     )
 
 
@@ -293,9 +288,11 @@ def test_custom_manifest_policy_can_reject_before_activation() -> None:
             ),
         )
 
-    result = ConnectorRegistryBuilder(validators=(reject_policy,)).add(
-        ConnectorCandidate(manifest, factory, (IDENTITY_V1,))
-    ).build_result()
+    result = (
+        ConnectorRegistryBuilder(validators=(reject_policy,))
+        .add(ConnectorCandidate(manifest, factory, (IDENTITY_V1,)))
+        .build_result()
+    )
 
     assert result.registry is None
     assert _error_codes(result) == {"permission_policy_denied"}
@@ -308,19 +305,21 @@ def test_manifest_policy_exception_is_redacted_diagnostic() -> None:
     def broken_policy(_manifest: ConnectorManifest) -> tuple[()]:
         raise RuntimeError("sensitive policy details")
 
-    result = ConnectorRegistryBuilder(validators=(broken_policy,)).add(
-        ConnectorCandidate(
-            manifest,
-            lambda: ExampleConnector(manifest),
-            (IDENTITY_V1,),
+    result = (
+        ConnectorRegistryBuilder(validators=(broken_policy,))
+        .add(
+            ConnectorCandidate(
+                manifest,
+                lambda: ExampleConnector(manifest),
+                (IDENTITY_V1,),
+            )
         )
-    ).build_result()
+        .build_result()
+    )
 
     assert _error_codes(result) == {"manifest_validator_failed"}
     diagnostic = next(
-        item
-        for item in result.diagnostics
-        if item.code == "manifest_validator_failed"
+        item for item in result.diagnostics if item.code == "manifest_validator_failed"
     )
     assert "RuntimeError" in diagnostic.message
     assert "sensitive" not in diagnostic.message
@@ -348,9 +347,7 @@ def test_factory_failures_and_manifest_mismatch_are_diagnostics() -> None:
     )
     mismatch_result = ConnectorRegistryBuilder().add(mismatch).build_result()
     assert mismatch_result.registry is None
-    assert _error_codes(mismatch_result) == {
-        "manifest_implementation_mismatch"
-    }
+    assert _error_codes(mismatch_result) == {"manifest_implementation_mismatch"}
 
 
 def test_invalid_factory_object_is_diagnostic_and_build_raises() -> None:
@@ -451,6 +448,25 @@ def test_successful_binding_resolves_typed_capability() -> None:
     assert connector.bind_calls == 1
 
 
+def test_binding_rejects_a_broad_unscoped_authority() -> None:
+    candidate, connector = make_candidate()
+    registry = ConnectorRegistryBuilder().add(candidate).build()
+    exact = make_binding_context(candidate.manifest)
+    broad = GrantedAuthority(
+        secret_slots=exact.authority.secret_slots | {"unrelated_secret"},
+        outbound_hosts=exact.authority.outbound_hosts,
+        scopes=exact.authority.scopes,
+        maximum_trust_tier=exact.authority.maximum_trust_tier,
+    )
+
+    with pytest.raises(BindingError, match="least authority"):
+        registry.resolve_for_install(
+            exact.__class__(exact.installation, broad, exact.services)
+        )
+
+    assert connector.bind_calls == 0
+
+
 def test_host_selects_highest_mutually_supported_contract_version() -> None:
     host = HostCompatibility(
         contract_versions=(
@@ -463,8 +479,7 @@ def test_host_selects_highest_mutually_supported_contract_version() -> None:
     registry = ConnectorRegistryBuilder(host).add(candidate).build()
 
     assert (
-        registry.describe(candidate.manifest.connector_id)
-        .negotiated_contract_version
+        registry.describe(candidate.manifest.connector_id).negotiated_contract_version
         == "1.5.0"
     )
 
@@ -476,9 +491,7 @@ def test_host_can_require_approved_conformance_evidence() -> None:
         require_conformance_fingerprint=True,
     )
     missing = (
-        ConnectorRegistryBuilder(strict_without_evidence)
-        .add(candidate)
-        .build_result()
+        ConnectorRegistryBuilder(strict_without_evidence).add(candidate).build_result()
     )
     assert _error_codes(missing) == {"conformance_evidence_missing"}
 
@@ -494,12 +507,9 @@ def test_host_can_require_approved_conformance_evidence() -> None:
         require_conformance_fingerprint=True,
         approved_conformance_fingerprints=frozenset({fingerprint}),
     )
-    registry = (
-        ConnectorRegistryBuilder(strict_with_approval).add(attested).build()
-    )
+    registry = ConnectorRegistryBuilder(strict_with_approval).add(attested).build()
     assert (
-        registry.describe(candidate.manifest.connector_id)
-        .conformance_fingerprint
+        registry.describe(candidate.manifest.connector_id).conformance_fingerprint
         == fingerprint
     )
 

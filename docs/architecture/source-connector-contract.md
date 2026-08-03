@@ -1,24 +1,26 @@
 # Fyralis Source Connector Contract
 
-> Implementation status (Phase 3, 2026-08-03): this contract is implemented as
-> the authoritative connector control-plane architecture. Slack, Notion, and
-> WhatsApp use native connector execution; the other 23 cataloged source
-> families remain intentionally legacy-routed through conformed compatibility
-> candidates pending source-by-source production evidence. See the
+> Implementation status (completion Phase 1, 2026-08-03): the contract,
+> registry, declarative manifests, release-evidence gate, least-authority
+> binding, and measured artifact admission form a legacy-safe foundation. All
+> sources default to legacy execution. Slack, Notion, and WhatsApp are
+> transitional native-root candidates that are not production-authoritative;
+> the other 23 cataloged source families are compatibility candidates. See the
 > [runtime architecture](../ingestion/source-connectors/runtime-architecture.md),
 > [development guide](../ingestion/source-connectors/development-guide.md), and
-> [migration guide](../ingestion/source-connectors/migration-guide.md).
+> [migration guide](../ingestion/source-connectors/migration-guide.md). The
+> original roadmap is not complete; remaining work is tracked in
+> `SOURCE_CONNECTOR_10_10_PLAN.md`.
 
-Status: **Phase 1 foundation implemented; awaiting architectural review**<br>
+Status: **Completion Phase 1 implemented; target architecture remains in progress**<br>
 Audience: ingestion, platform, security, and product engineers<br>
 Last reviewed: 2026-08-03
 
 This document defines the target architecture for making a data source a
-first-class Fyralis primitive. The Phase 1 logical contract, registry,
-coexistence adapter, and conformance skeleton now exist alongside the legacy
-runtime without carrying production traffic. They remain v1alpha1 APIs pending
-review; runtime integration and source migration require explicit approval of
-this phase.
+first-class Fyralis primitive. The implemented foundation exists alongside the
+legacy runtime and remains v1alpha1. Native independence, behavioral admission,
+closed-loop rollout, production proof, full source migration, and legacy
+retirement remain required work.
 
 ## 1. Executive summary
 

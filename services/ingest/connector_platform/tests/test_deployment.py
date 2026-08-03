@@ -70,10 +70,21 @@ async def test_missing_signed_artifacts_quarantine_and_override_routing() -> Non
 
 
 def test_trusted_signers_parser_accepts_raw_ed25519_public_keys() -> None:
-    public_key = Ed25519PrivateKey.generate().public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
+    public_key = (
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
     )
     encoded = base64.b64encode(public_key).decode()
 
     assert set(_trusted_signers('{"release": "' + encoded + '"}')) == {"release"}
+
+
+def test_production_always_requires_signed_artifacts(monkeypatch) -> None:
+    monkeypatch.setenv("COMPANY_OS_ENV", "prod")
+    monkeypatch.setenv("SOURCE_CONNECTOR_REQUIRE_SIGNED_ARTIFACTS", "0")
+
+    assert ArtifactAdmissionSettings.from_env().require_signed

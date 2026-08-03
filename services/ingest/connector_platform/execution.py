@@ -11,7 +11,10 @@ from services.ingest.connector_platform.legacy_context import (
     LegacyBindingPayload,
     legacy_binding_scope,
 )
-from services.ingest.connector_runtime.authority import AuthorityRepository
+from services.ingest.connector_runtime.authority import (
+    AuthorityRepository,
+    scope_authority,
+)
 from services.ingest.connector_runtime.composition import ConnectorRuntimeComposition
 from services.ingest.connector_runtime.execution import (
     CapabilityExecutionRequest,
@@ -191,6 +194,10 @@ class LegacyExecutionRouter:
                 )
         elif self._require_durable_authority:
             raise BindingError("durable authority repository is unavailable")
+        authority = scope_authority(
+            self._composition.registry.for_source(source).manifest,
+            authority,
+        )
         services = self._host_services.build(
             installation.id,
             authority,
@@ -506,7 +513,9 @@ class LegacyExecutionRouter:
             external_installation_id=str(_value(install, "installation_id", "")),
         )
 
-        async def connector_call(capability: Any, operation: Any) -> VerifiedWebhookResult:
+        async def connector_call(
+            capability: Any, operation: Any
+        ) -> VerifiedWebhookResult:
             return await capability.verify_and_decode(request_value, operation)
 
         request = CapabilityExecutionRequest(

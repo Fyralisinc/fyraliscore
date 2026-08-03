@@ -1,0 +1,42 @@
+{
+  "apiVersion": "sources.fyralis.io/v1alpha1",
+  "kind": "SourceConnector",
+  "metadata": {
+    "id": "fyralis/slack",
+    "source": "slack",
+    "displayName": "Slack",
+    "version": "1.0.0",
+    "owner": "ingestion"
+  },
+  "spec": {
+    "contract": ">=1.0,<2.0",
+    "implementation": "services.ingest.connectors.native:build_slack_connector",
+    "maturity": "preview",
+    "capabilities": [
+      {"id": "installation.oauth2", "version": 1, "required": true},
+      {"id": "installation.oauth2_lifecycle", "version": 1, "required": true},
+      {"id": "health.probe", "version": 1, "required": true},
+      {"id": "lifecycle.cleanup", "version": 1, "required": true},
+      {"id": "ingestion.historical_pull", "version": 1, "required": true},
+      {"id": "ingestion.webhook", "version": 1, "required": true},
+      {"id": "ingestion.reconciliation", "version": 1, "required": true},
+      {"id": "semantic.identity", "version": 1, "required": true},
+      {"id": "semantic.normalization", "version": 1, "required": true}
+    ],
+    "ingressKinds": ["webhook", "backfill"],
+    "permissions": {
+      "secretSlots": ["oauth_access_token", "webhook_signing_secret"],
+      "outboundHosts": ["slack.com"],
+      "requestedScopes": [
+        "channels:read",
+        "channels:history",
+        "groups:read",
+        "groups:history",
+        "users:read",
+        "team:read"
+      ]
+    },
+    "trust": {"maximumTier": "attested_agent"},
+    "runtime": {"isolation": "in_process_trusted"}
+  }
+}

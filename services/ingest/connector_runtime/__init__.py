@@ -3,6 +3,7 @@
 from services.ingest.connector_runtime.authority import (
     AuthorityRepository,
     InstallationAuthority,
+    scope_authority,
 )
 
 from services.ingest.connector_runtime.composition import (
@@ -64,4 +65,5 @@ __all__ = [
     "RouteRequest",
     "RoutingPolicy",
     "build_runtime_composition",
+    "scope_authority",
 ]

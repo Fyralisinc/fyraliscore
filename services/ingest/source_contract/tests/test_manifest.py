@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from typing import Any
 
 import pytest
@@ -10,6 +11,8 @@ from services.ingest.source_contract.manifest import (
     CapabilityRef,
     ConnectorManifest,
     IsolationMode,
+    load_connector_manifest,
+    load_connector_manifests,
 )
 from services.ingest.source_contract.versioning import SemanticVersion
 
@@ -41,9 +44,7 @@ def test_manifest_rejects_duplicate_capabilities(
     manifest_data: dict[str, Any],
 ) -> None:
     data = deepcopy(manifest_data)
-    data["spec"]["capabilities"].append(
-        {"id": "semantic.identity", "version": 1}
-    )
+    data["spec"]["capabilities"].append({"id": "semantic.identity", "version": 1})
     with pytest.raises(ValidationError, match="capability declarations must be unique"):
         ConnectorManifest.model_validate(data)
 
@@ -52,9 +53,7 @@ def test_manifest_rejects_non_dns_outbound_host(
     manifest_data: dict[str, Any],
 ) -> None:
     data = deepcopy(manifest_data)
-    data["spec"]["permissions"]["outboundHosts"] = [
-        "https://api.example.com/v1"
-    ]
+    data["spec"]["permissions"]["outboundHosts"] = ["https://api.example.com/v1"]
     with pytest.raises(ValidationError, match="bare DNS name"):
         ConnectorManifest.model_validate(data)
 
@@ -88,3 +87,25 @@ def test_source_aliases_are_unique_and_distinct(
     data["metadata"]["aliases"] = ["example"]
     with pytest.raises(ValidationError, match="canonical source"):
         ConnectorManifest.model_validate(data)
+
+
+def test_declarative_manifest_directory_load_is_deterministic(
+    tmp_path, manifest_data: dict[str, Any]
+) -> None:
+    second = deepcopy(manifest_data)
+    second["metadata"]["id"] = "fyralis/another"
+    second["metadata"]["source"] = "another"
+    (tmp_path / "z.json").write_text(json.dumps(manifest_data), encoding="utf-8")
+    (tmp_path / "a.json").write_text(json.dumps(second), encoding="utf-8")
+
+    manifests = load_connector_manifests(tmp_path)
+
+    assert tuple(item.source for item in manifests) == ("another", "example")
+
+
+def test_manifest_loader_rejects_non_object_json(tmp_path) -> None:
+    path = tmp_path / "bad.json"
+    path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="must be an object"):
+        load_connector_manifest(path)

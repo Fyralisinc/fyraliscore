@@ -21,7 +21,7 @@ from services.ingest.source_contract.capabilities import (
 from uuid import uuid4
 
 
-def test_pilot_composition_is_immutable_and_native_pilots_are_authoritative() -> None:
+def test_pilot_composition_is_immutable_and_bootstraps_legacy_safe() -> None:
     composition = build_pilot_composition()
 
     assert len(composition.registry.connector_ids()) == 26
@@ -31,25 +31,24 @@ def test_pilot_composition_is_immutable_and_native_pilots_are_authoritative() ->
     assert composition.registry.list_by_capability(WEBHOOK_V1.ref)[0].source == "slack"
     assert "notion" in {
         item.source
-        for item in composition.registry.list_by_capability(
-            INCREMENTAL_POLL_V1.ref
-        )
+        for item in composition.registry.list_by_capability(INCREMENTAL_POLL_V1.ref)
     }
     assert {
         item.source
-        for item in composition.registry.list_by_capability(
-            HISTORICAL_PULL_V1.ref
-        )
+        for item in composition.registry.list_by_capability(HISTORICAL_PULL_V1.ref)
         if item.origin.startswith("first-party-native")
     } == {"slack", "notion"}
-    assert composition.routing.resolve(
-        RouteRequest(
-            tenant_id=uuid4(),
-            connector_id=SLACK_CONNECTOR_ID,
-            source="slack",
-            capability=HISTORICAL_PULL_V1.ref.id,
-        )
-    ).mode is ExecutionMode.CONNECTOR
+    assert (
+        composition.routing.resolve(
+            RouteRequest(
+                tenant_id=uuid4(),
+                connector_id=SLACK_CONNECTOR_ID,
+                source="slack",
+                capability=HISTORICAL_PULL_V1.ref.id,
+            )
+        ).mode
+        is ExecutionMode.LEGACY
+    )
 
 
 def test_pilot_registration_evidence_matches_independent_conformance() -> None:
@@ -64,6 +63,5 @@ def test_pilot_registration_evidence_matches_independent_conformance() -> None:
     assert reports[NOTION_CONNECTOR_ID].fingerprint == NOTION_CONFORMANCE_FINGERPRINT
     assert reports[WHATSAPP_CONNECTOR_ID].passed
     assert (
-        reports[WHATSAPP_CONNECTOR_ID].fingerprint
-        == WHATSAPP_CONFORMANCE_FINGERPRINT
+        reports[WHATSAPP_CONNECTOR_ID].fingerprint == WHATSAPP_CONFORMANCE_FINGERPRINT
     )

@@ -18,6 +18,8 @@ from services.ingest.source_contract.manifest import (
     CapabilityDeclaration,
     CapabilityRef,
     ConnectorManifest,
+    load_connector_manifest,
+    load_connector_manifests,
 )
 from services.ingest.source_contract.models import InstallationRef
 from services.ingest.source_contract.versioning import SemanticVersion, VersionRange
@@ -38,4 +40,6 @@ __all__ = [
     "SourceConnector",
     "StaticBoundConnector",
     "VersionRange",
+    "load_connector_manifest",
+    "load_connector_manifests",
 ]

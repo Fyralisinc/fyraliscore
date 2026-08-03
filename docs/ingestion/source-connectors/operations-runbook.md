@@ -11,7 +11,8 @@ Before enabling connector routing:
 4. Confirm required credential slots are current and authority is not revoked.
 5. Confirm the installation lifecycle is `Ready` or intentionally `Degraded`.
 6. Confirm the connector artifact is enabled, signed by a trusted key, built by
-   an allowed builder, and not quarantined.
+   an allowed builder, matches the digest measured from the running module and
+   exact manifest, and is not quarantined.
 7. Confirm an active routing revision exists and its metric window is being
    populated.
 
@@ -20,7 +21,7 @@ Before enabling connector routing:
 | Variable | Meaning |
 | --- | --- |
 | `SOURCE_CONNECTOR_ROUTING_JSON` | Process bootstrap routing policy; durable active revisions supersede it when newer |
-| `SOURCE_CONNECTOR_REQUIRE_SIGNED_ARTIFACTS` | Require an attestation for every connector candidate when true |
+| `SOURCE_CONNECTOR_REQUIRE_SIGNED_ARTIFACTS` | Require an attestation for every connector candidate; production forces this on |
 | `SOURCE_CONNECTOR_TRUSTED_SIGNERS_JSON` | JSON map of signer key ID to base64 raw Ed25519 public key |
 | `SOURCE_CONNECTOR_ALLOWED_BUILDERS` | Comma-separated artifact builder allowlist |
 | `CONNECTOR_CALLBACK_BASE_URL` | Base URL used for host-allocated callbacks |
@@ -44,8 +45,9 @@ if fleet rollout later applies a connector override.
 ### Artifact quarantined
 
 Inspect the reason: missing attestation, disabled/quarantined status, identity or
-version mismatch, manifest digest mismatch, missing/mismatched conformance,
-builder rejection, unknown signer, or invalid signature. Keep legacy routing.
+version mismatch, missing/mismatched running-artifact measurement, manifest
+digest mismatch, missing/mismatched conformance, builder rejection, unknown
+signer, or invalid signature. Keep legacy routing.
 Build and sign a new artifact; do not edit digests to match an existing binary.
 Enable it through the artifact release process, then restart or refresh
 admission.
@@ -101,4 +103,3 @@ tools: `source_connector_installations`, `source_connector_authority_grants`,
 `source_connector_routing_revisions`, `source_connector_rollout_audit`, and
 `source_connector_rollout_metric_windows`. Tenant-scoped tables enforce RLS;
 use the normal tenant context rather than bypassing it for routine diagnostics.
-

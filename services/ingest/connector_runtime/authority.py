@@ -9,7 +9,62 @@ from uuid import UUID
 
 from services.ingest.source_contract.connector import GrantedAuthority
 from services.ingest.source_contract.errors import BindingError
+from services.ingest.source_contract.manifest import ConnectorManifest
 from services.ingest.source_contract.models import InstallationRef
+
+
+_TRUST_ORDER = (
+    "authoritative",
+    "attested_agent",
+    "authoritative_external",
+    "reputable",
+    "inferential",
+    "inferential_external",
+    "unvetted",
+    "untrusted",
+)
+_TRUST_RANK = {value: index for index, value in enumerate(_TRUST_ORDER)}
+
+
+def scope_authority(
+    manifest: ConnectorManifest,
+    granted: GrantedAuthority,
+) -> GrantedAuthority:
+    """Validate a grant and reduce it to the manifest's requested authority."""
+
+    requested = manifest.spec.permissions
+    missing_secrets = set(requested.secret_slots) - set(granted.secret_slots)
+    missing_hosts = set(requested.outbound_hosts) - set(granted.outbound_hosts)
+    missing_scopes = set(requested.requested_scopes) - set(granted.scopes)
+    if missing_secrets or missing_hosts or missing_scopes:
+        raise BindingError(
+            "binding authority does not satisfy connector manifest permissions",
+            details={
+                "connector_id": manifest.connector_id,
+                "missing_secret_slots": tuple(sorted(missing_secrets)),
+                "missing_outbound_hosts": tuple(sorted(missing_hosts)),
+                "missing_scopes": tuple(sorted(missing_scopes)),
+            },
+        )
+    manifest_trust = manifest.spec.trust.maximum_tier
+    if (
+        manifest_trust not in _TRUST_RANK
+        or granted.maximum_trust_tier not in _TRUST_RANK
+    ):
+        raise BindingError(
+            "binding authority contains an unsupported trust tier",
+            details={"connector_id": manifest.connector_id},
+        )
+    trust_ceiling = max(
+        (manifest_trust, granted.maximum_trust_tier),
+        key=_TRUST_RANK.__getitem__,
+    )
+    return GrantedAuthority(
+        secret_slots=frozenset(requested.secret_slots),
+        outbound_hosts=frozenset(requested.outbound_hosts),
+        scopes=frozenset(requested.requested_scopes),
+        maximum_trust_tier=trust_ceiling,
+    )
 
 
 @dataclass(frozen=True)
@@ -76,4 +131,4 @@ class AuthorityRepository(Protocol):
     ) -> None: ...
 
 
-__all__ = ["AuthorityRepository", "InstallationAuthority"]
+__all__ = ["AuthorityRepository", "InstallationAuthority", "scope_authority"]

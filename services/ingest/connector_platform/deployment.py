@@ -16,6 +16,7 @@ from services.ingest.connector_runtime.artifacts import (
     ArtifactAttestation,
     ArtifactDeploymentPolicy,
     DeploymentStatus,
+    connector_artifact_sha256,
 )
 from services.ingest.connector_runtime.definitions import ConnectorCandidate
 from services.ingest.connector_runtime.policy import AtomicRoutingPolicy
@@ -69,6 +70,10 @@ class ArtifactAdmissionSettings:
 
     @classmethod
     def from_env(cls) -> "ArtifactAdmissionSettings":
+        production = any(
+            os.environ.get(name, "").strip().lower() in {"prod", "production"}
+            for name in ("COMPANY_OS_ENV", "FYRALIS_ENV")
+        )
         return cls(
             trusted_signers=_trusted_signers(os.environ.get(TRUSTED_SIGNERS_ENV)),
             allowed_builders=frozenset(
@@ -76,7 +81,9 @@ class ArtifactAdmissionSettings:
                 for item in os.environ.get(ALLOWED_BUILDERS_ENV, "").split(",")
                 if item.strip()
             ),
-            require_signed=_enabled(os.environ.get(REQUIRE_SIGNED_ARTIFACTS_ENV)),
+            require_signed=(
+                production or _enabled(os.environ.get(REQUIRE_SIGNED_ARTIFACTS_ENV))
+            ),
         )
 
 
@@ -93,6 +100,13 @@ class ArtifactAdmissionController:
         self._repository = repository
         self._routing = routing
         self._candidates = tuple(candidates)
+        self._measured_artifacts = {
+            (
+                candidate.manifest.connector_id,
+                candidate.manifest.metadata.version,
+            ): connector_artifact_sha256(candidate.manifest)
+            for candidate in self._candidates
+        }
         self._policy = ArtifactDeploymentPolicy(
             settings.trusted_signers,
             allowed_builders=settings.allowed_builders,
@@ -101,7 +115,11 @@ class ArtifactAdmissionController:
 
     async def refresh(self) -> ArtifactAdmission:
         attestations = await self._repository.load_all()
-        admission = self._policy.admit(self._candidates, attestations)
+        admission = self._policy.admit(
+            self._candidates,
+            attestations,
+            measured_artifacts=self._measured_artifacts,
+        )
         self._routing.replace_quarantine(admission.quarantined)
         for candidate in self._candidates:
             connector_id = candidate.manifest.connector_id

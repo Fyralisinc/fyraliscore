@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from services.ingest.connector_runtime.authority import scope_authority
 from services.ingest.connector_runtime.definitions import ConnectorDescription
 from services.ingest.source_contract.connector import (
     BindingContext,
@@ -120,24 +121,12 @@ def _validate_authority(
                 "registry_connector_id": manifest.connector_id,
             },
         )
-    requested = manifest.spec.permissions
-    missing_secrets = set(requested.secret_slots) - set(
-        context.authority.secret_slots
-    )
-    missing_hosts = set(requested.outbound_hosts) - set(
-        context.authority.outbound_hosts
-    )
-    missing_scopes = set(requested.requested_scopes) - set(
-        context.authority.scopes
-    )
-    if missing_secrets or missing_hosts or missing_scopes:
+    scoped = scope_authority(manifest, context.authority)
+    if context.authority != scoped:
         raise BindingError(
-            "binding authority does not satisfy connector manifest permissions",
+            "binding context must carry manifest-scoped least authority",
             details={
                 "connector_id": manifest.connector_id,
-                "missing_secret_slots": tuple(sorted(missing_secrets)),
-                "missing_outbound_hosts": tuple(sorted(missing_hosts)),
-                "missing_scopes": tuple(sorted(missing_scopes)),
             },
         )
 

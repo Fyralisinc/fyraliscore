@@ -11,6 +11,7 @@ from services.ingest.connector_platform.pilots import build_pilot_composition
 from services.ingest.connector_platform.webhook_ingress import (
     execute_migrated_webhook,
 )
+from services.ingest.connector_runtime.policy import ExecutionMode, RoutingPolicy
 
 
 @pytest.mark.asyncio
@@ -26,9 +27,12 @@ async def test_migrated_slack_webhook_resolves_native_capability() -> None:
         "event": {"type": "message", "channel": "C1", "ts": "1.1"},
     }
     body = json.dumps(payload, separators=(",", ":")).encode()
-    signature = "v0=" + hmac.new(
-        secret.encode(), f"v0:{timestamp}:".encode() + body, hashlib.sha256
-    ).hexdigest()
+    signature = (
+        "v0="
+        + hmac.new(
+            secret.encode(), f"v0:{timestamp}:".encode() + body, hashlib.sha256
+        ).hexdigest()
+    )
 
     class Pool:
         async def fetchrow(self, query, *args):
@@ -94,7 +98,9 @@ async def test_migrated_slack_webhook_resolves_native_capability() -> None:
             return None
 
     state = SimpleNamespace(
-        source_connector_runtime=build_pilot_composition(),
+        source_connector_runtime=build_pilot_composition(
+            RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)
+        ),
         integration_runtime=SimpleNamespace(
             pool=Pool(),
             secret_store=Secrets(),

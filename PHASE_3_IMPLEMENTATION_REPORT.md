@@ -1,5 +1,13 @@
 # Phase 3 Source Connector Runtime Implementation Report
 
+> **Post-audit correction (2026-08-03):** This is a historical implementation
+> report, not the current acceptance verdict. The principal-engineering audit
+> found that it overstates native independence, behavioral admission, automatic
+> rollout, catalog authority, and completion. All sources now default to legacy;
+> Slack, Notion, and WhatsApp remain transitional candidates until completion
+> Phase 2. See `SOURCE_CONNECTOR_ARCHITECTURAL_AUDIT.md` and
+> `SOURCE_CONNECTOR_10_10_PLAN.md`.
+
 ## Executive summary
 
 Phase 3 establishes the Source Connector Runtime as the authoritative Fyralis
@@ -455,4 +463,3 @@ still require measurement in the deployment environment.
 - Remove compatibility candidates, dispatch maps, duplicate registration paths,
   and provider-specific lifecycle ownership only after the final connector has
   met the documented retirement criteria.
-

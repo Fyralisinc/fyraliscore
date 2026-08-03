@@ -10,9 +10,8 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from services.ingest.connector_platform import pilots
-
 from services.ingest.connector_conformance.fakes import FakeHostEnvironment
+from services.ingest.connectors import native
 from services.ingest.connector_platform.execution import LegacyExecutionRouter
 from services.ingest.connector_platform.legacy_capabilities import LegacyGatewayStream
 from services.ingest.connector_platform.legacy_context import (
@@ -78,9 +77,12 @@ async def test_slack_webhook_bridge_uses_existing_hmac_verifier() -> None:
         },
     }
     body = json.dumps(payload, separators=(",", ":")).encode()
-    signature = "v0=" + hmac.new(
-        secret.encode(), f"v0:{timestamp}:".encode() + body, hashlib.sha256
-    ).hexdigest()
+    signature = (
+        "v0="
+        + hmac.new(
+            secret.encode(), f"v0:{timestamp}:".encode() + body, hashlib.sha256
+        ).hexdigest()
+    )
 
     async def read_secret(_installation_id, slot):
         assert slot == "webhook_signing_secret"
@@ -88,9 +90,7 @@ async def test_slack_webhook_bridge_uses_existing_hmac_verifier() -> None:
 
     async with httpx.AsyncClient() as client:
         router = LegacyExecutionRouter(
-            build_pilot_composition(
-                RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)
-            ),
+            build_pilot_composition(RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)),
             HostServicesFactory(http_client=client, secret_reader=read_secret),
         )
 
@@ -148,12 +148,10 @@ async def test_identity_normalization_and_poll_have_shadow_parity(
         )
 
     monkeypatch.setitem(FETCHER_DISPATCH, "notion", fetcher)
-    monkeypatch.setattr(pilots, "fetch_page_notion", fetcher)
+    monkeypatch.setattr(native, "fetch_page_notion", fetcher)
     async with httpx.AsyncClient() as client:
         router = LegacyExecutionRouter(
-            build_pilot_composition(
-                RoutingPolicy(global_mode=ExecutionMode.SHADOW)
-            ),
+            build_pilot_composition(RoutingPolicy(global_mode=ExecutionMode.SHADOW)),
             HostServicesFactory(http_client=client),
             shadow_sink=sink,
         )
@@ -197,7 +195,9 @@ class _GatewayDriver:
         self.closed = False
 
     async def open(self, request: GatewayOpenRequest) -> GatewaySession:
-        return GatewaySession(session_id="legacy-session", resume_state=request.resume_state)
+        return GatewaySession(
+            session_id="legacy-session", resume_state=request.resume_state
+        )
 
     async def receive(self, request: GatewayReceiveRequest) -> GatewayBatch:
         return GatewayBatch(
@@ -225,9 +225,7 @@ def _gateway_manifest() -> ConnectorManifest:
             "spec": {
                 "contract": ">=1.0,<2.0",
                 "implementation": "tests.gateway:create",
-                "capabilities": [
-                    {"id": GATEWAY_STREAM_V1.ref.id, "version": 1}
-                ],
+                "capabilities": [{"id": GATEWAY_STREAM_V1.ref.id, "version": 1}],
                 "ingressKinds": ["gateway"],
                 "permissions": {},
                 "trust": {"maximumTier": "attested_agent"},

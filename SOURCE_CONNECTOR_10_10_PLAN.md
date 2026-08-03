@@ -1,0 +1,98 @@
+# Source Connector 10/10 completion plan
+
+Status: **Completion Phase 1 implemented; Phases 2 and 3 pending**<br>
+Baseline: principal-engineering audit at `a4fd22d4` (5.8/10)<br>
+Rule: each phase is independently verified and committed; no later phase starts
+until the prior phase has been reviewed.
+
+## Completion Phase 1 — merge-safe default posture
+
+Goal: make the connector subsystem truthful and disabled by default, without
+claiming that native migration or production rollout is complete. This phase
+does not make the branch merge-ready while required repository gates remain
+red.
+
+- Keep every connector in legacy execution by default. Connector mode requires
+  an explicit routing revision.
+- Move the three native manifests into checked-in declarative JSON and resolve
+  their factory paths only during deliberate activation.
+- Recompute conformance independently and compare all 26 candidates with a
+  checked-in release-evidence catalog; never derive host approvals from the
+  candidates being admitted.
+- Intersect durable grants with manifest permissions before constructing host
+  services, and reject broad binding contexts.
+- Bind signed provenance to a digest measured from the running implementation
+  module plus exact manifest. Make signed admission mandatory in production.
+- Correct native control-plane seed versions, package manifest/evidence assets,
+  add an executable release gate, and ratchet connector implementation imports.
+- Correct architecture, migration, development, operations, and historical
+  implementation-report status claims.
+- Preserve the 23 compatibility candidates and all legacy paths as explicit
+  rollback/production behavior.
+
+Exit gate: manifest discovery and factories are executable; all 26 fingerprints
+match independent evidence; default routing is legacy; authority and artifact
+negative tests pass; focused connector suites and production environment checks
+pass. Repository-wide pre-existing architecture/migration ratchet failures are
+recorded rather than disguised as connector completion.
+
+## Completion Phase 2 — native pilots and closed-loop operations
+
+Goal: make Slack, Notion, and WhatsApp genuinely native and eligible for a
+measured, reversible production rollout.
+
+- Remove `legacy_binding_scope`/`require_legacy_binding` and all imports from
+  native connector implementations into legacy planners, fetchers, handlers,
+  reconcilers, integration helpers, and platform runtime modules.
+- Introduce connector-local provider clients, pagination/state DTOs, identity,
+  normalization, reconciliation, webhook verification, and OAuth facets.
+- Make normalizer, backfill/poll, webhook, OAuth, and lifecycle owners resolve
+  the same admitted registry artifact and durable installation authority.
+- Ship capability-specific behavioral conformance fixtures and make their
+  evidence a release-admission input alongside structural evidence.
+- Persist shadow reports and bounded execution/latency/error/DLQ/lifecycle
+  windows; translate rollout stages and tenant cohorts into routing policy.
+- Continuously refresh artifact admission and routing across every execution
+  owner. Deploy the lifecycle controller with health, alerts, and runbooks.
+- Run migration 0187, schema/RLS/constraint checks, and production-like
+  PostgreSQL/Kafka/S3/secret-store tests. Repair existing architecture and
+  migration ratchet failures so required CI is fully green.
+- Perform and record shadow, canary, bounded-cohort, rollback, replay, refresh,
+  reconciliation, and uninstall drills for all three pilots.
+
+Exit gate: a no-ambient-context test proves each pilot is native; behavioral and
+artifact admission is green; evidence writers feed rollout readers; every
+runtime owner honors quarantine/authority; production-like integration and CI
+gates pass. Defaults remain legacy until an audited routing revision promotes a
+specific cohort.
+
+## Completion Phase 3 — complete fleet and stable v1
+
+Goal: finish the original roadmap rather than merely operating a migration
+framework.
+
+- Migrate the remaining 23 source families by archetype, with complete ingress,
+  installation, lifecycle, behavioral parity, rollout, rollback, and soak
+  evidence for each.
+- Make the connector manifest/catalog generate or validate central source
+  identity, ingress coverage, channel/handler wiring, installation factories,
+  worker/deployment configuration, and documentation.
+- Add declared available/configured capability semantics, connector/contract/
+  envelope/state version upgrade rules, explicit state migrations, mixed-version
+  worker compatibility, downgrade policy, and replay certification.
+- Delete compatibility candidates, dispatch-map authority, central source
+  wiring, `SourceLiteral` architectural ownership, obsolete lifecycle storage,
+  and provider-specific duplicate control-plane state only when retirement
+  evidence permits it.
+- Run failure injection, provider throttling/outage, lease loss, cancellation,
+  secret rotation, credential revocation, poison payload, multi-region and
+  disaster-recovery tests. Establish SLOs, dashboards, alerts, capacity and
+  rollback ownership.
+- Stabilize the contract as v1 only after compatibility, extension, security,
+  and operations review. Out-of-process/marketplace support remains optional
+  unless separately approved.
+
+Exit gate: all 26 sources execute through the connector runtime, no legacy
+registration/dispatch authority remains, version and replay upgrades are
+proven, production SLO/chaos evidence is accepted, and the architecture report
+can truthfully state that the original roadmap is complete.

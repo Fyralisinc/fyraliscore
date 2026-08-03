@@ -112,6 +112,9 @@ include = ["lib*", "services*"]
 exclude = ["tests*", "ui*"]
 namespaces = true
 
+[tool.setuptools.package-data]
+"services.ingest.connectors" = ["manifests/*.json", "release-evidence.json"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
@@ -347,4 +350,38 @@ forbidden_modules = [
     "services.ingest.ingestion",
     "services.ingest.integrations",
     "services.app",
+]
+
+[[tool.importlinter.contracts]]
+name = "connector implementations do not add new legacy platform dependencies"
+type = "forbidden"
+source_modules = [
+    "services.ingest.connectors.native",
+    "services.ingest.connectors.oauth",
+]
+forbidden_modules = [
+    "services.ingest.connector_runtime",
+    "services.ingest.connector_platform",
+    "services.ingest.ingestion",
+    "services.ingest.integrations",
+    "services.app",
+]
+# Phase-1 ratchet: these are the known transitional bridges used by the three
+# native pilots. Phase 2 removes rows as connector-local implementations replace
+# ambient legacy binding, source handlers, planners, fetchers, and reconcilers.
+allow_indirect_imports = true
+ignore_imports = [
+    "services.ingest.connectors.native -> services.ingest.connector_platform.legacy_context",
+    "services.ingest.connectors.native -> services.ingest.ingestion.idempotency",
+    "services.ingest.connectors.native -> services.ingest.ingestion.fetchers.notion",
+    "services.ingest.connectors.native -> services.ingest.ingestion.fetchers.slack",
+    "services.ingest.connectors.native -> services.ingest.ingestion.handlers",
+    "services.ingest.connectors.native -> services.ingest.ingestion.handlers.notion",
+    "services.ingest.connectors.native -> services.ingest.ingestion.handlers.slack",
+    "services.ingest.connectors.native -> services.ingest.ingestion.handlers.whatsapp",
+    "services.ingest.connectors.native -> services.ingest.ingestion.planners.notion",
+    "services.ingest.connectors.native -> services.ingest.ingestion.planners.slack",
+    "services.ingest.connectors.native -> services.ingest.ingestion.reconcilers.notion",
+    "services.ingest.connectors.native -> services.ingest.ingestion.reconcilers.slack",
+    "services.ingest.connectors.native -> services.ingest.integrations.whatsapp.signature",
 ]

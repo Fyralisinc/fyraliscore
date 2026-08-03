@@ -11,6 +11,7 @@ from services.ingest.connector_platform.pilots import build_pilot_composition
 from services.ingest.connector_platform.whatsapp_ingress import (
     verify_migrated_whatsapp_webhook,
 )
+from services.ingest.connector_runtime.policy import ExecutionMode, RoutingPolicy
 from services.ingest.integrations.whatsapp.signature import sign_payload
 
 
@@ -72,7 +73,9 @@ async def test_whatsapp_signature_resolves_native_registry_capability() -> None:
             return secret.encode()
 
     state = SimpleNamespace(
-        source_connector_runtime=build_pilot_composition(),
+        source_connector_runtime=build_pilot_composition(
+            RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)
+        ),
         integration_runtime=SimpleNamespace(pool=Pool(), secret_store=Secrets()),
     )
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -175,9 +177,7 @@ class ConnectorSpec(ManifestModel):
 
 
 class ConnectorManifest(ManifestModel):
-    api_version: Literal["sources.fyralis.io/v1alpha1"] = Field(
-        alias="apiVersion"
-    )
+    api_version: Literal["sources.fyralis.io/v1alpha1"] = Field(alias="apiVersion")
     kind: Literal["SourceConnector"]
     metadata: ConnectorMetadata
     spec: ConnectorSpec
@@ -195,6 +195,35 @@ class ConnectorManifest(ManifestModel):
         return tuple(declaration.ref for declaration in self.spec.capabilities)
 
 
+def load_connector_manifest(path: str | Path) -> ConnectorManifest:
+    """Load one declarative JSON manifest without importing its implementation."""
+
+    manifest_path = Path(path)
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"connector manifest {manifest_path} is not valid JSON"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"connector manifest {manifest_path} must be an object")
+    return ConnectorManifest.model_validate(payload)
+
+
+def load_connector_manifests(directory: str | Path) -> tuple[ConnectorManifest, ...]:
+    """Load a deterministic manifest snapshot from a checked-in directory."""
+
+    root = Path(directory)
+    manifests = tuple(
+        load_connector_manifest(path)
+        for path in sorted(root.glob("*.json"), key=lambda item: item.name)
+    )
+    connector_ids = [manifest.connector_id for manifest in manifests]
+    if len(connector_ids) != len(set(connector_ids)):
+        raise ValueError("connector manifest directory contains duplicate IDs")
+    return manifests
+
+
 __all__ = [
     "CapabilityConstraint",
     "CapabilityDeclaration",
@@ -210,4 +239,6 @@ __all__ = [
     "PermissionRequest",
     "RuntimeProfile",
     "TrustDeclaration",
+    "load_connector_manifest",
+    "load_connector_manifests",
 ]

@@ -29,19 +29,11 @@ from services.ingest.source_contract.host_services import SecretValue
 from services.ingest.source_contract.models import InstallationRef
 
 
-def _context(connector_id: str, services) -> BindingContext:
-    return BindingContext(
-        installation=InstallationRef(
-            id=uuid4(),
-            tenant_id=uuid4(),
-            connector_id=connector_id,
-            generation=1,
-        ),
-        authority=GrantedAuthority(
-            secret_slots=frozenset(
-                {"oauth_access_token", "webhook_signing_secret"}
-            ),
-            outbound_hosts=frozenset({"slack.com", "api.notion.com"}),
+def _authority(connector_id: str) -> GrantedAuthority:
+    if connector_id == SLACK_CONNECTOR_ID:
+        return GrantedAuthority(
+            secret_slots=frozenset({"oauth_access_token", "webhook_signing_secret"}),
+            outbound_hosts=frozenset({"slack.com"}),
             scopes=frozenset(
                 {
                     "channels:read",
@@ -53,7 +45,23 @@ def _context(connector_id: str, services) -> BindingContext:
                 }
             ),
             maximum_trust_tier="attested_agent",
+        )
+    return GrantedAuthority(
+        secret_slots=frozenset({"oauth_access_token"}),
+        outbound_hosts=frozenset({"api.notion.com"}),
+        maximum_trust_tier="attested_agent",
+    )
+
+
+def _context(connector_id: str, services) -> BindingContext:
+    return BindingContext(
+        installation=InstallationRef(
+            id=uuid4(),
+            tenant_id=uuid4(),
+            connector_id=connector_id,
+            generation=1,
         ),
+        authority=_authority(connector_id),
         services=services,
     )
 
@@ -96,12 +104,7 @@ async def test_slack_oauth_is_registry_resolved_and_returns_secret_candidates(
             secret_reader=secret_reader,
         ).build(
             uuid4(),
-            GrantedAuthority(
-                secret_slots=frozenset(
-                    {"oauth_access_token", "webhook_signing_secret"}
-                ),
-                outbound_hosts=frozenset({"slack.com"}),
-            ),
+            _authority(SLACK_CONNECTOR_ID),
             connector_id=SLACK_CONNECTOR_ID,
         )
         binding = build_pilot_composition().registry.resolve_for_install(
@@ -160,7 +163,7 @@ async def test_notion_oauth_uses_governed_http_and_long_lived_token(
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         services = HostServicesFactory(http_client=client).build(
             uuid4(),
-            GrantedAuthority(outbound_hosts=frozenset({"api.notion.com"})),
+            _authority(NOTION_CONNECTOR_ID),
             connector_id=NOTION_CONNECTOR_ID,
         )
         binding = build_pilot_composition().registry.resolve_for_install(

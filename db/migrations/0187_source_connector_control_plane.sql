@@ -183,7 +183,7 @@ INSERT INTO source_connector_installations (
 SELECT id, tenant_id, 'fyralis/' || provider, installation_id,
        CASE WHEN enabled THEN 'Ready' ELSE 'Paused' END,
        CASE WHEN enabled THEN 'Ready' ELSE 'Paused' END,
-       1, '0.1.0',
+       1, '1.0.0',
        jsonb_build_object('storage', 'provider_installations', 'migrated_by', '0187')
   FROM provider_installations
  WHERE provider IN ('slack', 'notion')

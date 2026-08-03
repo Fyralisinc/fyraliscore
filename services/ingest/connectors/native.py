@@ -9,23 +9,40 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Any
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
+from services.ingest.connectors.oauth import (
+    NotionOAuthCapability,
+    SlackOAuthCapability,
+)
 from services.ingest.connector_platform.legacy_context import require_legacy_binding
-from services.ingest.connector_runtime.definitions import ConnectorCandidate
+from services.ingest.ingestion import idempotency
+from services.ingest.ingestion.fetchers.notion import fetch_page_notion
+from services.ingest.ingestion.fetchers.slack import fetch_page_slack
 from services.ingest.ingestion.handlers import ObservationDraft as LegacyDraft
+from services.ingest.ingestion.handlers.notion import handle_notion_object
+from services.ingest.ingestion.handlers.slack import handle_slack_message
+from services.ingest.ingestion.handlers.whatsapp import handle_whatsapp
+from services.ingest.ingestion.planners.notion import plan_shards_notion
+from services.ingest.ingestion.planners.slack import plan_shards_slack
+from services.ingest.ingestion.reconcilers.notion import reconcile_notion
+from services.ingest.ingestion.reconcilers.slack import reconcile_slack
 from services.ingest.source_contract.capabilities import (
+    CLEANUP_V1,
+    HEALTH_PROBE_V1,
     HISTORICAL_PULL_V1,
     IDENTITY_V1,
     INCREMENTAL_POLL_V1,
     NORMALIZATION_V1,
+    OAUTH2_LIFECYCLE_V1,
+    OAUTH2_V1,
     RECONCILIATION_V1,
     WEBHOOK_V1,
 )
 from services.ingest.source_contract.connector import (
     BindingContext,
-    CapabilityKey,
     OperationContext,
     StaticBoundConnector,
 )
@@ -38,7 +55,11 @@ from services.ingest.source_contract.capabilities.lifecycle import (
     CleanupResult,
     HealthProbeRequest,
 )
-from services.ingest.source_contract.manifest import CapabilityRef, ConnectorManifest
+from services.ingest.source_contract.manifest import (
+    CapabilityRef,
+    ConnectorManifest,
+    load_connector_manifest,
+)
 from services.ingest.source_contract.models import (
     BoundedWebhookRequest,
     CursorState,
@@ -67,6 +88,7 @@ Planner = Callable[[Any], Awaitable[list[Any]]]
 Fetcher = Callable[[Any, dict[str, Any], dict[str, Any] | None], Awaitable[Any]]
 Reconciler = Callable[[list[Any], Any], Awaitable[Any]]
 Handler = Callable[[dict[str, Any], dict[str, str]], Awaitable[LegacyDraft]]
+_MANIFEST_DIRECTORY = Path(__file__).resolve().parent / "manifests"
 
 
 class NativeSourceConnector:
@@ -88,20 +110,6 @@ class NativeSourceConnector:
             {ref: factory(context) for ref, factory in self._factories.items()},
         )
 
-    def candidate(
-        self,
-        keys: tuple[CapabilityKey[Any], ...],
-        *,
-        conformance_fingerprint: str | None = None,
-    ) -> ConnectorCandidate:
-        return ConnectorCandidate(
-            manifest=self.manifest,
-            factory=lambda: self,
-            capability_keys=keys,
-            origin=f"first-party-native:{self.manifest.metadata.source}",
-            conformance_fingerprint=conformance_fingerprint,
-        )
-
 
 def _source_record(payload: Any) -> SourceRecord:
     return SourceRecord(
@@ -117,9 +125,7 @@ class DirectHistoricalPull:
         self._planner = planner
         self._fetcher = fetcher
 
-    async def plan(
-        self, request: PlanRequest, context: OperationContext
-    ) -> PlanResult:
+    async def plan(self, request: PlanRequest, context: OperationContext) -> PlanResult:
         binding = require_legacy_binding()
         shards = await self._planner(binding.planner_context)
         return PlanResult(
@@ -224,6 +230,54 @@ class NativeIdentity:
         return self._derive(input)
 
 
+def _payload(input: IdentityInput) -> dict[str, Any]:
+    if not isinstance(input.record.payload, dict):
+        raise ValueError("connector identity requires a JSON object")
+    return input.record.payload
+
+
+def _slack_identity(input: IdentityInput) -> str:
+    payload = _payload(input)
+    raw_event = payload.get("event")
+    event: dict[str, Any] = raw_event if isinstance(raw_event, dict) else payload
+    channel = event.get("channel") or event.get("channel_id")
+    timestamp = event.get("ts") or event.get("event_ts")
+    if not isinstance(channel, str) or not isinstance(timestamp, str):
+        raise ValueError("Slack identity requires channel and timestamp")
+    return idempotency.slack_message(channel, timestamp)
+
+
+def _notion_identity(input: IdentityInput) -> str:
+    payload = _payload(input)
+    object_type = payload.get("object")
+    object_id = payload.get("id")
+    if not isinstance(object_type, str) or not isinstance(object_id, str):
+        raise ValueError("Notion identity requires object and id")
+    return idempotency.notion_object(object_type, object_id)
+
+
+def _whatsapp_identity(input: IdentityInput) -> str:
+    payload = _payload(input)
+    metadata = payload.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    phone_number_id = metadata.get("phone_number_id")
+    message = payload.get("message")
+    if isinstance(message, dict) and isinstance(message.get("id"), str):
+        return idempotency.whatsapp_message(phone_number_id, message["id"])
+    status = payload.get("status")
+    if (
+        isinstance(status, dict)
+        and isinstance(status.get("id"), str)
+        and isinstance(status.get("status"), str)
+    ):
+        return idempotency.whatsapp_status(
+            phone_number_id,
+            status["id"],
+            status["status"],
+        )
+    raise ValueError("WhatsApp identity requires a message or status ID")
+
+
 def _contract_draft(draft: LegacyDraft) -> ObservationDraft:
     return ObservationDraft(
         source_channel=draft.source_channel,
@@ -285,14 +339,10 @@ class NativeSlackWebhook:
         if payload.get("type") == "url_verification":
             return VerifiedWebhookResult(events=(), response_status_hint=200)
         external_id = str(
-            payload.get("team_id")
-            or payload.get("team", {}).get("id")
-            or "unknown"
+            payload.get("team_id") or payload.get("team", {}).get("id") or "unknown"
         )
         event = (
-            payload.get("event")
-            if isinstance(payload.get("event"), dict)
-            else payload
+            payload.get("event") if isinstance(payload.get("event"), dict) else payload
         )
         return VerifiedWebhookResult(
             events=(
@@ -433,16 +483,98 @@ class LocalCredentialCleanup:
         )
 
 
+def _manifest(source: str) -> ConnectorManifest:
+    return load_connector_manifest(_MANIFEST_DIRECTORY / f"{source}.json")
+
+
+def build_slack_connector() -> NativeSourceConnector:
+    """Factory referenced by the declarative Slack manifest."""
+
+    return NativeSourceConnector(
+        _manifest("slack"),
+        {
+            OAUTH2_V1.ref: lambda context: SlackOAuthCapability(context),
+            OAUTH2_LIFECYCLE_V1.ref: lambda context: SlackOAuthCapability(context),
+            HEALTH_PROBE_V1.ref: lambda context: CredentialHealthProbe(
+                context, ("oauth_access_token", "webhook_signing_secret")
+            ),
+            CLEANUP_V1.ref: lambda context: OAuthCleanup(SlackOAuthCapability(context)),
+            HISTORICAL_PULL_V1.ref: lambda _context: DirectHistoricalPull(
+                plan_shards_slack, fetch_page_slack
+            ),
+            WEBHOOK_V1.ref: lambda context: NativeSlackWebhook(context),
+            RECONCILIATION_V1.ref: lambda _context: DirectReconciliation(
+                reconcile_slack
+            ),
+            IDENTITY_V1.ref: lambda _context: NativeIdentity(_slack_identity),
+            NORMALIZATION_V1.ref: lambda _context: DirectNormalization(
+                handle_slack_message
+            ),
+        },
+    )
+
+
+def build_notion_connector() -> NativeSourceConnector:
+    """Factory referenced by the declarative Notion manifest."""
+
+    return NativeSourceConnector(
+        _manifest("notion"),
+        {
+            OAUTH2_V1.ref: lambda context: NotionOAuthCapability(context),
+            OAUTH2_LIFECYCLE_V1.ref: lambda context: NotionOAuthCapability(context),
+            HEALTH_PROBE_V1.ref: lambda context: CredentialHealthProbe(
+                context, ("oauth_access_token",)
+            ),
+            CLEANUP_V1.ref: lambda context: OAuthCleanup(
+                NotionOAuthCapability(context)
+            ),
+            HISTORICAL_PULL_V1.ref: lambda _context: DirectHistoricalPull(
+                plan_shards_notion, fetch_page_notion
+            ),
+            INCREMENTAL_POLL_V1.ref: lambda _context: DirectIncrementalPoll(
+                fetch_page_notion
+            ),
+            RECONCILIATION_V1.ref: lambda _context: DirectReconciliation(
+                reconcile_notion
+            ),
+            IDENTITY_V1.ref: lambda _context: NativeIdentity(_notion_identity),
+            NORMALIZATION_V1.ref: lambda _context: DirectNormalization(
+                handle_notion_object
+            ),
+        },
+    )
+
+
+def build_whatsapp_connector() -> NativeSourceConnector:
+    """Factory referenced by the declarative WhatsApp manifest."""
+
+    return NativeSourceConnector(
+        _manifest("whatsapp"),
+        {
+            HEALTH_PROBE_V1.ref: lambda context: CredentialHealthProbe(
+                context, ("app_secret",)
+            ),
+            CLEANUP_V1.ref: lambda _context: LocalCredentialCleanup(),
+            WEBHOOK_V1.ref: lambda context: NativeWhatsAppWebhook(context),
+            IDENTITY_V1.ref: lambda _context: NativeIdentity(_whatsapp_identity),
+            NORMALIZATION_V1.ref: lambda _context: DirectNormalization(handle_whatsapp),
+        },
+    )
+
+
 __all__ = [
+    "CredentialHealthProbe",
     "DirectHistoricalPull",
     "DirectIncrementalPoll",
     "DirectNormalization",
     "DirectReconciliation",
-    "CredentialHealthProbe",
+    "LocalCredentialCleanup",
     "NativeIdentity",
     "NativeSlackWebhook",
-    "NativeWhatsAppWebhook",
     "NativeSourceConnector",
+    "NativeWhatsAppWebhook",
     "OAuthCleanup",
-    "LocalCredentialCleanup",
+    "build_notion_connector",
+    "build_slack_connector",
+    "build_whatsapp_connector",
 ]

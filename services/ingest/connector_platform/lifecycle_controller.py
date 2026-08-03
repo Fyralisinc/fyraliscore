@@ -8,7 +8,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from services.ingest.connector_runtime.authority import AuthorityRepository
+from services.ingest.connector_runtime.authority import (
+    AuthorityRepository,
+    scope_authority,
+)
 from services.ingest.connector_runtime.host_services import HostServicesFactory
 from services.ingest.connector_runtime.lifecycle import (
     DesiredInstallationState,
@@ -177,7 +180,10 @@ class ContinuousInstallationController:
         if authority is None:
             return LifecycleEvidence()
         try:
-            grant = authority.validate_for(installation)
+            grant = scope_authority(
+                self._registry.require(installation.connector_id).manifest,
+                authority.validate_for(installation),
+            )
             services = self._host_services.build(
                 installation.id,
                 grant,

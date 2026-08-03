@@ -2,11 +2,11 @@
 
 ## Authority boundary
 
-The Source Connector Runtime is Fyralis's authoritative connector catalog,
-contract, binding, lifecycle, authority, routing, rollout, and artifact-admission
-architecture. Native execution is authoritative for Slack, Notion, and
-WhatsApp. The remaining 23 source families are represented in the same registry
-but deliberately execute through compatibility/legacy paths.
+The Source Connector Runtime is the target authoritative architecture and the
+current canonical definition catalog. Execution remains legacy-safe by default
+for all 26 sources. Slack, Notion, and WhatsApp are transitional native-root
+candidates; they are not production-authoritative until behavioral admission,
+ambient legacy dependency removal, and closed-loop rollout evidence pass.
 
 ```mermaid
 flowchart LR
@@ -40,8 +40,10 @@ FastAPI, Temporal, PostgreSQL, Kafka, or S3.
 
 Gateway and workflow startup build the same immutable 26-connector candidate
 set. Registration validates IDs, sources, versions, manifest/capability parity,
-host compatibility, and conformance fingerprints. A durable routing controller
-then applies the active revision. Artifact admission verifies enabled records;
+host compatibility, and independently checked-in structural conformance
+fingerprints. A durable routing controller then applies the active revision.
+Artifact admission verifies enabled records and compares their claimed digest
+with the running implementation module plus exact manifest;
 invalid or missing required attestations enter an in-memory quarantine that
 forces legacy mode even if a later routing revision asks for connector mode.
 
@@ -100,4 +102,3 @@ envelope literal. Native candidates carry first-party capability factories.
 Compatibility candidates are conformed definitions over legacy behavior and
 remain global-legacy unless explicitly migrated. There is no database-driven
 dynamic code loading.
-

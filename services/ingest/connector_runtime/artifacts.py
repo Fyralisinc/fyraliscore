@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import importlib.util
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
+from pathlib import Path
 from types import MappingProxyType
 
 from cryptography.exceptions import InvalidSignature
@@ -31,6 +33,34 @@ def manifest_sha256(manifest: ConnectorManifest) -> str:
         separators=(",", ":"),
     ).encode()
     return hashlib.sha256(payload).hexdigest()
+
+
+def connector_artifact_sha256(manifest: ConnectorManifest) -> str:
+    """Measure the running first-party module and its exact manifest."""
+
+    module_name, _attribute = manifest.spec.implementation.split(":", 1)
+    spec = importlib.util.find_spec(module_name)
+    if spec is None or spec.origin is None:
+        raise ValueError(
+            f"connector implementation module {module_name!r} cannot be measured"
+        )
+    try:
+        module_bytes = Path(spec.origin).read_bytes()
+    except OSError as exc:
+        raise ValueError(
+            f"connector implementation module {module_name!r} cannot be read"
+        ) from exc
+    manifest_bytes = json.dumps(
+        manifest.model_dump(mode="json", by_alias=True),
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    digest = hashlib.sha256()
+    digest.update(b"fyralis-in-process-connector-artifact-v1\0")
+    digest.update(manifest_bytes)
+    digest.update(b"\0")
+    digest.update(module_bytes)
+    return digest.hexdigest()
 
 
 class DeploymentStatus(StrEnum):
@@ -62,7 +92,9 @@ class ArtifactAttestation:
             "conformance_fingerprint",
         ):
             value = getattr(self, name)
-            if len(value) != 64 or any(char not in "0123456789abcdef" for char in value):
+            if len(value) != 64 or any(
+                char not in "0123456789abcdef" for char in value
+            ):
                 raise ValueError(f"{name} must be a lowercase SHA-256")
         if self.built_at.tzinfo is None:
             raise ValueError("artifact build time must be timezone-aware")
@@ -103,7 +135,9 @@ class ArtifactAdmission:
     quarantined: Mapping[str, str]
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "quarantined", MappingProxyType(dict(self.quarantined)))
+        object.__setattr__(
+            self, "quarantined", MappingProxyType(dict(self.quarantined))
+        )
 
 
 class ArtifactDeploymentPolicy:
@@ -122,23 +156,34 @@ class ArtifactDeploymentPolicy:
         self,
         candidate: ConnectorCandidate,
         attestation: ArtifactAttestation | None,
+        *,
+        measured_artifact_sha256: str | None = None,
     ) -> ArtifactDecision:
         if attestation is None:
             return ArtifactDecision(not self._require_signed, "attestation_missing")
         if attestation.deployment_status is not DeploymentStatus.ENABLED:
-            return ArtifactDecision(False, f"artifact_{attestation.deployment_status.value}")
+            return ArtifactDecision(
+                False, f"artifact_{attestation.deployment_status.value}"
+            )
         manifest = candidate.manifest
         if attestation.connector_id != manifest.connector_id:
             return ArtifactDecision(False, "connector_id_mismatch")
         if attestation.connector_version != manifest.metadata.version:
             return ArtifactDecision(False, "connector_version_mismatch")
+        if measured_artifact_sha256 is None:
+            return ArtifactDecision(False, "artifact_measurement_missing")
+        if attestation.artifact_sha256 != measured_artifact_sha256:
+            return ArtifactDecision(False, "artifact_digest_mismatch")
         if attestation.manifest_sha256 != manifest_sha256(manifest):
             return ArtifactDecision(False, "manifest_digest_mismatch")
         if candidate.conformance_fingerprint is None:
             return ArtifactDecision(False, "conformance_evidence_missing")
         if attestation.conformance_fingerprint != candidate.conformance_fingerprint:
             return ArtifactDecision(False, "conformance_evidence_mismatch")
-        if self._allowed_builders and attestation.builder_id not in self._allowed_builders:
+        if (
+            self._allowed_builders
+            and attestation.builder_id not in self._allowed_builders
+        ):
             return ArtifactDecision(False, "builder_not_allowed")
         public_key = self._trusted_signers.get(attestation.signer_key_id)
         if public_key is None:
@@ -154,6 +199,8 @@ class ArtifactDeploymentPolicy:
         self,
         candidates: Sequence[ConnectorCandidate],
         attestations: Mapping[tuple[str, str], ArtifactAttestation],
+        *,
+        measured_artifacts: Mapping[tuple[str, str], str] | None = None,
     ) -> ArtifactAdmission:
         admitted: list[ConnectorCandidate] = []
         quarantined: dict[str, str] = {}
@@ -162,7 +209,11 @@ class ArtifactDeploymentPolicy:
                 candidate.manifest.connector_id,
                 candidate.manifest.metadata.version,
             )
-            decision = self.evaluate(candidate, attestations.get(key))
+            decision = self.evaluate(
+                candidate,
+                attestations.get(key),
+                measured_artifact_sha256=(measured_artifacts or {}).get(key),
+            )
             if decision.admitted:
                 admitted.append(candidate)
             else:
@@ -177,5 +228,6 @@ __all__ = [
     "ArtifactDecision",
     "ArtifactDeploymentPolicy",
     "DeploymentStatus",
+    "connector_artifact_sha256",
     "manifest_sha256",
 ]
