@@ -7,8 +7,10 @@ import hashlib
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from enum import StrEnum
+from datetime import date, datetime
+from enum import Enum, StrEnum
 from typing import Any, Protocol
+from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -25,11 +27,17 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return dataclasses.asdict(value)
+        return _jsonable(dataclasses.asdict(value))
     if isinstance(value, Mapping):
         return {str(key): _jsonable(item) for key, item in value.items()}
     if isinstance(value, (tuple, list)):
         return [_jsonable(item) for item in value]
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, Enum):
+        return _jsonable(value.value)
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
     return repr(value)

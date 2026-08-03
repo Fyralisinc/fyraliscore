@@ -15,6 +15,7 @@ from services.ingest.connector_runtime.execution import (
 from services.ingest.connector_runtime.failures import (
     RuntimeConnectorFailure,
     RuntimeFailureAction,
+    classify_failure,
 )
 from services.ingest.connector_runtime.policy import (
     AtomicRoutingPolicy,
@@ -170,3 +171,16 @@ async def test_shadow_can_skip_side_effecting_capabilities() -> None:
 
     assert await executor.execute(request) == "legacy:workspace-1"
     assert connector.bind_calls == 0
+
+
+def test_legacy_recoverable_marker_preserves_worker_retry_semantics() -> None:
+    class LegacyRateLimit(Exception):
+        recoverable = True
+        code = "legacy_rate_limited"
+
+    translated = classify_failure(LegacyRateLimit())
+    failure = RuntimeConnectorFailure("bounded", translated)
+
+    assert failure.retryable
+    assert failure.recoverable
+    assert failure.translated.action is RuntimeFailureAction.RETRY

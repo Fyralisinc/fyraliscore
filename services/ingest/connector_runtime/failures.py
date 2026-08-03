@@ -50,11 +50,24 @@ class RuntimeConnectorFailure(Exception):
     def retryable(self) -> bool:
         return self.translated.retryable
 
+    @property
+    def recoverable(self) -> bool:
+        """Compatibility alias consumed by current worker retry boundaries."""
+
+        return self.translated.retryable
+
 
 def classify_failure(exc: BaseException) -> TranslatedFailure:
     if isinstance(exc, OperationCancelledError | asyncio.CancelledError):
         return TranslatedFailure(
             "cancelled", False, RuntimeFailureAction.CANCEL, "cancellation"
+        )
+    if isinstance(exc, asyncio.TimeoutError):
+        return TranslatedFailure(
+            "connector_deadline_exceeded",
+            True,
+            RuntimeFailureAction.RETRY,
+            "timeout",
         )
     if isinstance(exc, RateLimitedError):
         return TranslatedFailure(
@@ -93,6 +106,13 @@ def classify_failure(exc: BaseException) -> TranslatedFailure:
             if exc.retryable
             else RuntimeFailureAction.FAIL_CLOSED,
             "connector",
+        )
+    if bool(getattr(exc, "recoverable", False)):
+        return TranslatedFailure(
+            str(getattr(exc, "code", "legacy_recoverable_failure")),
+            True,
+            RuntimeFailureAction.RETRY,
+            "legacy_recoverable",
         )
     return TranslatedFailure(
         "connector_unexpected_failure",
