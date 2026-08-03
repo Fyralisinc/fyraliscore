@@ -25,7 +25,10 @@ from services.ingest.connector_runtime.composition import (
     build_runtime_composition,
 )
 from services.ingest.connector_runtime.policy import ExecutionMode, RoutingPolicy
-from services.ingest.connector_runtime.registry import ConnectorCandidate
+from services.ingest.connector_runtime.registry import (
+    ConnectorCandidate,
+    HostCompatibility,
+)
 from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.fetchers.notion import fetch_page_notion
 from services.ingest.ingestion.fetchers.slack import fetch_page_slack
@@ -49,10 +52,17 @@ from services.ingest.source_contract.capabilities import (
 )
 from services.ingest.source_contract.manifest import ConnectorManifest
 from services.ingest.source_contract.models import IdentityInput
+from services.ingest.source_contract.versioning import SemanticVersion
 
 
 SLACK_CONNECTOR_ID = "fyralis/slack"
 NOTION_CONNECTOR_ID = "fyralis/notion"
+SLACK_CONFORMANCE_FINGERPRINT = (
+    "591ed744a68c1aefd4e0ef71855c2a100b2169a346decc982d930a0d8e622aec"
+)
+NOTION_CONFORMANCE_FINGERPRINT = (
+    "392f7674f1a0624bffbded98f01621967cee9e2aa7794f941a3590922a76e7cc"
+)
 
 
 def _manifest(
@@ -210,6 +220,7 @@ def build_slack_candidate() -> ConnectorCandidate:
             IDENTITY_V1,
             NORMALIZATION_V1,
         ),
+        conformance_fingerprint=SLACK_CONFORMANCE_FINGERPRINT,
     )
 
 
@@ -252,6 +263,7 @@ def build_notion_candidate() -> ConnectorCandidate:
             IDENTITY_V1,
             NORMALIZATION_V1,
         ),
+        conformance_fingerprint=NOTION_CONFORMANCE_FINGERPRINT,
     )
 
 
@@ -264,8 +276,21 @@ def build_pilot_composition(
 ) -> ConnectorRuntimeComposition:
     """Freeze both native definitions with the supplied routing policy."""
 
+    candidates = build_pilot_candidates()
+    host = HostCompatibility(
+        contract_versions=(SemanticVersion.parse("1.0.0"),),
+        require_conformance_fingerprint=True,
+        approved_conformance_fingerprints=frozenset(
+            {
+                SLACK_CONFORMANCE_FINGERPRINT,
+                NOTION_CONFORMANCE_FINGERPRINT,
+            }
+        ),
+    )
     return build_runtime_composition(
-        build_pilot_candidates(), policy=policy or default_migrated_routing_policy()
+        candidates,
+        host=host,
+        policy=policy or default_migrated_routing_policy(),
     )
 
 
@@ -284,8 +309,10 @@ def default_migrated_routing_policy(*, revision: int = 1) -> RoutingPolicy:
 
 __all__ = [
     "NOTION_CONNECTOR_ID",
+    "NOTION_CONFORMANCE_FINGERPRINT",
     "NOTION_MANIFEST",
     "SLACK_CONNECTOR_ID",
+    "SLACK_CONFORMANCE_FINGERPRINT",
     "SLACK_MANIFEST",
     "build_notion_candidate",
     "build_pilot_candidates",

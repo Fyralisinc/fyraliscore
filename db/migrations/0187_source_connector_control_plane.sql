@@ -110,9 +110,13 @@ CREATE TABLE IF NOT EXISTS source_connector_callbacks (
 CREATE TABLE IF NOT EXISTS source_connector_artifacts (
   connector_id            TEXT NOT NULL,
   connector_version       TEXT NOT NULL,
+  artifact_sha256          TEXT NOT NULL CHECK (artifact_sha256 ~ '^[0-9a-f]{64}$'),
   manifest_sha256          TEXT NOT NULL CHECK (manifest_sha256 ~ '^[0-9a-f]{64}$'),
   conformance_fingerprint TEXT NOT NULL CHECK (conformance_fingerprint ~ '^[0-9a-f]{64}$'),
   signer_key_id           TEXT NOT NULL,
+  builder_id              TEXT NOT NULL,
+  source_revision         TEXT NOT NULL,
+  built_at                TIMESTAMPTZ NOT NULL,
   signature               TEXT NOT NULL CHECK (signature <> ''),
   deployment_status       TEXT NOT NULL DEFAULT 'disabled'
                               CHECK (deployment_status IN ('disabled', 'enabled', 'quarantined', 'retired')),
