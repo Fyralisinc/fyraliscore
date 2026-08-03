@@ -8,6 +8,11 @@ from services.ingest.connector_runtime.diagnostics import (
     DiagnosticSeverity,
     RegistryDiagnostic,
 )
+from services.ingest.connector_runtime.execution import (
+    CapabilityExecutionRequest,
+    ConnectorCapabilityExecutor,
+)
+from services.ingest.connector_runtime.host_services import HostServicesFactory
 from services.ingest.connector_runtime.legacy import LegacyConnectorAdapter
 from services.ingest.connector_runtime.policy import (
     AtomicRoutingPolicy,
@@ -31,7 +36,9 @@ from services.ingest.connector_runtime.registry import (
 
 __all__ = [
     "AtomicRoutingPolicy",
+    "CapabilityExecutionRequest",
     "ConnectorCandidate",
+    "ConnectorCapabilityExecutor",
     "ConnectorRegistry",
     "ConnectorRegistryBuilder",
     "ConnectorRuntimeComposition",
@@ -39,6 +46,7 @@ __all__ = [
     "DiagnosticSeverity",
     "ExecutionMode",
     "HostCompatibility",
+    "HostServicesFactory",
     "LegacyConnectorAdapter",
     "RegisteredConnector",
     "RegistryBuildResult",
