@@ -43,10 +43,12 @@ class PostgresConnectorHealthReader:
             for row in artifact_rows
         }
         registry = self._composition.registry.health()
+        runtime_quarantine = self._composition.routing.quarantined()
         unhealthy = (
             lifecycle.get("Failed", 0)
             + lifecycle.get("Degraded", 0)
             + artifacts.get("quarantined", 0)
+            + len(runtime_quarantine)
         )
         return {
             "status": "degraded" if unhealthy else "ok",
@@ -70,6 +72,10 @@ class PostgresConnectorHealthReader:
             ),
             "lifecycle_phases": lifecycle,
             "artifact_statuses": artifacts,
+            "runtime_quarantine": {
+                "count": len(runtime_quarantine),
+                "connectors": dict(runtime_quarantine),
+            },
         }
 
 

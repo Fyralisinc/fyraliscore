@@ -828,6 +828,7 @@ def build_app(
                 actor="gateway",
             )
             await connector_wiring.refresh_routing()
+            artifact_admission = await connector_wiring.refresh_artifact_admission()
             if connector_wiring.rollout is not None:
                 connector_rollout_stop = asyncio.Event()
                 connector_rollout_task = asyncio.create_task(
@@ -847,6 +848,21 @@ def build_app(
                     f"fingerprint={connector_wiring.composition.registry_fingerprint}"
                 ),
             )
+            if artifact_admission is not None:
+                admitted, quarantined = artifact_admission
+                detail = f"admitted={admitted} quarantined={quarantined}"
+                if quarantined:
+                    startup_status.degraded(
+                        "source_connector_artifact_admission",
+                        required=False,
+                        detail=detail,
+                    )
+                else:
+                    startup_status.ok(
+                        "source_connector_artifact_admission",
+                        required=False,
+                        detail=detail,
+                    )
 
             await _start_extension_startup_hooks(
                 app_,

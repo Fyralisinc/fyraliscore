@@ -8,7 +8,15 @@ from typing import Any
 
 from services.ingest.connector_platform.pilots import (
     build_pilot_composition,
+    build_runtime_candidates,
     default_migrated_routing_policy,
+)
+from services.ingest.connector_platform.artifact_store import (
+    PostgresArtifactRepository,
+)
+from services.ingest.connector_platform.deployment import (
+    ArtifactAdmissionController,
+    ArtifactAdmissionSettings,
 )
 from services.ingest.connector_platform.operational_health import (
     PostgresConnectorHealthReader,
@@ -32,10 +40,17 @@ class SourceConnectorRuntimeWiring:
     composition: ConnectorRuntimeComposition
     configuration: RoutingConfigurationController
     rollout: FleetRoutingController | None = None
+    artifact_admission: ArtifactAdmissionController | None = None
 
     async def refresh_routing(self) -> None:
         if self.rollout is not None:
             await self.rollout.evaluate_once()
+
+    async def refresh_artifact_admission(self) -> tuple[int, int] | None:
+        if self.artifact_admission is None:
+            return None
+        admission = await self.artifact_admission.refresh()
+        return len(admission.candidates), len(admission.quarantined)
 
 
 def wire_source_connector_runtime(
@@ -60,6 +75,7 @@ def wire_source_connector_runtime(
     composition = build_pilot_composition(policy)
     controller = RoutingConfigurationController(composition.routing)
     rollout = None
+    artifact_admission = None
     if pool is not None and hasattr(pool, "fetchrow"):
         repository = PostgresRolloutRepository(pool)
         rollout = FleetRoutingController(
@@ -68,7 +84,19 @@ def wire_source_connector_runtime(
             actor=actor,
             metric_reader=repository.read_metrics,
         )
-    wiring = SourceConnectorRuntimeWiring(composition, controller, rollout)
+    if pool is not None and hasattr(pool, "fetch") and hasattr(pool, "execute"):
+        artifact_admission = ArtifactAdmissionController(
+            PostgresArtifactRepository(pool),
+            composition.routing,
+            build_runtime_candidates(),
+            ArtifactAdmissionSettings.from_env(),
+        )
+    wiring = SourceConnectorRuntimeWiring(
+        composition,
+        controller,
+        rollout,
+        artifact_admission,
+    )
     state.source_connector_runtime = composition
     state.source_connector_registry = composition.registry
     state.source_connector_routing = controller

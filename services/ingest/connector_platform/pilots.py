@@ -351,12 +351,18 @@ def build_pilot_candidates() -> tuple[ConnectorCandidate, ...]:
     )
 
 
+def build_runtime_candidates() -> tuple[ConnectorCandidate, ...]:
+    """Return the conformed native and compatibility catalog candidates."""
+
+    return build_pilot_candidates() + build_compatibility_candidates()
+
+
 def build_pilot_composition(
     policy: RoutingPolicy | None = None,
 ) -> ConnectorRuntimeComposition:
     """Freeze both native definitions with the supplied routing policy."""
 
-    candidates = build_pilot_candidates() + build_compatibility_candidates()
+    candidates = build_runtime_candidates()
     host = HostCompatibility(
         contract_versions=(SemanticVersion.parse("1.0.0"),),
         require_conformance_fingerprint=True,
@@ -400,6 +406,7 @@ __all__ = [
     "build_notion_candidate",
     "build_pilot_candidates",
     "build_pilot_composition",
+    "build_runtime_candidates",
     "build_whatsapp_candidate",
     "default_migrated_routing_policy",
     "build_slack_candidate",

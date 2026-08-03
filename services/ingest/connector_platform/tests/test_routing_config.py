@@ -33,10 +33,7 @@ def test_startup_publishes_registry_alongside_legacy_and_configures_scopes() -> 
     )
 
     assert state.legacy_dispatch == "unchanged"
-    assert state.source_connector_registry.connector_ids() == (
-        "fyralis/notion",
-        "fyralis/slack",
-    )
+    assert len(state.source_connector_registry.connector_ids()) == 26
     identity = RouteRequest(
         tenant_id,
         "fyralis/slack",

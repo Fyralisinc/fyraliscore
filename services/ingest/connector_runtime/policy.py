@@ -110,6 +110,7 @@ class AtomicRoutingPolicy:
     def __init__(self, policy: RoutingPolicy | None = None) -> None:
         self._lock = Lock()
         self._policy = policy or RoutingPolicy()
+        self._quarantined: Mapping[str, str] = MappingProxyType({})
 
     def snapshot(self) -> RoutingPolicy:
         with self._lock:
@@ -124,8 +125,23 @@ class AtomicRoutingPolicy:
     def rollback_to_legacy(self, revision: int) -> None:
         self.replace(RoutingPolicy(revision=revision))
 
+    def replace_quarantine(self, quarantined: Mapping[str, str]) -> None:
+        """Atomically install a fail-closed connector admission snapshot."""
+
+        with self._lock:
+            self._quarantined = MappingProxyType(dict(quarantined))
+
+    def quarantined(self) -> Mapping[str, str]:
+        with self._lock:
+            return self._quarantined
+
     def resolve(self, request: RouteRequest) -> RouteDecision:
-        return self.snapshot().resolve(request)
+        with self._lock:
+            reason = self._quarantined.get(request.connector_id)
+            policy = self._policy
+        if reason is not None:
+            return RouteDecision(ExecutionMode.LEGACY, "artifact_quarantine", policy.revision)
+        return policy.resolve(request)
 
 
 __all__ = [
