@@ -138,7 +138,7 @@ class RolloutRevision:
         object.__setattr__(self, "policy", MappingProxyType(dict(self.policy)))
 
 
-class RolloutRepository:
+class RolloutRepository(Protocol):
     async def load_active(self) -> RolloutRevision | None: ...
 
     async def rollback_to_legacy(

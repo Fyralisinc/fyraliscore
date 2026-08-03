@@ -5,16 +5,17 @@ from datetime import datetime, timezone
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from services.ingest.connector_platform.pilots import build_slack_candidate
 from services.ingest.connector_runtime.artifacts import (
     ArtifactAttestation,
     ArtifactDeploymentPolicy,
     manifest_sha256,
 )
+from services.ingest.connector_runtime.tests.helpers import make_candidate
 
 
 def _candidate():
-    return replace(build_slack_candidate(), conformance_fingerprint="a" * 64)
+    candidate, _ = make_candidate()
+    return replace(candidate, conformance_fingerprint="a" * 64)
 
 
 def _attestation(candidate, key):

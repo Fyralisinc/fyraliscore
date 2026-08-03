@@ -66,4 +66,5 @@ async def test_lifecycle_round_trips_through_existing_workflow_state_shape() -> 
     loaded = await repository.load(lifecycle.installation_id)
 
     assert loaded == lifecycle
+    assert executor.row is not None
     assert executor.row["paused_at"] is not None

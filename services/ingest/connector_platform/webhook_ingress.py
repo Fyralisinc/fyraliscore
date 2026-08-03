@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from services.app.webhooks.verifier import VerifiedContext
+from lib.shared.webhook_verification import VerifiedContext
 from services.ingest.connector_platform.authority_store import (
     PostgresAuthorityRepository,
 )
