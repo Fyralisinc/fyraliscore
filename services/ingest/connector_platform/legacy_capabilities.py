@@ -91,18 +91,24 @@ def _contract_draft(draft: Any) -> ObservationDraft:
 
 
 class LegacyHistoricalPull:
-    def __init__(self, source: str, binding: LegacyBindingPayload) -> None:
+    def __init__(
+        self, source: str, binding: LegacyBindingPayload | None = None
+    ) -> None:
         self._source = source
         self._binding = binding
+
+    def _payload(self) -> LegacyBindingPayload:
+        return self._binding or require_legacy_binding()
 
     async def plan(
         self, request: PlanRequest, context: OperationContext
     ) -> PlanResult:
         del request, context
-        if self._binding.planner_context is None:
+        binding = self._payload()
+        if binding.planner_context is None:
             raise InvalidConfigurationError("legacy planner context is unavailable")
         shards = await PLANNER_DISPATCH[self._source](
-            self._binding.planner_context
+            binding.planner_context
         )
         return PlanResult(shards=tuple(_shard_plan(shard) for shard in shards))
 
@@ -111,7 +117,7 @@ class LegacyHistoricalPull:
     ) -> FetchedPage:
         del context
         result = await FETCHER_DISPATCH[self._source](
-            self._binding.install,
+            self._payload().install,
             request.shard.identifier,
             request.cursor.payload if request.cursor is not None else None,
         )
@@ -123,7 +129,9 @@ class LegacyHistoricalPull:
 
 
 class LegacyIncrementalPoll:
-    def __init__(self, source: str, binding: LegacyBindingPayload) -> None:
+    def __init__(
+        self, source: str, binding: LegacyBindingPayload | None = None
+    ) -> None:
         self._source = source
         self._binding = binding
 
@@ -131,13 +139,14 @@ class LegacyIncrementalPoll:
         self, request: PollRequest, context: OperationContext
     ) -> FetchedPage:
         del context
-        shard_identifier = self._binding.poll_shard_identifier
+        binding = self._binding or require_legacy_binding()
+        shard_identifier = binding.poll_shard_identifier
         if shard_identifier is None:
             raise InvalidConfigurationError(
                 "legacy poll requires an installation-scoped shard identifier"
             )
         result = await FETCHER_DISPATCH[self._source](
-            self._binding.install,
+            binding.install,
             shard_identifier,
             request.cursor.payload if request.cursor is not None else None,
         )
@@ -149,7 +158,9 @@ class LegacyIncrementalPoll:
 
 
 class LegacyReconciliation:
-    def __init__(self, source: str, binding: LegacyBindingPayload) -> None:
+    def __init__(
+        self, source: str, binding: LegacyBindingPayload | None = None
+    ) -> None:
         self._source = source
         self._binding = binding
 
@@ -157,16 +168,17 @@ class LegacyReconciliation:
         self, request: ReconciliationRequest, context: OperationContext
     ) -> ReconciliationDecision:
         del request, context
+        binding = self._binding or require_legacy_binding()
         if (
-            self._binding.reconciliation_shards is None
-            or self._binding.reconciliation_run is None
+            binding.reconciliation_shards is None
+            or binding.reconciliation_run is None
         ):
             raise InvalidConfigurationError(
                 "legacy reconciliation rows are unavailable"
             )
         decision = await RECONCILER_DISPATCH[self._source](
-            self._binding.reconciliation_shards,
-            self._binding.reconciliation_run,
+            binding.reconciliation_shards,
+            binding.reconciliation_run,
         )
         repairs = tuple(
             RepairShard(

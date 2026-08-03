@@ -11,6 +11,7 @@ from services.ingest.connector_platform.pilots import (
     build_pilot_composition,
 )
 from services.ingest.connector_conformance import ConnectorConformanceSuite
+from services.ingest.connector_platform.catalog import CONNECTOR_CATALOG
 from services.ingest.connector_runtime.policy import ExecutionMode, RouteRequest
 from services.ingest.source_contract.capabilities import (
     HISTORICAL_PULL_V1,
@@ -23,17 +24,24 @@ from uuid import uuid4
 def test_pilot_composition_is_immutable_and_native_pilots_are_authoritative() -> None:
     composition = build_pilot_composition()
 
-    assert composition.registry.connector_ids() == (
-        NOTION_CONNECTOR_ID,
-        SLACK_CONNECTOR_ID,
-        WHATSAPP_CONNECTOR_ID,
-    )
+    assert len(composition.registry.connector_ids()) == 26
+    assert set(composition.registry.connector_ids()) == {
+        entry.connector_id for entry in CONNECTOR_CATALOG
+    }
     assert composition.registry.list_by_capability(WEBHOOK_V1.ref)[0].source == "slack"
-    assert (
-        composition.registry.list_by_capability(INCREMENTAL_POLL_V1.ref)[0].source
-        == "notion"
-    )
-    assert len(composition.registry.list_by_capability(HISTORICAL_PULL_V1.ref)) == 2
+    assert "notion" in {
+        item.source
+        for item in composition.registry.list_by_capability(
+            INCREMENTAL_POLL_V1.ref
+        )
+    }
+    assert {
+        item.source
+        for item in composition.registry.list_by_capability(
+            HISTORICAL_PULL_V1.ref
+        )
+        if item.origin.startswith("first-party-native")
+    } == {"slack", "notion"}
     assert composition.routing.resolve(
         RouteRequest(
             tenant_id=uuid4(),

@@ -271,6 +271,38 @@ class NativeSlackWebhook:
         secret = await self._binding.services.secrets.resolve(
             SlotId("webhook_signing_secret")
         )
+        headers = {key.lower(): value for key, value in request.headers.items()}
+        timestamp = headers.get("x-slack-request-timestamp", "")
+        signature = headers.get("x-slack-signature", "")
+        verify_slack_signature(
+            request.body,
+            timestamp,
+            signature,
+            secret.reveal_text(),
+            now=request.received_at.timestamp(),
+        )
+        payload = json.loads(request.body)
+        if payload.get("type") == "url_verification":
+            return VerifiedWebhookResult(events=(), response_status_hint=200)
+        external_id = str(
+            payload.get("team_id")
+            or payload.get("team", {}).get("id")
+            or "unknown"
+        )
+        event = (
+            payload.get("event")
+            if isinstance(payload.get("event"), dict)
+            else payload
+        )
+        return VerifiedWebhookResult(
+            events=(
+                VerifiedWebhookEvent(
+                    external_installation_id=external_id,
+                    native_event_type=str(event.get("type") or "event"),
+                    record=_source_record(payload),
+                ),
+            )
+        )
 
 
 class NativeWhatsAppWebhook:
@@ -339,30 +371,6 @@ class NativeWhatsAppWebhook:
                             )
                         )
         return VerifiedWebhookResult(events=tuple(events))
-        headers = {key.lower(): value for key, value in request.headers.items()}
-        timestamp = headers.get("x-slack-request-timestamp", "")
-        signature = headers.get("x-slack-signature", "")
-        verify_slack_signature(
-            request.body,
-            timestamp,
-            signature,
-            secret.reveal_text(),
-            now=request.received_at.timestamp(),
-        )
-        payload = json.loads(request.body)
-        if payload.get("type") == "url_verification":
-            return VerifiedWebhookResult(events=(), response_status_hint=200)
-        external_id = str(payload.get("team_id") or payload.get("team", {}).get("id") or "unknown")
-        event = payload.get("event") if isinstance(payload.get("event"), dict) else payload
-        return VerifiedWebhookResult(
-            events=(
-                VerifiedWebhookEvent(
-                    external_installation_id=external_id,
-                    native_event_type=str(event.get("type") or "event"),
-                    record=_source_record(payload),
-                ),
-            )
-        )
 
 
 class CredentialHealthProbe:

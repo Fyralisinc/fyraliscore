@@ -1,4 +1,4 @@
-"""Explicit first-party Slack and Notion connector catalog."""
+"""Native connector definitions and the full immutable runtime composition."""
 
 from __future__ import annotations
 
@@ -25,6 +25,9 @@ from services.ingest.connectors.oauth import (
 from services.ingest.connector_runtime.composition import (
     ConnectorRuntimeComposition,
     build_runtime_composition,
+)
+from services.ingest.connector_platform.catalog import (
+    build_compatibility_candidates,
 )
 from services.ingest.connector_runtime.policy import ExecutionMode, RoutingPolicy
 from services.ingest.connector_runtime.registry import (
@@ -353,16 +356,14 @@ def build_pilot_composition(
 ) -> ConnectorRuntimeComposition:
     """Freeze both native definitions with the supplied routing policy."""
 
-    candidates = build_pilot_candidates()
+    candidates = build_pilot_candidates() + build_compatibility_candidates()
     host = HostCompatibility(
         contract_versions=(SemanticVersion.parse("1.0.0"),),
         require_conformance_fingerprint=True,
         approved_conformance_fingerprints=frozenset(
-            {
-                SLACK_CONFORMANCE_FINGERPRINT,
-                NOTION_CONFORMANCE_FINGERPRINT,
-                WHATSAPP_CONFORMANCE_FINGERPRINT,
-            }
+            candidate.conformance_fingerprint
+            for candidate in candidates
+            if candidate.conformance_fingerprint is not None
         ),
     )
     return build_runtime_composition(
