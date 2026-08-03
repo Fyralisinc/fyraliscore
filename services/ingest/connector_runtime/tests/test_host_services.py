@@ -13,6 +13,7 @@ from services.ingest.source_contract.host_services import (
     SecretValue,
 )
 from services.ingest.source_contract.identity import SlotId
+from services.ingest.source_contract.models import SourceRecord
 
 
 @pytest.mark.asyncio
@@ -69,6 +70,6 @@ async def test_default_mutating_ports_fail_closed() -> None:
         )
 
         with pytest.raises(PermissionDeniedError):
-            await services.raw_emission.emit(  # type: ignore[arg-type]
-                object()
+            await services.raw_emission.emit(
+                SourceRecord(native_type="test", payload={})
             )
