@@ -19,6 +19,7 @@ type), but with API-key auth (NO OAuth refresh token):
 The API key is stored in encrypted_secrets behind `secret_ref`; there is NO
 refresh token (API-key archetype, like Brex/Jira).
 """
+
 from __future__ import annotations
 
 import json
@@ -29,7 +30,7 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
-from services.app.webhooks.provider_installations import (
+from services.ingest.integrations.provider_installations import (
     upsert_provider_installation_for_tenant,
 )
 from services.ingest.integrations.ashby import metrics
@@ -75,7 +76,11 @@ async def finalize_install(
                     disabled_at = NULL
             RETURNING id
             """,
-            uuid7(), tenant_id, org_id, base_url, secret_ref,
+            uuid7(),
+            tenant_id,
+            org_id,
+            base_url,
+            secret_ref,
             webhook_secret_ref,
         )
 
@@ -89,7 +94,10 @@ async def finalize_install(
                 ON CONFLICT (ashby_installation_id, entity_type)
                     DO UPDATE SET state = 'active'
                 """,
-                uuid7(), tenant_id, install_id, entity,
+                uuid7(),
+                tenant_id,
+                install_id,
+                entity,
             )
 
         # Emit the onboarding trigger so the M6 backfill chain fires. Like
@@ -106,14 +114,17 @@ async def finalize_install(
                 WHERE installation_row_id IS NOT NULL
                 DO NOTHING
             """,
-            uuid7(), tenant_id, install_id,
+            uuid7(),
+            tenant_id,
+            install_id,
             json.dumps({"org_id": org_id, "entities": deduped}),
         )
 
     metrics.record_provision_outcome("success" if deduped else "no_entities")
     log.info(
         "ashby_install_finalized",
-        org_id=org_id, entity_count=len(deduped),
+        org_id=org_id,
+        entity_count=len(deduped),
     )
     return install_id
 

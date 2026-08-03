@@ -21,6 +21,7 @@ router, the Discord gateway worker, and the Gmail Pub/Sub endpoint.
 The module itself does NOT swallow exceptions; the caller does. This
 keeps stack traces useful when the safety mechanism is being tested.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -105,6 +106,7 @@ async def shadow_write_raw(
     # is the single point of change.
     source: SourceLiteral,
     ingress_kind: IngressKind,
+    connector_installation_id: UUID | None = None,
     raw_body: bytes,
     s3_client: S3Client,
     kafka_producer: Any,  # services.ingest.ingestion.kafka.IdempotentProducer
@@ -177,6 +179,7 @@ async def shadow_write_raw(
         content_hash=content_hash,
         ingested_at=now,
         ingress_kind=ingress_kind,
+        connector_installation_id=connector_installation_id,
         ingress_metadata=ingress_metadata or {},
         idem_hints=idem_hints or {},
     )

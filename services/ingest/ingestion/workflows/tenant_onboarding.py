@@ -140,7 +140,7 @@ from services.ingest.ingestion.workflows.signals import (
     WorkflowSignal,
     claim_signals,
     emit_signal,
-    process_signal_with_serialization_retry,
+    retry_signal_serialization_conflicts,
 )
 from services.ingest.ingestion.workflows.state import (
     WorkflowState,
@@ -532,11 +532,11 @@ class TenantOnboardingOrchestrator(LongRunningService):
     async def _process_one_signal(self) -> bool:
         """Claim + dispatch ONE signal, retrying transient serialization
         conflicts on the shared `workflow_signals` table (see
-        `process_signal_with_serialization_retry`). Previously an unhandled
+        `retry_signal_serialization_conflicts`). Previously an unhandled
         `DeadlockDetectedError` from the signal INSERT crashed the worker
         (rc=1), so NO `tenant_onboarding_completed` signal fired for ANY
         in-flight tenant under concurrent multi-source onboarding."""
-        return await process_signal_with_serialization_retry(
+        return await retry_signal_serialization_conflicts(
             self._process_one_signal_once, label="tenant_onboarding",
         )
 

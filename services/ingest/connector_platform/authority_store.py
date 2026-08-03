@@ -19,7 +19,7 @@ class PostgresAuthorityRepository:
             """
             SELECT installation_id, tenant_id, connector_id,
                    authority_generation, credential_owner,
-                   granted_secret_slots, granted_scopes,
+                   granted_slot_names, granted_scopes,
                    granted_outbound_hosts, maximum_trust_tier,
                    provenance, granted_at, revoked_at
               FROM source_connector_authority_grants
@@ -35,7 +35,7 @@ class PostgresAuthorityRepository:
             connector_id=row["connector_id"],
             generation=int(row["authority_generation"]),
             credential_owner=row["credential_owner"],
-            secret_slots=frozenset(row["granted_secret_slots"] or ()),
+            secret_slots=frozenset(row["granted_slot_names"] or ()),
             scopes=frozenset(row["granted_scopes"] or ()),
             outbound_hosts=frozenset(row["granted_outbound_hosts"] or ()),
             maximum_trust_tier=row["maximum_trust_tier"],
@@ -50,7 +50,7 @@ class PostgresAuthorityRepository:
             INSERT INTO source_connector_authority_grants (
                 installation_id, tenant_id, connector_id,
                 authority_generation, credential_owner,
-                granted_secret_slots, granted_scopes,
+                granted_slot_names, granted_scopes,
                 granted_outbound_hosts, maximum_trust_tier,
                 provenance, granted_at, revoked_at
             ) VALUES (
@@ -62,7 +62,7 @@ class PostgresAuthorityRepository:
                 connector_id = EXCLUDED.connector_id,
                 authority_generation = EXCLUDED.authority_generation,
                 credential_owner = EXCLUDED.credential_owner,
-                granted_secret_slots = EXCLUDED.granted_secret_slots,
+                granted_slot_names = EXCLUDED.granted_slot_names,
                 granted_scopes = EXCLUDED.granted_scopes,
                 granted_outbound_hosts = EXCLUDED.granted_outbound_hosts,
                 maximum_trust_tier = EXCLUDED.maximum_trust_tier,

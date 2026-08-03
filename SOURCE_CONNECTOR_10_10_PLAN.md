@@ -1,6 +1,6 @@
 # Source Connector 10/10 completion plan
 
-Status: **Completion Phase 1 implemented; Phases 2 and 3 pending**<br>
+Status: **Completion Phases 1 and 2 implemented; Phase 3 pending**<br>
 Baseline: principal-engineering audit at `a4fd22d4` (5.8/10)<br>
 Rule: each phase is independently verified and committed; no later phase starts
 until the prior phase has been reviewed.
@@ -65,6 +65,13 @@ artifact admission is green; evidence writers feed rollout readers; every
 runtime owner honors quarantine/authority; production-like integration and CI
 gates pass. Defaults remain legacy until an audited routing revision promotes a
 specific cohort.
+
+Implementation boundary: the three pilot packages are connector-local and the
+database-backed execution owners continuously consume durable admission,
+authority, routing, and rollout evidence. Stateless owners that cannot obtain
+that durable control-plane state are explicitly forced to legacy in production
+when signed artifacts are required. This is a fail-closed merge boundary, not a
+claim that the remaining fleet or stateless artifact distribution is complete.
 
 ## Completion Phase 3 — complete fleet and stable v1
 

@@ -65,6 +65,8 @@ scrape_configs:
         labels: { worker: source_onboarding }
       - targets: ["reconciler:9300"]
         labels: { worker: reconciler }
+      - targets: ["source_connector_lifecycle:9300"]
+        labels: { worker: source_connector_lifecycle }
       - targets: ["extension_workers:9300"]
         labels: { worker: extension_workers }
       - targets: ["feels_onboarded_monitor:9300"]

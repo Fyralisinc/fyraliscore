@@ -89,16 +89,26 @@ async def execute_migrated_webhook(
         )
 
     async with httpx.AsyncClient(follow_redirects=False) as client:
+        evidence_sink = getattr(
+            app_state, "source_connector_rollout_evidence", None
+        )
         host_services = build_production_host_services_factory(
             ProductionHostBackends(
                 pool=runtime.pool,
                 secret_store=runtime.secret_store,
                 http_client=client,
+                metric_incrementer=(
+                    evidence_sink.increment if evidence_sink is not None else None
+                ),
+                metric_observer=(
+                    evidence_sink.observe if evidence_sink is not None else None
+                ),
             )
         )
         router = LegacyExecutionRouter(
             composition,
             host_services,
+            shadow_sink=evidence_sink,
             authority_repository=PostgresAuthorityRepository(runtime.pool),
             require_durable_authority=True,
         )

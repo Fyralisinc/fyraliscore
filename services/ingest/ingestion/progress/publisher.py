@@ -35,13 +35,14 @@ Three reasons:
   - Tests can swap in a capturing producer without monkey-patching
     `confluent_kafka.Producer`.
 """
+
 from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
 from typing import Any
 
-from services.app.gateway.product_workflow_metrics import record_product_workflow_event
+from lib.observability.product_workflow_events import record_product_workflow_event
 
 from .events import ProgressEvent
 

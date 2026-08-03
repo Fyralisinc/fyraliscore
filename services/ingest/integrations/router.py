@@ -14,6 +14,7 @@ so the gateway's public-path allowlist can target individual routes
 rather than blanket-publish `/integrations/*` (ClickUp body's
 "single-route, not blanket public" wording).
 """
+
 from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
@@ -21,7 +22,7 @@ from typing import Any, Awaitable, Callable
 from fastapi import APIRouter, Request
 from starlette.responses import Response
 
-from services.app.gateway.product_workflow_metrics import (
+from lib.observability.product_workflow_events import (
     ProductWorkflowEvent,
     ProductWorkflowOutcome,
     record_product_workflow_event,

@@ -18,7 +18,12 @@ from __future__ import annotations
 import pytest
 
 
-pytestmark = pytest.mark.integration
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skip(
+        reason="simulation gateway mount moved to the optional demo overlay"
+    ),
+]
 
 
 @pytest.fixture

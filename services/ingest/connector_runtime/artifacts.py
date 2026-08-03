@@ -36,30 +36,38 @@ def manifest_sha256(manifest: ConnectorManifest) -> str:
 
 
 def connector_artifact_sha256(manifest: ConnectorManifest) -> str:
-    """Measure the running first-party module and its exact manifest."""
+    """Measure every declared implementation module and the exact manifest."""
 
     module_name, _attribute = manifest.spec.implementation.split(":", 1)
-    spec = importlib.util.find_spec(module_name)
-    if spec is None or spec.origin is None:
-        raise ValueError(
-            f"connector implementation module {module_name!r} cannot be measured"
-        )
-    try:
-        module_bytes = Path(spec.origin).read_bytes()
-    except OSError as exc:
-        raise ValueError(
-            f"connector implementation module {module_name!r} cannot be read"
-        ) from exc
+    module_names = tuple(sorted({module_name, *manifest.spec.artifact_modules}))
+    modules: list[tuple[str, bytes]] = []
+    for measured_module in module_names:
+        spec = importlib.util.find_spec(measured_module)
+        if spec is None or spec.origin is None:
+            raise ValueError(
+                f"connector implementation module {measured_module!r} "
+                "cannot be measured"
+            )
+        try:
+            modules.append((measured_module, Path(spec.origin).read_bytes()))
+        except OSError as exc:
+            raise ValueError(
+                f"connector implementation module {measured_module!r} cannot be read"
+            ) from exc
     manifest_bytes = json.dumps(
         manifest.model_dump(mode="json", by_alias=True),
         sort_keys=True,
         separators=(",", ":"),
     ).encode()
     digest = hashlib.sha256()
-    digest.update(b"fyralis-in-process-connector-artifact-v1\0")
+    digest.update(b"fyralis-in-process-connector-artifact-v2\0")
     digest.update(manifest_bytes)
     digest.update(b"\0")
-    digest.update(module_bytes)
+    for measured_module, module_bytes in modules:
+        digest.update(b"\0module\0")
+        digest.update(measured_module.encode())
+        digest.update(b"\0")
+        digest.update(module_bytes)
     return digest.hexdigest()
 
 

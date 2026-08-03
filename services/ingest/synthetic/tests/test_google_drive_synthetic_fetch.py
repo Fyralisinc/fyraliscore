@@ -35,6 +35,12 @@ from services.ingest.synthetic.fixtures.google_drive_generator import make_googl
 from services.ingest.synthetic.mock_clients.google_drive import MockGoogleDriveClient
 
 
+@pytest.fixture(autouse=True)
+def _stable_backfill_horizon(monkeypatch):
+    """Keep the fixed 2026 fixture inside the production fetch window."""
+    monkeypatch.setenv("GOOGLE_DRIVE_BACKFILL_DAYS", "36500")
+
+
 # The fetcher passes `install` straight to `_open_drive_client` (which we
 # replace) and never reads it directly, so a minimal dict suffices.
 def _install() -> dict[str, object]:

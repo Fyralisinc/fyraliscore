@@ -16,7 +16,7 @@ def test_release_evidence_is_independent_and_matches_candidates(tmp_path) -> Non
     path.write_text(
         json.dumps(
             {
-                "schema": "sources.fyralis.io/release-evidence/v1",
+                "schema": "sources.fyralis.io/release-evidence/v2",
                 "connectors": [
                     {
                         "connectorId": candidate.manifest.connector_id,
@@ -42,7 +42,7 @@ def test_release_evidence_rejects_stale_entries(tmp_path) -> None:
     path.write_text(
         json.dumps(
             {
-                "schema": "sources.fyralis.io/release-evidence/v1",
+                "schema": "sources.fyralis.io/release-evidence/v2",
                 "connectors": [
                     {
                         "connectorId": candidate.manifest.connector_id,

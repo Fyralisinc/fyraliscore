@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from uuid import UUID
 
 from services.ingest.connector_platform.catalog import CONNECTOR_CATALOG
@@ -13,6 +14,7 @@ from services.ingest.connector_platform.pilots import (
 )
 from services.ingest.connector_runtime.artifacts import connector_artifact_sha256
 from services.ingest.connector_runtime.policy import ExecutionMode, RouteRequest
+from services.ingest.connectors.behavior import run_pilot_behavioral_conformance
 
 
 def main() -> int:
@@ -22,6 +24,18 @@ def main() -> int:
     if actual_ids != expected_ids or len(candidates) != len(CONNECTOR_CATALOG):
         raise SystemExit("connector candidate catalog does not match source inventory")
     release_evidence_catalog().validate(candidates)
+    reports = asyncio.run(run_pilot_behavioral_conformance())
+    for connector_id, report in reports.items():
+        if not report.passed:
+            raise SystemExit(f"behavioral conformance failed for {connector_id}")
+        evidence = release_evidence_catalog().require(
+            connector_id, report.connector_version
+        )
+        if report.fingerprint != evidence.behavioral_fingerprint:
+            raise SystemExit(
+                f"behavioral release evidence drifted for {connector_id}: "
+                f"expected {evidence.behavioral_fingerprint}, got {report.fingerprint}"
+            )
     policy = default_migrated_routing_policy()
     for candidate in candidates:
         manifest = candidate.manifest
@@ -40,7 +54,7 @@ def main() -> int:
             )
     print(
         f"source connector release gate passed: {len(candidates)} candidates, "
-        "independent evidence, measured modules, legacy-safe defaults"
+        "structural + behavioral evidence, measured modules, legacy-safe defaults"
     )
     return 0
 

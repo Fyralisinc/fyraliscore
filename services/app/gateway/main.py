@@ -4,6 +4,7 @@ Route implementations live in focused router modules. This file owns the
 FastAPI factory, lifespan dependency construction, middleware registration,
 exception handlers, and route mounting orchestration.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -133,9 +134,7 @@ async def _await_startup(
     try:
         return await asyncio.wait_for(awaitable, timeout=timeout_s)
     except TimeoutError as exc:
-        raise TimeoutError(
-            f"{component} startup exceeded {timeout_s:g}s"
-        ) from exc
+        raise TimeoutError(f"{component} startup exceeded {timeout_s:g}s") from exc
 
 
 def _clear_app_state(app_: FastAPI, *names: str) -> None:
@@ -196,9 +195,7 @@ async def _stop_ceo_view_for_lifespan(app_: FastAPI, ceo_view: object) -> None:
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
-    query_handler = (
-        ceo_view.get("qry_handler") if isinstance(ceo_view, dict) else None
-    )
+    query_handler = ceo_view.get("qry_handler") if isinstance(ceo_view, dict) else None
     if query_handler is not None:
         close_query_handler = getattr(query_handler, "aclose", None)
         if close_query_handler is not None:
@@ -413,7 +410,9 @@ async def _start_gateway_deps(
         app_.include_router(
             build_ask_router(
                 ask_orchestrator,
-                default_tenant_id=_AskUUID(_default_tenant) if _default_tenant else None,
+                default_tenant_id=_AskUUID(_default_tenant)
+                if _default_tenant
+                else None,
                 default_viewer_id=_AskUUID(_default_actor) if _default_actor else None,
             )
         )
@@ -711,10 +710,7 @@ async def _start_ceo_view(
         startup_status.ok("ceo_view", required=False)
     except Exception as ceo_exc:  # noqa: BLE001
         partial_ceo_view = getattr(app_.state, "ceo_view", None)
-        if (
-            partial_ceo_view is not None
-            and partial_ceo_view is not previous_ceo_view
-        ):
+        if partial_ceo_view is not None and partial_ceo_view is not previous_ceo_view:
             await _stop_ceo_view_for_lifespan(app_, partial_ceo_view)
         startup_status.degraded(
             "ceo_view",
@@ -755,9 +751,7 @@ async def _start_ingestion_data_plane(
             exc=exc,
         )
     data_plane_wired = bool(data_plane_wiring)
-    data_plane_owned = bool(
-        getattr(data_plane_wiring, "owned", data_plane_wired)
-    )
+    data_plane_owned = bool(getattr(data_plane_wiring, "owned", data_plane_wired))
     if data_plane_wired:
         if data_plane_owned:
             stack.push_async_callback(
@@ -792,9 +786,7 @@ def build_app(
         configure_structlog(settings.log_level)
 
     if pool is None and (actor_repo is not None or alias_repo is not None):
-        raise ValueError(
-            "pool is required when actor_repo or alias_repo is injected"
-        )
+        raise ValueError("pool is required when actor_repo or alias_repo is injected")
 
     @contextlib.asynccontextmanager
     async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
@@ -807,9 +799,7 @@ def build_app(
 
         async with contextlib.AsyncExitStack() as stack:
             stack.callback(startup_status.mark_stopped)
-            github_cleanup_client = _prepare_existing_github_cleanup(
-                app_, stack
-            )
+            github_cleanup_client = _prepare_existing_github_cleanup(app_, stack)
             runtime = await _start_gateway_deps(
                 app_,
                 stack,
@@ -827,13 +817,17 @@ def build_app(
                 pool=runtime.pool,
                 actor="gateway",
             )
+            stack.push_async_callback(connector_wiring.close)
             await connector_wiring.refresh_routing()
             artifact_admission = await connector_wiring.refresh_artifact_admission()
-            if connector_wiring.rollout is not None:
+            if (
+                connector_wiring.rollout is not None
+                or connector_wiring.artifact_admission is not None
+            ):
                 connector_rollout_stop = asyncio.Event()
                 connector_rollout_task = asyncio.create_task(
-                    connector_wiring.rollout.run(connector_rollout_stop),
-                    name="source-connector-rollout",
+                    connector_wiring.run_control_loop(connector_rollout_stop),
+                    name="source-connector-control-loop",
                 )
                 stack.push_async_callback(
                     _stop_background_task,

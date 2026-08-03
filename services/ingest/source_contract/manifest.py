@@ -147,6 +147,7 @@ class ConnectorSpec(ManifestModel):
     implementation: str = Field(
         pattern=r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*:[A-Za-z_]\w*$"
     )
+    artifact_modules: tuple[str, ...] = Field(default=(), alias="artifactModules")
     maturity: Maturity = Maturity.PREVIEW
     capabilities: tuple[CapabilityDeclaration, ...]
     ingress_kinds: tuple[
@@ -169,6 +170,11 @@ class ConnectorSpec(ManifestModel):
             raise ValueError("capability declarations must be unique")
         if len(self.ingress_kinds) != len(set(self.ingress_kinds)):
             raise ValueError("ingress kinds must be unique")
+        if len(self.artifact_modules) != len(set(self.artifact_modules)):
+            raise ValueError("artifact modules must be unique")
+        for module in self.artifact_modules:
+            if not module or any(not part.isidentifier() for part in module.split(".")):
+                raise ValueError(f"artifact module is invalid: {module!r}")
         return self
 
     @property

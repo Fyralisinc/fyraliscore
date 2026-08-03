@@ -20,6 +20,7 @@ shard per workspace install:
   fireflies_installations; live uses provider_installations — the two are seeded
   together but stay independent.
 """
+
 from __future__ import annotations
 
 import json
@@ -30,7 +31,7 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
-from services.app.webhooks.provider_installations import (
+from services.ingest.integrations.provider_installations import (
     upsert_provider_installation_for_tenant,
 )
 from services.ingest.integrations.fireflies import metrics
@@ -74,8 +75,13 @@ async def finalize_install(
                     disabled_at = NULL
             RETURNING id
             """,
-            uuid7(), tenant_id, base_url, workspace_id, workspace_name,
-            secret_ref, webhook_secret_ref,
+            uuid7(),
+            tenant_id,
+            base_url,
+            workspace_id,
+            workspace_name,
+            secret_ref,
+            webhook_secret_ref,
         )
 
         # Emit the onboarding trigger so the M6 backfill chain fires. Like
@@ -93,14 +99,17 @@ async def finalize_install(
                 WHERE installation_row_id IS NOT NULL
                 DO NOTHING
             """,
-            uuid7(), tenant_id, install_id,
+            uuid7(),
+            tenant_id,
+            install_id,
             json.dumps({"base_url": base_url, "workspace_id": workspace_id}),
         )
 
     metrics.record_provision_outcome("success" if workspace_id else "no_transcripts")
     log.info(
         "fireflies_install_finalized",
-        base_url=base_url, workspace_id=workspace_id,
+        base_url=base_url,
+        workspace_id=workspace_id,
     )
     return install_id
 

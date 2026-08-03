@@ -16,12 +16,15 @@ _REALM = "9341452000000001"
 
 
 def _invoice(**over):
+    future_due_date = (datetime.now(timezone.utc) + timedelta(days=60)).strftime(
+        "%Y-%m-%d"
+    )
     base = {
         "Id": "1037", "SyncToken": "0", "DocNumber": "1037",
         "TotalAmt": 5000.00, "Balance": 5000.00,
         "CustomerRef": {"value": "1", "name": "Globex"},
         "TxnDate": "2026-05-01",
-        "DueDate": "2026-06-30",
+        "DueDate": future_due_date,
         "MetaData": {"LastUpdatedTime": "2026-05-20T12:30:00-08:00"},
     }
     base.update(over)

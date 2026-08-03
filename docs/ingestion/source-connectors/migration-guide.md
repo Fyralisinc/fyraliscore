@@ -6,11 +6,10 @@ execution without weakening ingestion guarantees.
 ## Current migration boundary
 
 The immutable catalog contains all 26 source families. Every source defaults to
-legacy execution. Slack, Notion, and WhatsApp have transitional native roots,
-declarative manifests, and structural release evidence, but require explicit
-opt-in routing and are not eligible for production promotion until their ambient
-legacy dependencies and behavioral/operational gates are completed. The other
-23 catalog entries are conformed compatibility candidates.
+legacy execution. Slack, Notion, and WhatsApp have connector-local native roots,
+declarative manifests, structural and behavioral release evidence, and durable
+rollout controls. They require explicit audited cohort routing. The other 23
+catalog entries are conformed compatibility candidates.
 
 Catalog authority is not permission to delete legacy code. A source is native
 only when all of its planner, fetcher, poller, webhook/gateway, reconciler,

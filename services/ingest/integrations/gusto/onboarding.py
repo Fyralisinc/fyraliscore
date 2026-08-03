@@ -18,6 +18,7 @@ The access + refresh tokens are stored in encrypted_secrets; the install row
 carries `secret_ref` (access token) and `refresh_secret_ref` (the rotating
 refresh token the reactive 401 re-mint exchanges + persists).
 """
+
 from __future__ import annotations
 
 import json
@@ -28,7 +29,7 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
-from services.app.webhooks.provider_installations import (
+from services.ingest.integrations.provider_installations import (
     upsert_provider_installation_for_tenant,
 )
 from services.ingest.integrations.gusto import metrics
@@ -80,8 +81,14 @@ async def finalize_install(
                     disabled_at = NULL
             RETURNING id
             """,
-            uuid7(), tenant_id, company_uuid, base_url, secret_ref,
-            refresh_secret_ref, token_expires_at, webhook_secret_ref,
+            uuid7(),
+            tenant_id,
+            company_uuid,
+            base_url,
+            secret_ref,
+            refresh_secret_ref,
+            token_expires_at,
+            webhook_secret_ref,
         )
 
         for entity in deduped:
@@ -94,7 +101,10 @@ async def finalize_install(
                 ON CONFLICT (gusto_installation_id, entity_type)
                     DO UPDATE SET state = 'active'
                 """,
-                uuid7(), tenant_id, install_id, entity,
+                uuid7(),
+                tenant_id,
+                install_id,
+                entity,
             )
 
         await tctx.execute(
@@ -107,14 +117,17 @@ async def finalize_install(
                 WHERE installation_row_id IS NOT NULL
                 DO NOTHING
             """,
-            uuid7(), tenant_id, install_id,
+            uuid7(),
+            tenant_id,
+            install_id,
             json.dumps({"company_uuid": company_uuid, "entities": deduped}),
         )
 
     metrics.record_provision_outcome("success" if deduped else "no_entities")
     log.info(
         "gusto_install_finalized",
-        company_uuid=company_uuid, entity_count=len(deduped),
+        company_uuid=company_uuid,
+        entity_count=len(deduped),
     )
     return install_id
 

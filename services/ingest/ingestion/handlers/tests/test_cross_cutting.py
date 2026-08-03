@@ -99,7 +99,7 @@ async def test_github_pr_merge_external_id_stable():
     d2 = await handle_github_webhook(
         payload, {"X-GitHub-Event": "pull_request"}
     )
-    assert d1.external_id == d2.external_id == "PR_same"
+    assert d1.external_id == d2.external_id == "PR_same:closed"
 
 
 async def test_linear_issue_external_id_stable():

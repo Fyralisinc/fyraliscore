@@ -17,6 +17,7 @@ bot-token path):
   miro_installations; live uses provider_installations — the two are seeded
   together but stay independent.
 """
+
 from __future__ import annotations
 
 import json
@@ -27,7 +28,7 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
-from services.app.webhooks.provider_installations import (
+from services.ingest.integrations.provider_installations import (
     upsert_provider_installation_for_tenant,
 )
 from services.ingest.integrations.miro import metrics
@@ -79,8 +80,12 @@ async def finalize_install(
                     disabled_at = NULL
             RETURNING id
             """,
-            uuid7(), tenant_id, base_url, secret_ref,
-            org_id, webhook_secret_ref,
+            uuid7(),
+            tenant_id,
+            base_url,
+            secret_ref,
+            org_id,
+            webhook_secret_ref,
         )
 
         for b in deduped:
@@ -95,7 +100,10 @@ async def finalize_install(
                                   board_name = COALESCE(EXCLUDED.board_name, miro_boards.board_name),
                                   board_kind = COALESCE(EXCLUDED.board_kind, miro_boards.board_kind)
                 """,
-                uuid7(), tenant_id, install_id, b["board_id"],
+                uuid7(),
+                tenant_id,
+                install_id,
+                b["board_id"],
                 b.get("board_name") or b.get("name"),
                 b.get("board_kind") or b.get("type"),
             )
@@ -115,15 +123,19 @@ async def finalize_install(
                 WHERE installation_row_id IS NOT NULL
                 DO NOTHING
             """,
-            uuid7(), tenant_id, install_id,
-            json.dumps({"base_url": base_url,
-                        "boards": [b["board_id"] for b in deduped]}),
+            uuid7(),
+            tenant_id,
+            install_id,
+            json.dumps(
+                {"base_url": base_url, "boards": [b["board_id"] for b in deduped]}
+            ),
         )
 
     metrics.record_provision_outcome("success" if deduped else "no_boards")
     log.info(
         "miro_install_finalized",
-        base_url=base_url, board_count=len(deduped),
+        base_url=base_url,
+        board_count=len(deduped),
     )
     return install_id
 

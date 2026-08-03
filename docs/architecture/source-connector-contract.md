@@ -1,18 +1,19 @@
 # Fyralis Source Connector Contract
 
-> Implementation status (completion Phase 1, 2026-08-03): the contract,
-> registry, declarative manifests, release-evidence gate, least-authority
-> binding, and measured artifact admission form a legacy-safe foundation. All
-> sources default to legacy execution. Slack, Notion, and WhatsApp are
-> transitional native-root candidates that are not production-authoritative;
-> the other 23 cataloged source families are compatibility candidates. See the
+> Implementation status (completion Phases 1 and 2, 2026-08-03): the contract,
+> registry, declarative manifests, structural and behavioral release-evidence
+> gates, least-authority binding, measured artifact admission, native pilot
+> implementations, and closed-loop rollout form a legacy-safe platform slice.
+> All sources still default to legacy execution. Slack, Notion, and WhatsApp
+> are eligible only for an explicit audited cohort revision; the other 23
+> cataloged source families are compatibility candidates. See the
 > [runtime architecture](../ingestion/source-connectors/runtime-architecture.md),
 > [development guide](../ingestion/source-connectors/development-guide.md), and
 > [migration guide](../ingestion/source-connectors/migration-guide.md). The
 > original roadmap is not complete; remaining work is tracked in
 > `SOURCE_CONNECTOR_10_10_PLAN.md`.
 
-Status: **Completion Phase 1 implemented; target architecture remains in progress**<br>
+Status: **Completion Phases 1 and 2 implemented; target architecture remains in progress**<br>
 Audience: ingestion, platform, security, and product engineers<br>
 Last reviewed: 2026-08-03
 

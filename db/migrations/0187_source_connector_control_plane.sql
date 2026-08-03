@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS source_connector_authority_grants (
   connector_id           TEXT NOT NULL CHECK (connector_id <> ''),
   authority_generation   BIGINT NOT NULL DEFAULT 1 CHECK (authority_generation > 0),
   credential_owner       TEXT NOT NULL CHECK (credential_owner <> ''),
-  granted_secret_slots   TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+  granted_slot_names     TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
   granted_scopes         TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
   granted_outbound_hosts TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
   maximum_trust_tier     TEXT NOT NULL DEFAULT 'untrusted',
@@ -172,6 +172,28 @@ CREATE TABLE IF NOT EXISTS source_connector_rollout_metric_windows (
   PRIMARY KEY (revision, window_started_at)
 );
 
+-- Bounded raw rollout observations. Writers intentionally omit tenant and
+-- installation identifiers; the control loop needs connector/capability
+-- aggregates, not high-cardinality execution data. A controller retention job
+-- removes rows older than 24 hours after they have left the assessment window.
+CREATE TABLE IF NOT EXISTS source_connector_rollout_events (
+  id               UUID PRIMARY KEY,
+  revision         BIGINT NOT NULL
+                       REFERENCES source_connector_routing_revisions(revision),
+  occurred_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  event_type       TEXT NOT NULL
+                       CHECK (event_type IN ('execution', 'duration', 'parity', 'lifecycle', 'dlq')),
+  connector_id     TEXT NOT NULL CHECK (connector_id <> ''),
+  capability       TEXT NOT NULL CHECK (capability <> ''),
+  implementation   TEXT CHECK (implementation IN ('legacy', 'connector')),
+  outcome          TEXT CHECK (outcome IN ('completed', 'failed')),
+  duration_ms      DOUBLE PRECISION CHECK (duration_ms IS NULL OR duration_ms >= 0),
+  parity_matches   BOOLEAN
+);
+
+CREATE INDEX IF NOT EXISTS source_connector_rollout_events_window_idx
+  ON source_connector_rollout_events (revision, occurred_at, event_type);
+
 -- Seed the approved Phase 2 pilots from their existing installation rows. The
 -- runtime can therefore require durable grants immediately after this
 -- migration without fabricating authority in process memory.
@@ -191,18 +213,22 @@ ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO source_connector_authority_grants (
   installation_id, tenant_id, connector_id, credential_owner,
-  granted_secret_slots, granted_scopes, granted_outbound_hosts,
+  granted_slot_names, granted_scopes, granted_outbound_hosts,
   maximum_trust_tier, provenance
 )
 SELECT id, tenant_id, 'fyralis/' || provider, 'provider_installations',
        CASE provider
-         WHEN 'slack' THEN ARRAY['oauth_access_token', 'webhook_signing_secret']::text[]
+         WHEN 'slack' THEN ARRAY[
+           'oauth_access_token', 'oauth_user_access_token',
+           'webhook_signing_secret'
+         ]::text[]
          ELSE ARRAY['oauth_access_token']::text[]
        END,
        CASE provider
          WHEN 'slack' THEN ARRAY[
            'channels:read', 'channels:history', 'groups:read',
-           'groups:history', 'users:read', 'team:read'
+           'groups:history', 'users:read', 'team:read',
+           'im:read', 'im:history', 'mpim:read', 'mpim:history'
          ]::text[]
          ELSE ARRAY[]::text[]
        END,
@@ -235,6 +261,18 @@ SELECT id, tenant_id,
    AND secret_ref IS NOT NULL
 ON CONFLICT DO NOTHING;
 
+INSERT INTO source_connector_installation_data (
+  installation_id, tenant_id, namespace, values
+)
+SELECT id, tenant_id, 'provider',
+       jsonb_build_object(
+         'external_installation_id', installation_id,
+         'legacy_storage', 'provider_installations'
+       )
+  FROM provider_installations
+ WHERE provider IN ('slack', 'notion')
+ON CONFLICT (installation_id, namespace) DO NOTHING;
+
 -- WhatsApp is a complete live-webhook connector. Its deliberately deferred
 -- backfill placeholders are not declared capabilities and remain non-runnable.
 INSERT INTO source_connector_installations (
@@ -252,7 +290,7 @@ ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO source_connector_authority_grants (
   installation_id, tenant_id, connector_id, credential_owner,
-  granted_secret_slots, granted_scopes, granted_outbound_hosts,
+  granted_slot_names, granted_scopes, granted_outbound_hosts,
   maximum_trust_tier, provenance
 )
 SELECT id, tenant_id, 'fyralis/whatsapp', 'whatsapp_installations',
@@ -272,6 +310,17 @@ SELECT id, tenant_id, 'app_secret', app_secret_ref, 'current',
  WHERE app_secret_ref IS NOT NULL
 ON CONFLICT DO NOTHING;
 
+INSERT INTO source_connector_installation_data (
+  installation_id, tenant_id, namespace, values
+)
+SELECT id, tenant_id, 'provider',
+       jsonb_build_object(
+         'external_installation_id', phone_number_id,
+         'legacy_storage', 'whatsapp_installations'
+       )
+  FROM whatsapp_installations
+ON CONFLICT (installation_id, namespace) DO NOTHING;
+
 INSERT INTO source_connector_credentials (
   installation_id, tenant_id, slot, secret_ref, state, owner, provenance
 )
@@ -285,19 +334,30 @@ SELECT install.id, install.tenant_id, 'oauth_access_token', secret.id::text,
  WHERE install.provider = 'slack'
 ON CONFLICT DO NOTHING;
 
+INSERT INTO source_connector_credentials (
+  installation_id, tenant_id, slot, secret_ref, state, owner, provenance
+)
+SELECT DISTINCT ON (install.id)
+       install.id, install.tenant_id, 'oauth_user_access_token', secret.id::text,
+       'current', 'encrypted_secrets',
+       jsonb_build_object('migrated_by', '0187', 'legacy_label', secret.label)
+  FROM provider_installations AS install
+  JOIN encrypted_secrets AS secret
+    ON secret.tenant_id = install.tenant_id
+   AND secret.label LIKE 'slack_user_token:' || install.installation_id || ':%'
+ WHERE install.provider = 'slack'
+ ORDER BY install.id, secret.created_at DESC, secret.id
+ON CONFLICT DO NOTHING;
+
 ALTER TABLE source_connector_installations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE source_connector_installations FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON source_connector_installations;
 CREATE POLICY tenant_isolation ON source_connector_installations
   USING (
-    current_setting('app.current_tenant', true) IS NULL
-    OR current_setting('app.current_tenant', true) = ''
-    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+    tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
   )
   WITH CHECK (
-    current_setting('app.current_tenant', true) IS NULL
-    OR current_setting('app.current_tenant', true) = ''
-    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+    tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
   );
 
 ALTER TABLE source_connector_authority_grants ENABLE ROW LEVEL SECURITY;
@@ -305,14 +365,10 @@ ALTER TABLE source_connector_authority_grants FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON source_connector_authority_grants;
 CREATE POLICY tenant_isolation ON source_connector_authority_grants
   USING (
-    current_setting('app.current_tenant', true) IS NULL
-    OR current_setting('app.current_tenant', true) = ''
-    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+    tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
   )
   WITH CHECK (
-    current_setting('app.current_tenant', true) IS NULL
-    OR current_setting('app.current_tenant', true) = ''
-    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+    tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
   );
 
 ALTER TABLE source_connector_credentials ENABLE ROW LEVEL SECURITY;
@@ -320,14 +376,10 @@ ALTER TABLE source_connector_credentials FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON source_connector_credentials;
 CREATE POLICY tenant_isolation ON source_connector_credentials
   USING (
-    current_setting('app.current_tenant', true) IS NULL
-    OR current_setting('app.current_tenant', true) = ''
-    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+    tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
   )
   WITH CHECK (
-    current_setting('app.current_tenant', true) IS NULL
-    OR current_setting('app.current_tenant', true) = ''
-    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+    tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
   );
 
 ALTER TABLE source_connector_installation_data ENABLE ROW LEVEL SECURITY;
@@ -335,14 +387,10 @@ ALTER TABLE source_connector_installation_data FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON source_connector_installation_data;
 CREATE POLICY tenant_isolation ON source_connector_installation_data
   USING (
-    current_setting('app.current_tenant', true) IS NULL
-    OR current_setting('app.current_tenant', true) = ''
-    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+    tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
   )
   WITH CHECK (
-    current_setting('app.current_tenant', true) IS NULL
-    OR current_setting('app.current_tenant', true) = ''
-    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+    tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
   );
 
 ALTER TABLE source_connector_callbacks ENABLE ROW LEVEL SECURITY;
@@ -350,14 +398,10 @@ ALTER TABLE source_connector_callbacks FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON source_connector_callbacks;
 CREATE POLICY tenant_isolation ON source_connector_callbacks
   USING (
-    current_setting('app.current_tenant', true) IS NULL
-    OR current_setting('app.current_tenant', true) = ''
-    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+    tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
   )
   WITH CHECK (
-    current_setting('app.current_tenant', true) IS NULL
-    OR current_setting('app.current_tenant', true) = ''
-    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+    tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
   );
 
 COMMIT;

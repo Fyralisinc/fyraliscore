@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+import pytest
 
 from benchmarks.adapters import BenchmarkObservation, BenchmarkQuery, ToyMemoryAdapter
 from benchmarks.adapters.base import observed_at
@@ -76,6 +79,8 @@ def test_adapter_shapes_are_json_serializable():
 
 
 def test_truss_adapter_loads_committed_fixture_and_frozen_facts():
+    if not Path("truss_run").is_dir() or not Path("truss_run_2").is_dir():
+        pytest.skip("optional Truss authored-scenario fixture is not installed")
     adapter = TrussAdapter(
         ".",
         fact_filter_path="benchmarks/truss_signal_derivable_facts.json",

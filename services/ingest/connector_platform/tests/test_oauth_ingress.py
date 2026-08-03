@@ -38,8 +38,9 @@ class _Pool:
                 "connector_id": "fyralis/slack",
                 "authority_generation": 1,
                 "credential_owner": "connector_oauth_bootstrap",
-                "granted_secret_slots": [
+                "granted_slot_names": [
                     "oauth_access_token",
+                    "oauth_user_access_token",
                     "webhook_signing_secret",
                 ],
                 "granted_scopes": [
@@ -49,6 +50,10 @@ class _Pool:
                     "groups:history",
                     "users:read",
                     "team:read",
+                    "im:read",
+                    "im:history",
+                    "mpim:read",
+                    "mpim:history",
                 ],
                 "granted_outbound_hosts": ["slack.com"],
                 "maximum_trust_tier": "attested_agent",
@@ -175,11 +180,11 @@ async def test_callback_exchanges_through_capability_and_persists_authority(
             json={
                 "ok": True,
                 "access_token": "xoxb-token",
-                "scope": "channels:read,channels:history,users:read,team:read",
+                "scope": "channels:read,channels:history,groups:read,groups:history,users:read,team:read",
                 "team": {"id": "T1", "name": "Acme"},
                 "authed_user": {
                     "id": "U1",
-                    "scope": "im:read,im:history",
+                    "scope": "im:read,im:history,mpim:read,mpim:history",
                     "access_token": "xoxp-token",
                 },
             },

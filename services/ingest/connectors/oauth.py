@@ -43,11 +43,7 @@ SLACK_USER_SCOPES = ("im:read", "im:history", "mpim:read", "mpim:history")
 
 
 def _require_env(name: str, *, secret: bool = False) -> str:
-    value = (
-        load_app_secret_text_from_env(name)
-        if secret
-        else os.environ.get(name, "")
-    )
+    value = load_app_secret_text_from_env(name) if secret else os.environ.get(name, "")
     if not value:
         raise InvalidConfigurationError(
             "OAuth application configuration is incomplete",
@@ -153,7 +149,10 @@ class SlackOAuthCapability:
                 user_scopes = None
         scopes = tuple(
             sorted(
-                set(str(payload.get("scope") or "").split(","))
+                (
+                    set(str(payload.get("scope") or "").split(","))
+                    | set(str(user_scopes or "").split(","))
+                )
                 - {""}
             )
         )
@@ -239,7 +238,10 @@ class NotionOAuthCapability:
                 method="POST",
                 url="https://api.notion.com/v1/oauth/token",
                 headers=(
-                    ("authorization", f"Basic {base64.b64encode(raw_credentials).decode()}"),
+                    (
+                        "authorization",
+                        f"Basic {base64.b64encode(raw_credentials).decode()}",
+                    ),
                     ("content-type", "application/json"),
                 ),
                 body=json.dumps(

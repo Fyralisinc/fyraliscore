@@ -516,14 +516,17 @@ def test_pattern_instance_without_pattern_id_rejected_by_gate():
 # =====================================================================
 
 
-def test_topology_emittable_edge_kinds_is_restricted():
-    """LLM-only kinds must NOT appear in TOPOLOGY_EMITTABLE_EDGE_KINDS."""
-    llm_only = {"explains", "causes", "predicts", "weakens",
-                "instance_of", "contributes_to_resolution",
-                "co_occurs_with", "alternative_to", "superseded_by"}
-    overlap = llm_only.intersection(TOPOLOGY_EMITTABLE_EDGE_KINDS)
+def test_topology_emittable_edge_kinds_excludes_review_only_kinds():
+    """Review-only kinds must not bypass relationship adjudication."""
+    review_only = {
+        "instance_of",
+        "co_occurs_with",
+        "alternative_to",
+        "superseded_by",
+    }
+    overlap = review_only.intersection(TOPOLOGY_EMITTABLE_EDGE_KINDS)
     assert overlap == set(), (
-        f"topology must not emit LLM-only kinds; leaked: {overlap}"
+        f"topology must not emit review-only kinds; leaked: {overlap}"
     )
 
 

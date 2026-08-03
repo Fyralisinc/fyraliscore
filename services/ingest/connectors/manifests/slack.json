@@ -11,6 +11,10 @@
   "spec": {
     "contract": ">=1.0,<2.0",
     "implementation": "services.ingest.connectors.native:build_slack_connector",
+    "artifactModules": [
+      "services.ingest.connectors.oauth",
+      "services.ingest.connectors.slack"
+    ],
     "maturity": "preview",
     "capabilities": [
       {"id": "installation.oauth2", "version": 1, "required": true},
@@ -25,7 +29,11 @@
     ],
     "ingressKinds": ["webhook", "backfill"],
     "permissions": {
-      "secretSlots": ["oauth_access_token", "webhook_signing_secret"],
+      "secretSlots": [
+        "oauth_access_token",
+        "oauth_user_access_token",
+        "webhook_signing_secret"
+      ],
       "outboundHosts": ["slack.com"],
       "requestedScopes": [
         "channels:read",
@@ -33,7 +41,11 @@
         "groups:read",
         "groups:history",
         "users:read",
-        "team:read"
+        "team:read",
+        "im:read",
+        "im:history",
+        "mpim:read",
+        "mpim:history"
       ]
     },
     "trust": {"maximumTier": "attested_agent"},

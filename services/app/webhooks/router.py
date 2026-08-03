@@ -259,6 +259,7 @@ async def _attempt_kafka_path(
     provider: str,
     source: str,
     tenant_id: Any,
+    connector_installation_id: Any | None = None,
     raw_body: bytes,
     payload: Mapping[str, Any] | None,
 ) -> bool:
@@ -308,6 +309,7 @@ async def _attempt_kafka_path(
             tenant_id=tenant_id,
             source=source,  # type: ignore[arg-type]  — runtime checked
             ingress_kind="webhook",
+            connector_installation_id=connector_installation_id,
             raw_body=raw_body,
             s3_client=s3_client,
             kafka_producer=kafka_producer,
@@ -364,6 +366,7 @@ async def _maybe_shadow_write_webhook(
     runtime: WebhookRuntime,
     provider: str,
     tenant_id: Any,
+    connector_installation_id: Any | None = None,
     raw_body: bytes,
     payload: Mapping[str, Any] | None,
 ) -> None:
@@ -423,6 +426,7 @@ async def _maybe_shadow_write_webhook(
             tenant_id=tenant_id,
             source=source,  # type: ignore[arg-type]  — runtime checked
             ingress_kind="webhook",
+            connector_installation_id=connector_installation_id,
             raw_body=raw_body,
             s3_client=s3_client,
             kafka_producer=kafka_producer,
@@ -1348,6 +1352,7 @@ async def _kafka_cutover_response(
     provider: str,
     runtime: WebhookRuntime,
     tenant_id: Any,
+    connector_installation_id: Any | None,
     raw: bytes,
     payload: Mapping[str, Any] | None,
     verified: VerifiedContext,
@@ -1366,6 +1371,7 @@ async def _kafka_cutover_response(
         provider=provider,
         source=cutover_source,
         tenant_id=tenant_id,
+        connector_installation_id=connector_installation_id,
         raw_body=raw,
         payload=payload,
     )
@@ -1400,6 +1406,7 @@ async def _inline_ingest_response(
     provider: str,
     runtime: WebhookRuntime,
     tenant_id: Any,
+    connector_installation_id: Any | None,
     raw: bytes,
     payload: Mapping[str, Any] | None,
     verified: VerifiedContext,
@@ -1456,6 +1463,7 @@ async def _inline_ingest_response(
             runtime=runtime,
             provider=provider,
             tenant_id=tenant_id,
+            connector_installation_id=connector_installation_id,
             raw_body=raw,
             payload=payload,
         )
@@ -1562,6 +1570,11 @@ async def _receive_webhook(
         provider=provider,
         runtime=auth.runtime,
         tenant_id=auth.tenant_id,
+        connector_installation_id=(
+            auth.outcome.installation_row_id
+            if isinstance(auth.outcome, Resolved)
+            else None
+        ),
         raw=raw,
         payload=payload,
         verified=auth.verified,
@@ -1574,6 +1587,11 @@ async def _receive_webhook(
         provider=provider,
         runtime=auth.runtime,
         tenant_id=auth.tenant_id,
+        connector_installation_id=(
+            auth.outcome.installation_row_id
+            if isinstance(auth.outcome, Resolved)
+            else None
+        ),
         raw=raw,
         payload=payload,
         verified=auth.verified,

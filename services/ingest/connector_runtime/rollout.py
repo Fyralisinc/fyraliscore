@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Protocol
+from typing import Any, Protocol
 
 from services.ingest.connector_runtime.policy import RoutingPolicy
 
@@ -61,9 +61,7 @@ class RolloutMetrics:
     @property
     def parity_mismatch_rate(self) -> float:
         return (
-            self.parity_mismatches / self.parity_samples
-            if self.parity_samples
-            else 0
+            self.parity_mismatches / self.parity_samples if self.parity_samples else 0
         )
 
     @property
@@ -120,7 +118,9 @@ def assess_rollout(
     return RolloutAssessment(
         ready_to_promote=enough_evidence and not breaches,
         rollback_required=bool(breaches),
-        reasons=tuple(breaches or (() if enough_evidence else ("insufficient_evidence",))),
+        reasons=tuple(
+            breaches or (() if enough_evidence else ("insufficient_evidence",))
+        ),
     )
 
 
@@ -135,7 +135,99 @@ class RolloutRevision:
     def __post_init__(self) -> None:
         if self.revision < 1:
             raise ValueError("rollout revision must be positive")
+        if self.stage is RolloutStage.CANARY and len(self.tenant_cohort) != 1:
+            raise ValueError("canary rollout requires exactly one tenant")
+        if self.stage is RolloutStage.COHORT and not self.tenant_cohort:
+            raise ValueError("cohort rollout requires at least one tenant")
+        if (
+            self.stage in {RolloutStage.SHADOW, RolloutStage.FULL}
+            and self.tenant_cohort
+        ):
+            raise ValueError(f"{self.stage.value} rollout cannot carry a tenant cohort")
         object.__setattr__(self, "policy", MappingProxyType(dict(self.policy)))
+
+    def effective_policy(self) -> Mapping[str, object]:
+        """Translate stage/cohort metadata into enforceable routing scopes."""
+
+        policy = dict(self.policy)
+        policy["revision"] = self.revision
+        if self.stage is RolloutStage.FULL:
+            return MappingProxyType(policy)
+        if self.stage is RolloutStage.SHADOW:
+            return MappingProxyType(_shadow_policy(policy))
+        return MappingProxyType(_bounded_policy(policy, self.tenant_cohort))
+
+
+def _shadow_policy(policy: Mapping[str, object]) -> dict[str, object]:
+    """Preserve routing scopes while making every promotion non-authoritative."""
+
+    def shadow(value: Any) -> Any:
+        if isinstance(value, str):
+            return "shadow" if value.lower() == "connector" else value
+        if isinstance(value, list):
+            return [shadow(item) for item in value]
+        if isinstance(value, Mapping):
+            return {str(key): shadow(item) for key, item in value.items()}
+        return value
+
+    return dict(shadow(policy))
+
+
+def _bounded_policy(
+    policy: Mapping[str, object], cohort: tuple[str, ...]
+) -> dict[str, object]:
+    """Convert connector promotions into tenant-scoped overrides."""
+
+    if str(policy.get("global", "legacy")).lower() == "connector":
+        raise ValueError("bounded rollout cannot promote an unscoped global policy")
+    capability_modes = policy.get("capabilities")
+    if isinstance(capability_modes, Mapping) and any(
+        str(value).lower() == "connector" for value in capability_modes.values()
+    ):
+        raise ValueError("bounded rollout cannot promote an unscoped capability policy")
+
+    connector_modes = policy.get("connectors")
+    promoted_connectors = {
+        str(connector_id)
+        for connector_id, mode in (
+            connector_modes.items() if isinstance(connector_modes, Mapping) else ()
+        )
+        if str(mode).lower() == "connector"
+    }
+    connector_capabilities: list[tuple[str, str]] = []
+    for row in policy.get("connector_capabilities", ()) or ():
+        if not isinstance(row, Mapping):
+            raise ValueError("connector capability rollout entries must be objects")
+        if str(row.get("mode", "legacy")).lower() == "connector":
+            connector_capabilities.append(
+                (str(row["connector_id"]), str(row["capability"]))
+            )
+    if not promoted_connectors and not connector_capabilities:
+        raise ValueError("bounded rollout does not identify a connector promotion")
+
+    return {
+        "revision": int(policy["revision"]),
+        "global": "legacy",
+        "tenant_connectors": [
+            {
+                "tenant_id": tenant_id,
+                "connector_id": connector_id,
+                "mode": "connector",
+            }
+            for tenant_id in cohort
+            for connector_id in sorted(promoted_connectors)
+        ],
+        "tenant_capabilities": [
+            {
+                "tenant_id": tenant_id,
+                "connector_id": connector_id,
+                "capability": capability,
+                "mode": "connector",
+            }
+            for tenant_id in cohort
+            for connector_id, capability in sorted(connector_capabilities)
+        ],
+    }
 
 
 class RolloutRepository(Protocol):
@@ -185,16 +277,21 @@ class FleetRoutingController:
         self._configuration = configuration
         self._actor = actor
         self._metric_reader = metric_reader
+        self._active_revision: int | None = None
+
+    @property
+    def active_revision(self) -> int | None:
+        return self._active_revision
 
     async def refresh_once(self) -> RolloutRevision | None:
         revision = await self._repository.load_active()
         if revision is None:
+            self._active_revision = None
             return None
+        self._active_revision = revision.revision
         current = self._configuration.snapshot()
         if revision.revision > current.revision:
-            self._configuration.apply(
-                {**revision.policy, "revision": revision.revision}
-            )
+            self._configuration.apply(revision.effective_policy())
             await self._repository.audit(
                 revision.revision,
                 action="propagated",
@@ -216,9 +313,8 @@ class FleetRoutingController:
                 reason=",".join(assessment.reasons),
                 metrics=metrics.snapshot(),
             )
-            self._configuration.apply(
-                {**rollback.policy, "revision": rollback.revision}
-            )
+            self._configuration.apply(rollback.effective_policy())
+            self._active_revision = rollback.revision
         return assessment
 
     async def run(

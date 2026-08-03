@@ -45,7 +45,7 @@ async def test_whatsapp_signature_resolves_native_registry_capability() -> None:
                     "connector_id": "fyralis/whatsapp",
                     "authority_generation": 1,
                     "credential_owner": "whatsapp_installations",
-                    "granted_secret_slots": ["app_secret"],
+                    "granted_slot_names": ["app_secret"],
                     "granted_scopes": [],
                     "granted_outbound_hosts": [],
                     "maximum_trust_tier": "attested_agent",

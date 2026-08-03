@@ -17,6 +17,7 @@ bot-token path):
   deel_installations; live uses provider_installations — the two are seeded
   together but stay independent.
 """
+
 from __future__ import annotations
 
 import json
@@ -27,7 +28,7 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
-from services.app.webhooks.provider_installations import (
+from services.ingest.integrations.provider_installations import (
     upsert_provider_installation_for_tenant,
 )
 from services.ingest.integrations.deel import metrics
@@ -79,8 +80,12 @@ async def finalize_install(
                     disabled_at = NULL
             RETURNING id
             """,
-            uuid7(), tenant_id, base_url, secret_ref,
-            organization_id, webhook_secret_ref,
+            uuid7(),
+            tenant_id,
+            base_url,
+            secret_ref,
+            organization_id,
+            webhook_secret_ref,
         )
 
         for c in deduped:
@@ -95,7 +100,10 @@ async def finalize_install(
                                   contract_name = COALESCE(EXCLUDED.contract_name, deel_contracts.contract_name),
                                   contract_type = COALESCE(EXCLUDED.contract_type, deel_contracts.contract_type)
                 """,
-                uuid7(), tenant_id, install_id, c["contract_id"],
+                uuid7(),
+                tenant_id,
+                install_id,
+                c["contract_id"],
                 c.get("contract_name") or c.get("name"),
                 c.get("contract_type") or c.get("type"),
             )
@@ -114,15 +122,19 @@ async def finalize_install(
                 WHERE installation_row_id IS NOT NULL
                 DO NOTHING
             """,
-            uuid7(), tenant_id, install_id,
-            json.dumps({"base_url": base_url,
-                        "contracts": [c["contract_id"] for c in deduped]}),
+            uuid7(),
+            tenant_id,
+            install_id,
+            json.dumps(
+                {"base_url": base_url, "contracts": [c["contract_id"] for c in deduped]}
+            ),
         )
 
     metrics.record_provision_outcome("success" if deduped else "no_contracts")
     log.info(
         "deel_install_finalized",
-        base_url=base_url, contract_count=len(deduped),
+        base_url=base_url,
+        contract_count=len(deduped),
     )
     return install_id
 

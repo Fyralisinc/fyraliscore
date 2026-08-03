@@ -52,8 +52,9 @@ async def test_migrated_slack_webhook_resolves_native_capability() -> None:
                     "connector_id": "fyralis/slack",
                     "authority_generation": 1,
                     "credential_owner": "oauth_callback",
-                    "granted_secret_slots": [
+                    "granted_slot_names": [
                         "oauth_access_token",
+                        "oauth_user_access_token",
                         "webhook_signing_secret",
                     ],
                     "granted_scopes": [
@@ -63,6 +64,10 @@ async def test_migrated_slack_webhook_resolves_native_capability() -> None:
                         "groups:history",
                         "users:read",
                         "team:read",
+                        "im:read",
+                        "im:history",
+                        "mpim:read",
+                        "mpim:history",
                     ],
                     "granted_outbound_hosts": ["slack.com"],
                     "maximum_trust_tier": "attested_agent",

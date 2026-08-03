@@ -186,6 +186,20 @@ _PROCESSES: tuple[RuntimeProcess, ...] = (
         has_healthcheck=True,
     ),
     _proc(
+        "source_connector_lifecycle",
+        "ingest-workflow",
+        (
+            "python",
+            "-m",
+            "services.ingest.connector_platform.lifecycle_worker",
+        ),
+        ("production",),
+        "Source connector installation lifecycle controller.",
+        compose_service="source_connector_lifecycle",
+        has_healthcheck=True,
+        singleton=True,
+    ),
+    _proc(
         "extension_workers",
         "extensions",
         ("python", "-m", "lib.extensions.run_workers"),

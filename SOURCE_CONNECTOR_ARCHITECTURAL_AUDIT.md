@@ -5,14 +5,15 @@
 **Audited revision:** a4fd22d4<br>
 **Decision:** **Do not merge under the claim that the source-connector roadmap is complete.**
 
-> **Remediation status:** Completion Phase 1 addresses the truthful-scope,
-> legacy-safe default, executable manifest, independent structural evidence,
-> least-authority, and measured-artifact blockers identified below. Closed-loop
-> behavioral rollout, native independence, deployment/infrastructure proof, the
-> remaining 23 migrations, and legacy retirement remain Phase 2/3 work. The
-> audit evidence below intentionally describes revision `a4fd22d4`; see
-> `SOURCE_CONNECTOR_10_10_PLAN.md` and
-> `SOURCE_CONNECTOR_COMPLETION_PHASE_1_REPORT.md` for the remediation boundary.
+> **Remediation status:** Completion Phases 1 and 2 address the truthful-scope,
+> legacy-safe default, executable manifest, independent structural and
+> behavioral evidence, least-authority, measured-artifact, native-pilot,
+> closed-loop rollout, deployment, migration, and production-like proof
+> blockers identified below. The remaining 23 migrations, stateless signed
+> control-plane distribution, legacy retirement, stable-v1 evolution, and
+> fleet hardening remain Phase 3 work. The audit evidence below intentionally
+> describes revision `a4fd22d4`; see `SOURCE_CONNECTOR_10_10_PLAN.md` and the
+> completion reports for the current remediation boundary.
 
 ## Executive Summary
 

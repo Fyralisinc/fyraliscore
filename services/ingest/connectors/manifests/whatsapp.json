@@ -11,6 +11,7 @@
   "spec": {
     "contract": ">=1.0,<2.0",
     "implementation": "services.ingest.connectors.native:build_whatsapp_connector",
+    "artifactModules": ["services.ingest.connectors.whatsapp"],
     "maturity": "preview",
     "capabilities": [
       {"id": "health.probe", "version": 1, "required": true},

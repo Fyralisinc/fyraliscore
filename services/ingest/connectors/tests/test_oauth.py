@@ -32,7 +32,13 @@ from services.ingest.source_contract.models import InstallationRef
 def _authority(connector_id: str) -> GrantedAuthority:
     if connector_id == SLACK_CONNECTOR_ID:
         return GrantedAuthority(
-            secret_slots=frozenset({"oauth_access_token", "webhook_signing_secret"}),
+            secret_slots=frozenset(
+                {
+                    "oauth_access_token",
+                    "oauth_user_access_token",
+                    "webhook_signing_secret",
+                }
+            ),
             outbound_hosts=frozenset({"slack.com"}),
             scopes=frozenset(
                 {
@@ -42,6 +48,10 @@ def _authority(connector_id: str) -> GrantedAuthority:
                     "groups:history",
                     "users:read",
                     "team:read",
+                    "im:read",
+                    "im:history",
+                    "mpim:read",
+                    "mpim:history",
                 }
             ),
             maximum_trust_tier="attested_agent",
@@ -92,6 +102,11 @@ async def test_slack_oauth_is_registry_resolved_and_returns_secret_candidates(
                 "access_token": "xoxb-token",
                 "scope": "channels:read,channels:history,groups:read,groups:history,users:read,team:read",
                 "team": {"id": "T123", "name": "Acme"},
+                "authed_user": {
+                    "id": "U123",
+                    "scope": "im:read,im:history,mpim:read,mpim:history",
+                    "access_token": "xoxp-token",
+                },
             },
         )
 
@@ -129,6 +144,7 @@ async def test_slack_oauth_is_registry_resolved_and_returns_secret_candidates(
         assert result.external_installation_id == "T123"
         assert {str(item.slot) for item in candidates} == {
             "oauth_access_token",
+            "oauth_user_access_token",
             "webhook_signing_secret",
         }
         lifecycle = binding.require(OAUTH2_LIFECYCLE_V1)

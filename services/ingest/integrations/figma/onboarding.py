@@ -29,6 +29,7 @@ the OAuth bot-token path):
   for the synthetic gate it is treated as an HMAC signing secret. The install
   shape is identical either way.
 """
+
 from __future__ import annotations
 
 import json
@@ -39,7 +40,7 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
-from services.app.webhooks.provider_installations import (
+from services.ingest.integrations.provider_installations import (
     upsert_provider_installation_for_tenant,
 )
 from services.ingest.integrations.figma import metrics
@@ -91,8 +92,12 @@ async def finalize_install(
                     disabled_at = NULL
             RETURNING id
             """,
-            uuid7(), tenant_id, base_url, secret_ref,
-            team_id, webhook_secret_ref,
+            uuid7(),
+            tenant_id,
+            base_url,
+            secret_ref,
+            team_id,
+            webhook_secret_ref,
         )
 
         for f in deduped:
@@ -107,7 +112,10 @@ async def finalize_install(
                                   file_name = COALESCE(EXCLUDED.file_name, figma_files.file_name),
                                   project_name = COALESCE(EXCLUDED.project_name, figma_files.project_name)
                 """,
-                uuid7(), tenant_id, install_id, f["file_key"],
+                uuid7(),
+                tenant_id,
+                install_id,
+                f["file_key"],
                 f.get("file_name") or f.get("name"),
                 f.get("project_name") or f.get("project"),
             )
@@ -127,15 +135,19 @@ async def finalize_install(
                 WHERE installation_row_id IS NOT NULL
                 DO NOTHING
             """,
-            uuid7(), tenant_id, install_id,
-            json.dumps({"base_url": base_url,
-                        "files": [f["file_key"] for f in deduped]}),
+            uuid7(),
+            tenant_id,
+            install_id,
+            json.dumps(
+                {"base_url": base_url, "files": [f["file_key"] for f in deduped]}
+            ),
         )
 
     metrics.record_provision_outcome("success" if deduped else "no_files")
     log.info(
         "figma_install_finalized",
-        base_url=base_url, file_count=len(deduped),
+        base_url=base_url,
+        file_count=len(deduped),
     )
     return install_id
 
@@ -164,7 +176,8 @@ async def register_webhook_installation(
     )
     log.info(
         "figma_webhook_installation_registered",
-        webhook_id=webhook_id, team_id=team_id,
+        webhook_id=webhook_id,
+        team_id=team_id,
     )
 
 

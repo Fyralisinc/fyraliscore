@@ -149,6 +149,7 @@ class ContinuousInstallationController:
         *,
         operation_timeout_seconds: float = 30.0,
         admitted_connector_ids: frozenset[str] | None = None,
+        evidence_sink: Any | None = None,
     ) -> None:
         self._registry = registry
         self._authorities = authority_repository
@@ -157,6 +158,10 @@ class ContinuousInstallationController:
         self._transitions = InstallationLifecycleController()
         self._operation_timeout_seconds = operation_timeout_seconds
         self._admitted_connector_ids = admitted_connector_ids
+        self._evidence_sink = evidence_sink
+
+    def replace_admitted_connectors(self, connector_ids: frozenset[str]) -> None:
+        self._admitted_connector_ids = connector_ids
 
     async def _observe(
         self, lifecycle: InstallationLifecycle, now: datetime
@@ -252,6 +257,11 @@ class ContinuousInstallationController:
         evidence = await self._observe(lifecycle, now)
         updated = self._transitions.reconcile(lifecycle, evidence, now=now)
         await self._repository.save(updated)
+        if self._evidence_sink is not None:
+            self._evidence_sink.record_lifecycle(
+                connector_id=lifecycle.connector_id,
+                outcome="failed" if evidence.failure_reason else "completed",
+            )
         return updated
 
     async def run_once(self, *, limit: int = 100) -> int:

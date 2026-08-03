@@ -11,7 +11,6 @@ import httpx
 import pytest
 
 from services.ingest.connector_conformance.fakes import FakeHostEnvironment
-from services.ingest.connectors import native
 from services.ingest.connector_platform.execution import LegacyExecutionRouter
 from services.ingest.connector_platform.legacy_capabilities import LegacyGatewayStream
 from services.ingest.connector_platform.legacy_context import (
@@ -142,17 +141,31 @@ async def test_identity_normalization_and_poll_have_shadow_parity(
         nonlocal calls
         calls += 1
         return FetchResult(
-            records=[dict(record.payload)],
-            next_cursor={"stack": []},
-            end_of_data=False,
+            records=[],
+            next_cursor={
+                "stack": [],
+                "items_seen": 0,
+                "last_edited_at": None,
+                "seeded": True,
+            },
+            end_of_data=True,
         )
 
     monkeypatch.setitem(FETCHER_DISPATCH, "notion", fetcher)
-    monkeypatch.setattr(native, "fetch_page_notion", fetcher)
-    async with httpx.AsyncClient() as client:
+
+    async def provider(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"results": [], "has_more": False, "next_cursor": None},
+        )
+
+    async def read_secret(_installation, _slot):
+        return SecretValue.from_text("notion-token")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as client:
         router = LegacyExecutionRouter(
             build_pilot_composition(RoutingPolicy(global_mode=ExecutionMode.SHADOW)),
-            HostServicesFactory(http_client=client),
+            HostServicesFactory(http_client=client, secret_reader=read_secret),
             shadow_sink=sink,
         )
 
@@ -184,8 +197,13 @@ async def test_identity_normalization_and_poll_have_shadow_parity(
 
     assert identity == "notion:page:page-1"
     assert draft.external_id == identity
-    assert page.next_cursor == {"stack": []}
-    assert calls == 2
+    assert page.next_cursor == {
+        "stack": [],
+        "items_seen": 0,
+        "last_edited_at": None,
+        "seeded": True,
+    }
+    assert calls == 1
     assert len(sink.reports) == 3
     assert all(report.matches for report in sink.reports)
 

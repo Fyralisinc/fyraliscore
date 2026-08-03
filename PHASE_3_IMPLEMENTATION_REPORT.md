@@ -4,9 +4,11 @@
 > report, not the current acceptance verdict. The principal-engineering audit
 > found that it overstates native independence, behavioral admission, automatic
 > rollout, catalog authority, and completion. All sources now default to legacy;
-> Slack, Notion, and WhatsApp remain transitional candidates until completion
-> Phase 2. See `SOURCE_CONNECTOR_ARCHITECTURAL_AUDIT.md` and
-> `SOURCE_CONNECTOR_10_10_PLAN.md`.
+> Completion Phases 1 and 2 subsequently made Slack, Notion, and WhatsApp
+> connector-local, behaviorally admitted pilots behind explicit audited
+> routing. All sources still default to legacy, and the remaining 23 sources
+> remain Phase 3 work. See `SOURCE_CONNECTOR_ARCHITECTURAL_AUDIT.md`,
+> `SOURCE_CONNECTOR_10_10_PLAN.md`, and the completion reports.
 
 ## Executive summary
 

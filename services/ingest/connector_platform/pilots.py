@@ -51,13 +51,13 @@ WHATSAPP_MANIFEST = _NATIVE_MANIFESTS[WHATSAPP_CONNECTOR_ID]
 _RELEASE_EVIDENCE = load_release_evidence(_RELEASE_EVIDENCE_PATH)
 SLACK_CONFORMANCE_FINGERPRINT = _RELEASE_EVIDENCE.require(
     SLACK_CONNECTOR_ID, SLACK_MANIFEST.metadata.version
-).structural_fingerprint
+).admission_fingerprint
 NOTION_CONFORMANCE_FINGERPRINT = _RELEASE_EVIDENCE.require(
     NOTION_CONNECTOR_ID, NOTION_MANIFEST.metadata.version
-).structural_fingerprint
+).admission_fingerprint
 WHATSAPP_CONFORMANCE_FINGERPRINT = _RELEASE_EVIDENCE.require(
     WHATSAPP_CONNECTOR_ID, WHATSAPP_MANIFEST.metadata.version
-).structural_fingerprint
+).admission_fingerprint
 
 
 def _conformed_native_candidate(manifest: ConnectorManifest) -> ConnectorCandidate:
@@ -67,16 +67,21 @@ def _conformed_native_candidate(manifest: ConnectorManifest) -> ConnectorCandida
     )
     report = ConnectorConformanceSuite().run(raw)
     assert_connector_conforms(report)
-    expected = _RELEASE_EVIDENCE.require(
+    evidence = _RELEASE_EVIDENCE.require(
         manifest.connector_id, manifest.metadata.version
-    ).structural_fingerprint
-    if report.fingerprint != expected:
+    )
+    if report.fingerprint != evidence.structural_fingerprint:
         raise ValueError(
             f"release evidence mismatch for {manifest.connector_id}@"
-            f"{manifest.metadata.version}: expected {expected}, "
+            f"{manifest.metadata.version}: expected {evidence.structural_fingerprint}, "
             f"computed {report.fingerprint}"
         )
-    return replace(raw, conformance_fingerprint=report.fingerprint)
+    if evidence.behavioral_fingerprint is None:
+        raise ValueError(
+            f"behavioral release evidence is missing for {manifest.connector_id}@"
+            f"{manifest.metadata.version}"
+        )
+    return replace(raw, conformance_fingerprint=evidence.admission_fingerprint)
 
 
 def build_slack_candidate() -> ConnectorCandidate:

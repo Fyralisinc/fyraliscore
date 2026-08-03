@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -88,9 +89,7 @@ class ConnectorCapabilityExecutor:
             )
         ).mode
 
-    def _bind(
-        self, request: CapabilityExecutionRequest[Any]
-    ) -> StaticBoundConnector:
+    def _bind(self, request: CapabilityExecutionRequest[Any]) -> StaticBoundConnector:
         if request.lifecycle is not None and not request.lifecycle.execution_available:
             raise CapabilityUnavailableError(
                 "installation lifecycle does not permit connector execution",
@@ -140,10 +139,50 @@ class ConnectorCapabilityExecutor:
             raise asyncio.TimeoutError("connector operation deadline elapsed")
         return await request.connector_call(capability, operation)
 
+    @staticmethod
+    def _rollout_execution(
+        request: CapabilityExecutionRequest[Any],
+        *,
+        implementation: str,
+        outcome: str,
+        started_at: float,
+    ) -> None:
+        attributes = (
+            ("connector_id", str(request.installation.connector_id)),
+            ("capability", str(request.capability.ref.id)),
+            ("implementation", implementation),
+            ("outcome", outcome),
+        )
+        request.services.metrics.increment(
+            "source_connector.rollout.execution", attributes=attributes
+        )
+        request.services.metrics.observe(
+            "source_connector.rollout.duration_ms",
+            (time.monotonic() - started_at) * 1000,
+            attributes=attributes,
+        )
+
     async def execute(self, request: CapabilityExecutionRequest[T]) -> T:
         mode = self._decision(request)
         if mode is ExecutionMode.LEGACY:
-            return await request.legacy_call()
+            legacy_started = time.monotonic()
+            try:
+                value = await request.legacy_call()
+            except (Exception, asyncio.CancelledError):
+                self._rollout_execution(
+                    request,
+                    implementation="legacy",
+                    outcome="failed",
+                    started_at=legacy_started,
+                )
+                raise
+            self._rollout_execution(
+                request,
+                implementation="legacy",
+                outcome="completed",
+                started_at=legacy_started,
+            )
+            return value
 
         execution_id = request.execution_id or uuid4()
         telemetry = CapabilityTelemetry(request.services)
@@ -151,13 +190,36 @@ class ConnectorCapabilityExecutor:
         started_at = telemetry.started(fields)
 
         if mode is ExecutionMode.SHADOW:
-            legacy_result = await request.legacy_call()
+            legacy_started = time.monotonic()
+            try:
+                legacy_result = await request.legacy_call()
+            except (Exception, asyncio.CancelledError):
+                self._rollout_execution(
+                    request,
+                    implementation="legacy",
+                    outcome="failed",
+                    started_at=legacy_started,
+                )
+                raise
+            self._rollout_execution(
+                request,
+                implementation="legacy",
+                outcome="completed",
+                started_at=legacy_started,
+            )
             if not request.shadow_safe:
                 telemetry.completed(fields, started_at, mode="shadow_skipped")
                 return legacy_result
             try:
+                connector_started = time.monotonic()
                 connector_result = await self._connector_call(request, execution_id)
             except (Exception, asyncio.CancelledError) as exc:
+                self._rollout_execution(
+                    request,
+                    implementation="connector",
+                    outcome="failed",
+                    started_at=connector_started,
+                )
                 failure = classify_failure(exc)
                 telemetry.failed(
                     fields,
@@ -177,6 +239,12 @@ class ConnectorCapabilityExecutor:
                         )
                     )
                 return legacy_result
+            self._rollout_execution(
+                request,
+                implementation="connector",
+                outcome="completed",
+                started_at=connector_started,
+            )
             if request.shadow_projection is not None and self._shadow_sink is not None:
                 self._shadow_sink.record(
                     ShadowReport(
@@ -194,8 +262,15 @@ class ConnectorCapabilityExecutor:
             return legacy_result
 
         try:
+            connector_started = time.monotonic()
             result = await self._connector_call(request, execution_id)
         except (Exception, asyncio.CancelledError) as exc:
+            self._rollout_execution(
+                request,
+                implementation="connector",
+                outcome="failed",
+                started_at=connector_started,
+            )
             failure = classify_failure(exc)
             telemetry.failed(
                 fields,
@@ -204,6 +279,12 @@ class ConnectorCapabilityExecutor:
                 retryable=failure.retryable,
             )
             raise translate_failure(exc) from exc
+        self._rollout_execution(
+            request,
+            implementation="connector",
+            outcome="completed",
+            started_at=connector_started,
+        )
         telemetry.completed(fields, started_at, mode="connector")
         return result
 

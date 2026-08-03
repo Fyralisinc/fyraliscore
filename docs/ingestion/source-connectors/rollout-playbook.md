@@ -1,9 +1,9 @@
 # Source connector rollout playbook
 
-> Completion Phase 1 note: this is the required target procedure. Promotion is
-> blocked until Phase 2 connects persistent shadow/metric writers to rollout
-> evaluation and proves continuous admission propagation across execution
-> owners.
+> Completion Phase 2 note: persistent bounded-cardinality rollout events feed
+> threshold evaluation, and database-backed execution owners continuously
+> refresh admission and routing. Stateless owners without durable signed state
+> remain fail-closed to legacy.
 
 ## Goal
 

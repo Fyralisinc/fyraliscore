@@ -4,9 +4,10 @@
 
 The Source Connector Runtime is the target authoritative architecture and the
 current canonical definition catalog. Execution remains legacy-safe by default
-for all 26 sources. Slack, Notion, and WhatsApp are transitional native-root
-candidates; they are not production-authoritative until behavioral admission,
-ambient legacy dependency removal, and closed-loop rollout evidence pass.
+for all 26 sources. Slack, Notion, and WhatsApp are connector-local,
+behaviorally admitted native pilots. They become production-authoritative only
+for the tenant cohort named by an explicit durable routing revision; the other
+23 sources remain compatibility candidates.
 
 ```mermaid
 flowchart LR
@@ -40,8 +41,9 @@ FastAPI, Temporal, PostgreSQL, Kafka, or S3.
 
 Gateway and workflow startup build the same immutable 26-connector candidate
 set. Registration validates IDs, sources, versions, manifest/capability parity,
-host compatibility, and independently checked-in structural conformance
-fingerprints. A durable routing controller then applies the active revision.
+host compatibility, and independently checked-in structural plus behavioral
+conformance fingerprints. A durable routing controller then applies the active
+revision and continuously refreshes routing and artifact admission.
 Artifact admission verifies enabled records and compares their claimed digest
 with the running implementation module plus exact manifest;
 invalid or missing required attestations enter an in-memory quarantine that
@@ -69,8 +71,8 @@ safe to duplicate.
 Common PostgreSQL records own desired/observed lifecycle, connector identity,
 credential references, granted secret slots/scopes/hosts, trust ceiling,
 installation data, callbacks, artifact provenance, routing revisions, rollout
-metrics, and audit history. Row-level security protects tenant-owned control
-plane tables.
+events/metrics, and audit history. Row-level security protects tenant-owned
+control-plane tables and fails closed when tenant context is absent.
 
 Binding rejects revoked, cross-installation, cross-tenant, cross-connector, or
 stale-generation authority. Host services independently enforce the resulting
@@ -102,3 +104,8 @@ envelope literal. Native candidates carry first-party capability factories.
 Compatibility candidates are conformed definitions over legacy behavior and
 remain global-legacy unless explicitly migrated. There is no database-driven
 dynamic code loading.
+
+Stateless processes without a durable admission/authority channel are forced to
+legacy whenever production requires signed artifacts. This prevents an
+unattested native path while signed control-plane distribution remains Phase 3
+work.

@@ -6,7 +6,7 @@ from fastapi.responses import RedirectResponse
 from starlette.testclient import TestClient
 
 from lib.observability import counter, reset_default_for_tests
-from services.app.gateway.product_workflow_metrics import (
+from lib.observability.product_workflow_events import (
     PRODUCT_WORKFLOW_EVENT_OUTCOMES,
     PRODUCT_WORKFLOW_EVENTS,
     PRODUCT_WORKFLOWS,
@@ -70,7 +70,9 @@ def test_oauth_callback_records_source_onboarding_failure(
     from services.ingest.integrations.router import slack_oauth
 
     async def _callback_handler(request: Request) -> RedirectResponse:
-        return RedirectResponse("/integrations/slack/install-error?reason=state_invalid")
+        return RedirectResponse(
+            "/integrations/slack/install-error?reason=state_invalid"
+        )
 
     monkeypatch.setattr(slack_oauth, "callback_handler", _callback_handler)
 

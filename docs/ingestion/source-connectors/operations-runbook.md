@@ -4,7 +4,9 @@
 
 Before enabling connector routing:
 
-1. Apply `db/migrations/0187_source_connector_control_plane.sql`.
+1. Apply migrations through
+   `db/migrations/0188_byoc_control_panel_access_grants_rls.sql` on a fresh or
+   correctly versioned database.
 2. Confirm the process reports a 26-connector registry and the expected
    registry fingerprint.
 3. Confirm installation and authority rows exist for the target tenant.
@@ -13,8 +15,9 @@ Before enabling connector routing:
 6. Confirm the connector artifact is enabled, signed by a trusted key, built by
    an allowed builder, matches the digest measured from the running module and
    exact manifest, and is not quarantined.
-7. Confirm an active routing revision exists and its metric window is being
-   populated.
+7. Confirm an active routing revision exists and
+   `source_connector_rollout_events` is receiving bounded execution, duration,
+   parity, lifecycle, and DLQ evidence for that revision.
 
 ## Runtime configuration
 
@@ -39,6 +42,10 @@ installation is failed/degraded or an artifact is quarantined.
 Startup diagnostics separately report registry size/fingerprint and artifact
 admission counts. A quarantined connector always resolves to legacy mode even
 if fleet rollout later applies a connector override.
+
+Stateless owners that cannot consume durable authority and artifact admission
+must remain legacy in signed-production mode. Do not disable signed-artifact
+requirements to promote them; provision an audited distribution path first.
 
 ## Common incidents
 
@@ -101,5 +108,6 @@ Operators should inspect these control-plane relations through approved admin
 tools: `source_connector_installations`, `source_connector_authority_grants`,
 `source_connector_credentials`, `source_connector_artifacts`,
 `source_connector_routing_revisions`, `source_connector_rollout_audit`, and
-`source_connector_rollout_metric_windows`. Tenant-scoped tables enforce RLS;
-use the normal tenant context rather than bypassing it for routine diagnostics.
+`source_connector_rollout_events`. Tenant-scoped tables enforce fail-closed
+RLS; use the normal tenant context rather than bypassing it for routine
+diagnostics.

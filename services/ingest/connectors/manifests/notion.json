@@ -11,6 +11,10 @@
   "spec": {
     "contract": ">=1.0,<2.0",
     "implementation": "services.ingest.connectors.native:build_notion_connector",
+    "artifactModules": [
+      "services.ingest.connectors.notion",
+      "services.ingest.connectors.oauth"
+    ],
     "maturity": "preview",
     "capabilities": [
       {"id": "installation.oauth2", "version": 1, "required": true},

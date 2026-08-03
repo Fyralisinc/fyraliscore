@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass
 
@@ -35,6 +36,9 @@ from services.ingest.connector_platform.production_host_services import (
 from services.ingest.connector_platform.rollout_store import (
     PostgresRolloutRepository,
 )
+from services.ingest.connector_platform.rollout_evidence import (
+    PostgresRolloutEvidenceSink,
+)
 from services.ingest.connector_runtime.composition import ConnectorRuntimeComposition
 from services.ingest.connector_runtime.host_services import HostServicesFactory
 from services.ingest.connector_runtime.shadow import ShadowReportSink
@@ -48,6 +52,7 @@ class WorkflowConnectorWiring:
     http_client: httpx.AsyncClient
     rollout: FleetRoutingController | None = None
     artifact_admission: ArtifactAdmissionController | None = None
+    evidence_sink: PostgresRolloutEvidenceSink | None = None
 
     async def refresh_routing(self) -> None:
         if self.rollout is not None:
@@ -56,10 +61,21 @@ class WorkflowConnectorWiring:
             await self.artifact_admission.refresh()
 
     async def watch_routing(self, stop_event: object) -> None:
-        if self.rollout is not None:
-            await self.rollout.run(stop_event)  # type: ignore[arg-type]
+        while not stop_event.is_set():  # type: ignore[union-attr]
+            await self.refresh_routing()
+            try:
+                await asyncio.wait_for(
+                    stop_event.wait(),  # type: ignore[union-attr]
+                    timeout=float(
+                        os.environ.get("CONNECTOR_CONTROL_REFRESH_SECONDS", "5")
+                    ),
+                )
+            except asyncio.TimeoutError:
+                continue
 
     async def close(self) -> None:
+        if self.evidence_sink is not None:
+            await self.evidence_sink.flush()
         await self.http_client.aclose()
 
 
@@ -73,9 +89,7 @@ def build_workflow_connector_wiring(
     kafka_producer: object | None = None,
 ) -> WorkflowConnectorWiring:
     raw_config = (
-        os.environ.get(ROUTING_CONFIG_ENV)
-        if routing_config is None
-        else routing_config
+        os.environ.get(ROUTING_CONFIG_ENV) if routing_config is None else routing_config
     )
     policy = (
         parse_routing_policy(raw_config)
@@ -83,8 +97,20 @@ def build_workflow_connector_wiring(
         else default_migrated_routing_policy()
     )
     composition = build_pilot_composition(policy)
+    admission_settings = ArtifactAdmissionSettings.from_env()
+    if pool is None and admission_settings.require_signed:
+        composition.routing.replace_quarantine(
+            {
+                candidate.manifest.connector_id: (
+                    "durable artifact admission is unavailable in this process"
+                )
+                for candidate in build_runtime_candidates()
+                if candidate.origin.startswith("first-party-native:")
+            }
+        )
     client = httpx.AsyncClient(follow_redirects=False)
     authority_repository = None
+    evidence_sink = None
     host_services = HostServicesFactory(http_client=client)
     if pool is not None:
         if secret_store is None:
@@ -92,6 +118,10 @@ def build_workflow_connector_wiring(
 
             secret_store = build_secret_store(pool)  # type: ignore[arg-type]
         authority_repository = PostgresAuthorityRepository(pool)
+        evidence_sink = PostgresRolloutEvidenceSink(
+            pool,
+            lambda: rollout.active_revision if rollout is not None else None,
+        )
         host_services = build_production_host_services_factory(
             ProductionHostBackends(
                 pool=pool,
@@ -100,12 +130,14 @@ def build_workflow_connector_wiring(
                 s3_raw_client=s3_raw_client,
                 kafka_producer=kafka_producer,
                 callback_base_url=os.environ.get("CONNECTOR_CALLBACK_BASE_URL"),
+                metric_incrementer=evidence_sink.increment,
+                metric_observer=evidence_sink.observe,
             )
         )
     router = LegacyExecutionRouter(
         composition,
         host_services,
-        shadow_sink=shadow_sink,
+        shadow_sink=shadow_sink or evidence_sink,
         authority_repository=authority_repository,
         require_durable_authority=authority_repository is not None,
     )
@@ -117,12 +149,13 @@ def build_workflow_connector_wiring(
             rollout_repository,
             RoutingConfigurationController(composition.routing),
             actor=f"workflow:{os.getpid()}",
+            metric_reader=rollout_repository.read_metrics,
         )
         artifact_admission = ArtifactAdmissionController(
             PostgresArtifactRepository(pool),
             composition.routing,
             build_runtime_candidates(),
-            ArtifactAdmissionSettings.from_env(),
+            admission_settings,
         )
     return WorkflowConnectorWiring(
         composition,
@@ -130,6 +163,7 @@ def build_workflow_connector_wiring(
         client,
         rollout,
         artifact_admission,
+        evidence_sink,
     )
 
 

@@ -12,6 +12,7 @@ from services.ingest.connector_platform.pilots import (
 )
 from services.ingest.connector_conformance import ConnectorConformanceSuite
 from services.ingest.connector_platform.catalog import CONNECTOR_CATALOG
+from services.ingest.connector_platform.pilots import release_evidence_catalog
 from services.ingest.connector_runtime.policy import ExecutionMode, RouteRequest
 from services.ingest.source_contract.capabilities import (
     HISTORICAL_PULL_V1,
@@ -58,10 +59,30 @@ def test_pilot_registration_evidence_matches_independent_conformance() -> None:
     }
 
     assert reports[SLACK_CONNECTOR_ID].passed
-    assert reports[SLACK_CONNECTOR_ID].fingerprint == SLACK_CONFORMANCE_FINGERPRINT
+    catalog = release_evidence_catalog()
+    assert (
+        reports[SLACK_CONNECTOR_ID].fingerprint
+        == catalog.require(SLACK_CONNECTOR_ID, "1.0.0").structural_fingerprint
+    )
+    assert (
+        SLACK_CONFORMANCE_FINGERPRINT
+        == catalog.require(SLACK_CONNECTOR_ID, "1.0.0").admission_fingerprint
+    )
     assert reports[NOTION_CONNECTOR_ID].passed
-    assert reports[NOTION_CONNECTOR_ID].fingerprint == NOTION_CONFORMANCE_FINGERPRINT
+    assert (
+        reports[NOTION_CONNECTOR_ID].fingerprint
+        == catalog.require(NOTION_CONNECTOR_ID, "1.0.0").structural_fingerprint
+    )
+    assert (
+        NOTION_CONFORMANCE_FINGERPRINT
+        == catalog.require(NOTION_CONNECTOR_ID, "1.0.0").admission_fingerprint
+    )
     assert reports[WHATSAPP_CONNECTOR_ID].passed
     assert (
-        reports[WHATSAPP_CONNECTOR_ID].fingerprint == WHATSAPP_CONFORMANCE_FINGERPRINT
+        reports[WHATSAPP_CONNECTOR_ID].fingerprint
+        == catalog.require(WHATSAPP_CONNECTOR_ID, "1.0.0").structural_fingerprint
+    )
+    assert (
+        WHATSAPP_CONFORMANCE_FINGERPRINT
+        == catalog.require(WHATSAPP_CONNECTOR_ID, "1.0.0").admission_fingerprint
     )

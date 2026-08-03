@@ -17,6 +17,7 @@ bot-token path):
   brex_installations; live uses provider_installations — the two are seeded
   together but stay independent.
 """
+
 from __future__ import annotations
 
 import json
@@ -27,7 +28,7 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
-from services.app.webhooks.provider_installations import (
+from services.ingest.integrations.provider_installations import (
     upsert_provider_installation_for_tenant,
 )
 from services.ingest.integrations.brex import metrics
@@ -79,8 +80,12 @@ async def finalize_install(
                     disabled_at = NULL
             RETURNING id
             """,
-            uuid7(), tenant_id, base_url, secret_ref,
-            organization_id, webhook_secret_ref,
+            uuid7(),
+            tenant_id,
+            base_url,
+            secret_ref,
+            organization_id,
+            webhook_secret_ref,
         )
 
         for a in deduped:
@@ -95,7 +100,10 @@ async def finalize_install(
                                   account_name = COALESCE(EXCLUDED.account_name, brex_accounts.account_name),
                                   account_kind = COALESCE(EXCLUDED.account_kind, brex_accounts.account_kind)
                 """,
-                uuid7(), tenant_id, install_id, a["account_id"],
+                uuid7(),
+                tenant_id,
+                install_id,
+                a["account_id"],
                 a.get("account_name") or a.get("name"),
                 a.get("account_kind") or a.get("type"),
             )
@@ -115,15 +123,19 @@ async def finalize_install(
                 WHERE installation_row_id IS NOT NULL
                 DO NOTHING
             """,
-            uuid7(), tenant_id, install_id,
-            json.dumps({"base_url": base_url,
-                        "accounts": [a["account_id"] for a in deduped]}),
+            uuid7(),
+            tenant_id,
+            install_id,
+            json.dumps(
+                {"base_url": base_url, "accounts": [a["account_id"] for a in deduped]}
+            ),
         )
 
     metrics.record_provision_outcome("success" if deduped else "no_accounts")
     log.info(
         "brex_install_finalized",
-        base_url=base_url, account_count=len(deduped),
+        base_url=base_url,
+        account_count=len(deduped),
     )
     return install_id
 

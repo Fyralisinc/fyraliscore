@@ -77,7 +77,18 @@ async def test_default_legacy_mode_never_binds_connector() -> None:
 
     assert result == "legacy:workspace-1"
     assert connector.bind_calls == 0
-    assert environment.metrics.increments == []
+    assert environment.metrics.increments == [
+        (
+            "source_connector.rollout.execution",
+            1,
+            (
+                ("connector_id", "fyralis/example"),
+                ("capability", "semantic.identity"),
+                ("implementation", "legacy"),
+                ("outcome", "completed"),
+            ),
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -87,9 +98,7 @@ async def test_connector_mode_binds_then_emits_complete_telemetry() -> None:
     registry = ConnectorRegistryBuilder().add(candidate).build()
     executor = ConnectorCapabilityExecutor(
         registry,
-        AtomicRoutingPolicy(
-            RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)
-        ),
+        AtomicRoutingPolicy(RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)),
     )
 
     result = await executor.execute(_request(candidate, environment))
@@ -118,9 +127,7 @@ async def test_insufficient_authority_fails_before_connector_binding() -> None:
     registry = ConnectorRegistryBuilder().add(candidate).build()
     executor = ConnectorCapabilityExecutor(
         registry,
-        AtomicRoutingPolicy(
-            RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)
-        ),
+        AtomicRoutingPolicy(RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)),
     )
     request = _request(candidate, environment)
     request = CapabilityExecutionRequest(
@@ -165,9 +172,7 @@ async def test_shadow_can_skip_side_effecting_capabilities() -> None:
         AtomicRoutingPolicy(RoutingPolicy(global_mode=ExecutionMode.SHADOW)),
     )
     request = _request(candidate, environment)
-    request = CapabilityExecutionRequest(
-        **{**request.__dict__, "shadow_safe": False}
-    )
+    request = CapabilityExecutionRequest(**{**request.__dict__, "shadow_safe": False})
 
     assert await executor.execute(request) == "legacy:workspace-1"
     assert connector.bind_calls == 0

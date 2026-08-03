@@ -74,9 +74,7 @@ def build_production_host_services_factory(
     pool = backends.pool
     leases: dict[UUID, PostgresLease] = {}
 
-    async def secret_reader(
-        installation_id: UUID, slot: SlotId
-    ) -> SecretValue:
+    async def secret_reader(installation_id: UUID, slot: SlotId) -> SecretValue:
         install = await _installation(pool, installation_id)
         ref = await pool.fetchval(
             """
@@ -101,9 +99,7 @@ def build_production_host_services_factory(
         )
         return SecretValue(value)
 
-    async def secret_writer(
-        installation_id: UUID, candidate: SecretCandidate
-    ) -> str:
+    async def secret_writer(installation_id: UUID, candidate: SecretCandidate) -> str:
         install = await _installation(pool, installation_id)
         ref = await backends.secret_store.put(
             candidate.value.reveal_bytes(),
@@ -145,9 +141,7 @@ def build_production_host_services_factory(
         )
         return str(ref)
 
-    async def state_reader(
-        installation_id: UUID, kind: str
-    ) -> VersionedState | None:
+    async def state_reader(installation_id: UUID, kind: str) -> VersionedState | None:
         row = await pool.fetchrow(
             """
             SELECT generation, values
@@ -233,6 +227,7 @@ def build_production_host_services_factory(
             tenant_id=install["tenant_id"],
             source=source,  # type: ignore[arg-type]
             ingress_kind="gateway",
+            connector_installation_id=installation_id,
             raw_body=raw_body,
             s3_client=backends.s3_raw_client,
             kafka_producer=backends.kafka_producer,
@@ -240,9 +235,7 @@ def build_production_host_services_factory(
             idem_hints=record.identity_hints,
             now=acknowledged_at,
         )
-        remaining = await coalesced_flush(
-            backends.kafka_producer, timeout_seconds=2.0
-        )
+        remaining = await coalesced_flush(backends.kafka_producer, timeout_seconds=2.0)
         if remaining:
             raise RuntimeError("durable raw publication was not acknowledged")
         return PublicationReceipt(

@@ -45,9 +45,7 @@ class ShardPlan(ContractModel):
 
     @field_validator("window_end")
     @classmethod
-    def validate_window(
-        cls, value: datetime | None, info: Any
-    ) -> datetime | None:
+    def validate_window(cls, value: datetime | None, info: Any) -> datetime | None:
         start = info.data.get("window_start")
         if value is not None and start is not None and value < start:
             raise ValueError("window_end must not precede window_start")
@@ -86,6 +84,9 @@ class FetchRequest(ContractModel):
 class FetchedPage(ContractModel):
     records: tuple[SourceRecord, ...] = ()
     next_cursor: CursorState | None = None
+    # Durable high-water/checkpoint for this page. Unlike next_cursor, this is
+    # retained on the terminal page and is never interpreted as continuation.
+    checkpoint: CursorState | None = None
     end_of_data: bool = False
 
     @model_validator(mode="after")

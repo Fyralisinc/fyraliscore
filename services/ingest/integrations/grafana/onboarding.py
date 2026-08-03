@@ -17,6 +17,7 @@ so one shard per install):
   Backfill uses grafana_installations; live uses provider_installations — the
   two are seeded together but stay independent.
 """
+
 from __future__ import annotations
 
 import json
@@ -27,7 +28,7 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
-from services.app.webhooks.provider_installations import (
+from services.ingest.integrations.provider_installations import (
     upsert_provider_installation_for_tenant,
 )
 
@@ -40,7 +41,12 @@ def instance_host(base_url: str) -> str:
     webhook tenant resolution (e.g. https://acme.grafana.net -> acme.grafana.net).
     MUST match what tenant_resolver._extract_grafana derives from the webhook
     payload's `externalURL` host."""
-    return base_url.replace("https://", "").replace("http://", "").rstrip("/").split("/")[0]
+    return (
+        base_url.replace("https://", "")
+        .replace("http://", "")
+        .rstrip("/")
+        .split("/")[0]
+    )
 
 
 async def finalize_install(
@@ -72,7 +78,12 @@ async def finalize_install(
                     disabled_at = NULL
             RETURNING id
             """,
-            uuid7(), tenant_id, base_url, org_id, secret_ref, webhook_secret_ref,
+            uuid7(),
+            tenant_id,
+            base_url,
+            org_id,
+            secret_ref,
+            webhook_secret_ref,
         )
 
         # Emit the onboarding trigger so the M6 backfill chain fires. Like
@@ -89,7 +100,9 @@ async def finalize_install(
                 WHERE installation_row_id IS NOT NULL
                 DO NOTHING
             """,
-            uuid7(), tenant_id, install_id,
+            uuid7(),
+            tenant_id,
+            install_id,
             json.dumps({"base_url": base_url, "org_id": org_id}),
         )
 

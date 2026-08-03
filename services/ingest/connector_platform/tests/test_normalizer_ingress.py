@@ -35,6 +35,9 @@ class _RegistryRouter:
     def supports(self, source: str) -> bool:
         return source == "slack"
 
+    def is_native(self, source: str) -> bool:
+        return source == "slack"
+
     async def normalize(self, source, install, request, legacy_call):
         assert source == "slack"
         assert install["tenant_id"]

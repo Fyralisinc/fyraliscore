@@ -21,6 +21,7 @@ encrypted client-credentials re-mint material when the install was finalized
 with a Ramp client_id/client_secret pair. Client-credentials issues NO OAuth
 refresh token; expiry is handled by re-minting.
 """
+
 from __future__ import annotations
 
 import json
@@ -31,7 +32,7 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
-from services.app.webhooks.provider_installations import (
+from services.ingest.integrations.provider_installations import (
     upsert_provider_installation_for_tenant,
 )
 from services.ingest.integrations.ramp import metrics
@@ -83,8 +84,14 @@ async def finalize_install(
                     disabled_at = NULL
             RETURNING id
             """,
-            uuid7(), tenant_id, business_id, base_url, secret_ref,
-            refresh_secret_ref, token_expires_at, webhook_secret_ref,
+            uuid7(),
+            tenant_id,
+            business_id,
+            base_url,
+            secret_ref,
+            refresh_secret_ref,
+            token_expires_at,
+            webhook_secret_ref,
         )
 
         for entity in deduped:
@@ -97,7 +104,10 @@ async def finalize_install(
                 ON CONFLICT (ramp_installation_id, entity_type)
                     DO UPDATE SET state = 'active'
                 """,
-                uuid7(), tenant_id, install_id, entity,
+                uuid7(),
+                tenant_id,
+                install_id,
+                entity,
             )
 
         await tctx.execute(
@@ -110,14 +120,17 @@ async def finalize_install(
                 WHERE installation_row_id IS NOT NULL
                 DO NOTHING
             """,
-            uuid7(), tenant_id, install_id,
+            uuid7(),
+            tenant_id,
+            install_id,
             json.dumps({"business_id": business_id, "entities": deduped}),
         )
 
     metrics.record_provision_outcome("success" if deduped else "no_entities")
     log.info(
         "ramp_install_finalized",
-        business_id=business_id, entity_count=len(deduped),
+        business_id=business_id,
+        entity_count=len(deduped),
     )
     return install_id
 

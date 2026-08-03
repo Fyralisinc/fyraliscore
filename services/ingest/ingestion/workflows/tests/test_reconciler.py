@@ -19,6 +19,7 @@ Covers the M6.2b chain-interception service:
 The subprocess SIGTERM test lives in
 test_reconciler_subprocess.py.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -30,7 +31,7 @@ import pytest
 
 from lib.observability import counter, reset_default_for_tests
 from lib.shared.ids import uuid7
-from services.app.gateway.product_workflow_metrics import (
+from lib.observability.product_workflow_events import (
     PRODUCT_WORKFLOW_EVENT_OUTCOMES,
     PRODUCT_WORKFLOW_EVENTS,
     PRODUCT_WORKFLOWS,
@@ -87,14 +88,19 @@ async def _seed_tenant(pool: asyncpg.Pool, label: str = "rec") -> UUID:
     tid = uuid4()
     await pool.execute(
         "INSERT INTO tenants (id, name) VALUES ($1, $2)",
-        tid, f"{label}-{tid.hex[:8]}",
+        tid,
+        f"{label}-{tid.hex[:8]}",
     )
     return tid
 
 
 async def _seed_run(
-    pool: asyncpg.Pool, *, tenant_id: UUID, source: str = "slack",
-    status: str = "completed", pass_count: int = 0,
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    source: str = "slack",
+    status: str = "completed",
+    pass_count: int = 0,
 ) -> UUID:
     run_id = uuid7()
     await pool.execute(
@@ -104,7 +110,10 @@ async def _seed_run(
              sources_enabled, started_at)
         VALUES ($1, $2, 'install', $3, 'running', $4::text[], now())
         """,
-        run_id, tenant_id, f"wf-{run_id.hex[:8]}", [source],
+        run_id,
+        tenant_id,
+        f"wf-{run_id.hex[:8]}",
+        [source],
     )
     await pool.execute(
         """
@@ -115,14 +124,23 @@ async def _seed_run(
                 CASE WHEN $4 = 'completed' THEN now() ELSE NULL END,
                 $5)
         """,
-        run_id, source, tenant_id, status, pass_count,
+        run_id,
+        source,
+        tenant_id,
+        status,
+        pass_count,
     )
     return run_id
 
 
 async def _seed_shard(
-    pool: asyncpg.Pool, *, run_id: UUID, tenant_id: UUID, source: str,
-    state: str = "done", shard_kind: str = "slack_channel_window",
+    pool: asyncpg.Pool,
+    *,
+    run_id: UUID,
+    tenant_id: UUID,
+    source: str,
+    state: str = "done",
+    shard_kind: str = "slack_channel_window",
     identifier: dict | None = None,
 ) -> UUID:
     shard_id = uuid7()
@@ -135,15 +153,24 @@ async def _seed_shard(
         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, now(),
                 CASE WHEN $8 IN ('done','failed') THEN now() ELSE NULL END)
         """,
-        shard_id, run_id, tenant_id, source, shard_kind,
+        shard_id,
+        run_id,
+        tenant_id,
+        source,
+        shard_kind,
         orjson.dumps(identifier or {"channel_id": "C001"}).decode("utf-8"),
-        1.0, state,
+        1.0,
+        state,
     )
     return shard_id
 
 
 async def _emit_shards_completed(
-    pool: asyncpg.Pool, *, run_id: UUID, tenant_id: UUID, source: str,
+    pool: asyncpg.Pool,
+    *,
+    run_id: UUID,
+    tenant_id: UUID,
+    source: str,
     pass_count: int = 0,
 ) -> None:
     """Inject a source_shards_completed signal (simulates SourceOnboarding
@@ -180,8 +207,12 @@ class _CapturingProducer:
         self.published: list[tuple[str, bytes, bytes | None]] = []
 
     async def produce(
-        self, topic: str, value: bytes, *,
-        key: bytes | None = None, **_kw: Any,
+        self,
+        topic: str,
+        value: bytes,
+        *,
+        key: bytes | None = None,
+        **_kw: Any,
     ) -> None:
         self.published.append((topic, value, key))
 
@@ -190,36 +221,45 @@ class _CapturingProducer:
 
 
 def _service_p(
-    pool: asyncpg.Pool, producer: _CapturingProducer,
+    pool: asyncpg.Pool,
+    producer: _CapturingProducer,
 ) -> Reconciler:
     return Reconciler(
-        pool, kafka_producer=producer,
+        pool,
+        kafka_producer=producer,
         config=ReconcilerConfig(
-            tick_interval_seconds=0.01, max_signals_per_tick=20,
+            tick_interval_seconds=0.01,
+            max_signals_per_tick=20,
         ),
     )
 
 
 async def _clean_reconciler(
-    shards: list[asyncpg.Record], run: asyncpg.Record,
+    shards: list[asyncpg.Record],
+    run: asyncpg.Record,
 ) -> ReconciliationDecision:
     return ReconciliationDecision(has_gaps=False, message="test: clean")
 
 
 def _reshare_reconciler_factory(
-    parent_shard_id: UUID, num_new: int = 2,
+    parent_shard_id: UUID,
+    num_new: int = 2,
 ) -> Any:
     """Test reconciler returning has_gaps=True with `num_new` new shards
     all parented to `parent_shard_id`."""
+
     async def _reshare(
-        shards: list[asyncpg.Record], run: asyncpg.Record,
+        shards: list[asyncpg.Record],
+        run: asyncpg.Record,
     ) -> ReconciliationDecision:
         new_shards = [
             ResharedShard(
                 shard=Shard(
                     shard_kind="slack_channel_window",
-                    shard_identifier={"channel_id": f"C00{i + 2}",
-                                      "gap": f"window_{i}"},
+                    shard_identifier={
+                        "channel_id": f"C00{i + 2}",
+                        "gap": f"window_{i}",
+                    },
                     recency_score=1.5,  # boosted per LLD §3
                 ),
                 parent_shard_id=parent_shard_id,
@@ -227,9 +267,11 @@ def _reshare_reconciler_factory(
             for i in range(num_new)
         ]
         return ReconciliationDecision(
-            has_gaps=True, message="test: gap detected",
+            has_gaps=True,
+            message="test: gap detected",
             new_shards=new_shards,
         )
+
     return _reshare
 
 
@@ -237,8 +279,10 @@ def _reshare_reconciler_factory(
 # 1. LOAD-BEARING — clean-path atomic handling.
 # =====================================================================
 
+
 async def test_reconciler_handles_source_shards_completed_clean_path(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Emit source_shards_completed; mock dispatch to clean. Assert:
       (a) reconciled_at stamped on source_onboarding_runs.
@@ -251,10 +295,17 @@ async def test_reconciler_handles_source_shards_completed_clean_path(
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="slack")
     await _seed_shard(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack", state="done",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
+        state="done",
     )
     await _emit_shards_completed(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
     )
 
     await _service(fresh_db).run(max_ticks=1)
@@ -264,7 +315,8 @@ async def test_reconciler_handles_source_shards_completed_clean_path(
         "SELECT reconciled_at, status, reconciliation_pass_count "
         "FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "slack",
+        run_id,
+        "slack",
     )
     assert row["reconciled_at"] is not None
     assert row["status"] == "completed"
@@ -275,8 +327,10 @@ async def test_reconciler_handles_source_shards_completed_clean_path(
         "SELECT signal_data FROM workflow_signals "
         "WHERE workflow_kind = $1 AND workflow_id = $2 "
         "AND signal_kind = $3 AND idempotency_key = $4",
-        TENANT_ONBOARDING_INBOX_KIND, TENANT_ONBOARDING_INBOX_ID,
-        SIGNAL_KIND_SOURCE_COMPLETED, f"{run_id}:slack",
+        TENANT_ONBOARDING_INBOX_KIND,
+        TENANT_ONBOARDING_INBOX_ID,
+        SIGNAL_KIND_SOURCE_COMPLETED,
+        f"{run_id}:slack",
     )
     assert completed is not None
 
@@ -285,8 +339,10 @@ async def test_reconciler_handles_source_shards_completed_clean_path(
         "SELECT consumed_at FROM workflow_signals "
         "WHERE workflow_kind = $1 AND workflow_id = $2 "
         "AND signal_kind = $3 AND idempotency_key = $4",
-        WORKFLOW_KIND, WORKFLOW_ID_INBOX,
-        SIGNAL_KIND_SHARDS_COMPLETED, f"{run_id}:slack:pass_0",
+        WORKFLOW_KIND,
+        WORKFLOW_ID_INBOX,
+        SIGNAL_KIND_SHARDS_COMPLETED,
+        f"{run_id}:slack:pass_0",
     )
     assert consumed_at is not None
 
@@ -295,8 +351,10 @@ async def test_reconciler_handles_source_shards_completed_clean_path(
 # 2. LOAD-BEARING — re-share path atomic handling.
 # =====================================================================
 
+
 async def test_reconciler_handles_source_shards_completed_reshare_path(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Emit source_shards_completed; mock dispatch to gappy with 2
     new shards. Assert ALL FIVE observable conditions for re-share:
@@ -309,16 +367,23 @@ async def test_reconciler_handles_source_shards_completed_reshare_path(
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="slack")
     orig_shard_id = await _seed_shard(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
         state="done",
     )
 
     monkeypatch.setitem(
-        RECONCILER_DISPATCH, "slack",
+        RECONCILER_DISPATCH,
+        "slack",
         _reshare_reconciler_factory(parent_shard_id=orig_shard_id, num_new=2),
     )
     await _emit_shards_completed(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
     )
 
     await _service(fresh_db).run(max_ticks=1)
@@ -328,11 +393,11 @@ async def test_reconciler_handles_source_shards_completed_reshare_path(
         "SELECT status, reconciliation_pass_count, reconciled_at "
         "FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "slack",
+        run_id,
+        "slack",
     )
     assert row["status"] == "in_progress", (
-        f"Run status should be 'in_progress' during re-share; "
-        f"got {row['status']!r}."
+        f"Run status should be 'in_progress' during re-share; got {row['status']!r}."
     )
 
     # (b) pass_count incremented.
@@ -341,7 +406,8 @@ async def test_reconciler_handles_source_shards_completed_reshare_path(
 
     # (c) Original shard marked 'reconciliation_resharded'.
     orig_state = await fresh_db.fetchval(
-        "SELECT state FROM onboarding_shards WHERE id = $1", orig_shard_id,
+        "SELECT state FROM onboarding_shards WHERE id = $1",
+        orig_shard_id,
     )
     assert orig_state == "reconciliation_resharded", (
         f"Original shard should be marked 'reconciliation_resharded' "
@@ -356,22 +422,23 @@ async def test_reconciler_handles_source_shards_completed_reshare_path(
         "ORDER BY created_at, id",
         run_id,
     )
-    assert len(new_shards) == 2, (
-        f"Expected 2 reshared shards; got {len(new_shards)}."
-    )
+    assert len(new_shards) == 2, f"Expected 2 reshared shards; got {len(new_shards)}."
     for sh in new_shards:
         assert sh["parent_shard_id"] == orig_shard_id
         assert sh["state"] == "pending"
         assert float(sh["recency_score"]) == 1.5
 
     # (e) 2 shard_fetch_requested signals emitted to ShardFetch inbox.
-    n_shard_req = int(await fresh_db.fetchval(
-        "SELECT count(*) FROM workflow_signals "
-        "WHERE workflow_kind = $1 AND workflow_id = $2 "
-        "AND signal_kind = $3",
-        SHARD_FETCH_INBOX_KIND, SHARD_FETCH_INBOX_ID,
-        SIGNAL_KIND_SHARD_REQUESTED,
-    ))
+    n_shard_req = int(
+        await fresh_db.fetchval(
+            "SELECT count(*) FROM workflow_signals "
+            "WHERE workflow_kind = $1 AND workflow_id = $2 "
+            "AND signal_kind = $3",
+            SHARD_FETCH_INBOX_KIND,
+            SHARD_FETCH_INBOX_ID,
+            SIGNAL_KIND_SHARD_REQUESTED,
+        )
+    )
     assert n_shard_req == 2
 
 
@@ -379,8 +446,10 @@ async def test_reconciler_handles_source_shards_completed_reshare_path(
 # 3. LOAD-BEARING — atomic rollback on emit failure (A12).
 # =====================================================================
 
+
 async def test_reconciler_atomic_rollback_on_emit_failure(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Monkeypatch the downstream emit to raise. Assert ALL observable
     state changes roll back:
@@ -403,10 +472,17 @@ async def test_reconciler_atomic_rollback_on_emit_failure(
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="slack")
     await _seed_shard(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack", state="done",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
+        state="done",
     )
     await _emit_shards_completed(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
     )
 
     with pytest.raises(RuntimeError, match="synthetic emit failure"):
@@ -416,7 +492,8 @@ async def test_reconciler_atomic_rollback_on_emit_failure(
     reconciled_at = await fresh_db.fetchval(
         "SELECT reconciled_at FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "slack",
+        run_id,
+        "slack",
     )
     assert reconciled_at is None, (
         f"Atomic rollback broken: reconciled_at={reconciled_at!r} "
@@ -424,11 +501,12 @@ async def test_reconciler_atomic_rollback_on_emit_failure(
     )
 
     # (b) NO source_onboarding_completed signal.
-    n_completed = int(await fresh_db.fetchval(
-        "SELECT count(*) FROM workflow_signals "
-        "WHERE signal_kind = $1",
-        SIGNAL_KIND_SOURCE_COMPLETED,
-    ))
+    n_completed = int(
+        await fresh_db.fetchval(
+            "SELECT count(*) FROM workflow_signals WHERE signal_kind = $1",
+            SIGNAL_KIND_SOURCE_COMPLETED,
+        )
+    )
     assert n_completed == 0
 
     # (c) Original signal NOT consumed.
@@ -436,8 +514,10 @@ async def test_reconciler_atomic_rollback_on_emit_failure(
         "SELECT consumed_at FROM workflow_signals "
         "WHERE workflow_kind = $1 AND workflow_id = $2 "
         "AND signal_kind = $3 AND idempotency_key = $4",
-        WORKFLOW_KIND, WORKFLOW_ID_INBOX,
-        SIGNAL_KIND_SHARDS_COMPLETED, f"{run_id}:slack:pass_0",
+        WORKFLOW_KIND,
+        WORKFLOW_ID_INBOX,
+        SIGNAL_KIND_SHARDS_COMPLETED,
+        f"{run_id}:slack:pass_0",
     )
     assert consumed_at is None, (
         "Signal consumed_at was set despite txn rollback — "
@@ -450,8 +530,10 @@ async def test_reconciler_atomic_rollback_on_emit_failure(
 # 4. Clean-decision path stamps reconciled_at and emits completion.
 # =====================================================================
 
+
 async def test_reconciler_clean_decision_path(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Monkeypatch github dispatch to a clean reconciler; assert run
     reconciles cleanly (status='completed', reconciled_at stamped,
@@ -466,11 +548,18 @@ async def test_reconciler_clean_decision_path(
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="github")
     await _seed_shard(
-        fresh_db, run_id=run_id, tenant_id=tid, source="github",
-        state="done", shard_kind="github_repo_events",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="github",
+        state="done",
+        shard_kind="github_repo_events",
     )
     await _emit_shards_completed(
-        fresh_db, run_id=run_id, tenant_id=tid, source="github",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="github",
     )
 
     await _service(fresh_db).run(max_ticks=1)
@@ -479,19 +568,23 @@ async def test_reconciler_clean_decision_path(
     row = await fresh_db.fetchrow(
         "SELECT status, reconciled_at FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "github",
+        run_id,
+        "github",
     )
     assert row["status"] == "completed"
     assert row["reconciled_at"] is not None
 
     # source_onboarding_completed emitted.
-    n_emits = int(await fresh_db.fetchval(
-        "SELECT count(*) FROM workflow_signals "
-        "WHERE workflow_kind = $1 AND signal_kind = $2 "
-        "AND idempotency_key = $3",
-        TENANT_ONBOARDING_INBOX_KIND, SIGNAL_KIND_SOURCE_COMPLETED,
-        f"{run_id}:github",
-    ))
+    n_emits = int(
+        await fresh_db.fetchval(
+            "SELECT count(*) FROM workflow_signals "
+            "WHERE workflow_kind = $1 AND signal_kind = $2 "
+            "AND idempotency_key = $3",
+            TENANT_ONBOARDING_INBOX_KIND,
+            SIGNAL_KIND_SOURCE_COMPLETED,
+            f"{run_id}:github",
+        )
+    )
     assert n_emits == 1
 
 
@@ -499,8 +592,10 @@ async def test_reconciler_clean_decision_path(
 # 4b. Unexpected dispatch exception → run failed + service keeps serving.
 # =====================================================================
 
+
 async def test_reconciler_handles_unexpected_dispatch_exception(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Per A19: framework dispatch call sites catch Exception, not
     narrow subclasses. Verify that a reconciler raising RuntimeError
@@ -509,6 +604,7 @@ async def test_reconciler_handles_unexpected_dispatch_exception(
     source_onboarding_completed with the failure_reason, and keeps
     the service serving.
     """
+
     async def _exploding_reconciler(shards, run):
         raise RuntimeError("simulated reconciler failure")
 
@@ -517,11 +613,18 @@ async def test_reconciler_handles_unexpected_dispatch_exception(
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="github")
     await _seed_shard(
-        fresh_db, run_id=run_id, tenant_id=tid, source="github",
-        state="done", shard_kind="github_repo_events",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="github",
+        state="done",
+        shard_kind="github_repo_events",
     )
     await _emit_shards_completed(
-        fresh_db, run_id=run_id, tenant_id=tid, source="github",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="github",
     )
 
     # Service does NOT crash — tick completes normally.
@@ -531,14 +634,14 @@ async def test_reconciler_handles_unexpected_dispatch_exception(
         "SELECT status, failure_reason, reconciled_at "
         "FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "github",
+        run_id,
+        "github",
     )
     assert row["status"] == "failed"
     assert row["reconciled_at"] is None
     failure_reason = row["failure_reason"] or ""
     assert "RuntimeError" in failure_reason, (
-        f"failure_reason should contain exception type name; "
-        f"got {failure_reason!r}"
+        f"failure_reason should contain exception type name; got {failure_reason!r}"
     )
     assert "simulated reconciler failure" in failure_reason
 
@@ -546,14 +649,14 @@ async def test_reconciler_handles_unexpected_dispatch_exception(
         "SELECT signal_data FROM workflow_signals "
         "WHERE workflow_kind = $1 AND signal_kind = $2 "
         "AND idempotency_key = $3",
-        TENANT_ONBOARDING_INBOX_KIND, SIGNAL_KIND_SOURCE_COMPLETED,
+        TENANT_ONBOARDING_INBOX_KIND,
+        SIGNAL_KIND_SOURCE_COMPLETED,
         f"{run_id}:github",
     )
     assert completion is not None
     data_raw = completion["signal_data"]
     data = (
-        orjson.loads(data_raw) if isinstance(data_raw, (str, bytes))
-        else dict(data_raw)
+        orjson.loads(data_raw) if isinstance(data_raw, (str, bytes)) else dict(data_raw)
     )
     assert "RuntimeError" in data.get("failure_reason", "")
     assert (
@@ -570,8 +673,10 @@ async def test_reconciler_handles_unexpected_dispatch_exception(
 # 5. Signal-replay idempotency (emit_signal UNIQUE).
 # =====================================================================
 
+
 async def test_reconciler_idempotent_on_signal_replay(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Emit source_shards_completed twice with the same idempotency_key.
     The second emit returns was_new=False (deduped by UNIQUE
@@ -582,21 +687,34 @@ async def test_reconciler_idempotent_on_signal_replay(
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="slack")
     await _seed_shard(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack", state="done",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
+        state="done",
     )
 
     await _emit_shards_completed(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
     )
     await _emit_shards_completed(  # duplicate
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
     )
 
-    n_signals = int(await fresh_db.fetchval(
-        "SELECT count(*) FROM workflow_signals "
-        "WHERE workflow_kind = $1 AND idempotency_key = $2",
-        WORKFLOW_KIND, f"{run_id}:slack:pass_0",
-    ))
+    n_signals = int(
+        await fresh_db.fetchval(
+            "SELECT count(*) FROM workflow_signals "
+            "WHERE workflow_kind = $1 AND idempotency_key = $2",
+            WORKFLOW_KIND,
+            f"{run_id}:slack:pass_0",
+        )
+    )
     assert n_signals == 1, (
         f"emit_signal idempotency-key UNIQUE failed: {n_signals} rows."
     )
@@ -606,8 +724,10 @@ async def test_reconciler_idempotent_on_signal_replay(
 # 6. LOAD-BEARING — cross-service idempotency on replay-after-reconciled.
 # =====================================================================
 
+
 async def test_reconciler_replays_completion_for_already_reconciled_run(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The cross-service idempotency property (per M6.2b Phase 2
     acceptance verification): a replayed `source_shards_completed`
@@ -644,18 +764,23 @@ async def test_reconciler_replays_completion_for_already_reconciled_run(
 
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(
-        fresh_db, tenant_id=tid, source="slack", pass_count=1,
+        fresh_db,
+        tenant_id=tid,
+        source="slack",
+        pass_count=1,
     )
     # Pre-stamp reconciled_at.
     await fresh_db.execute(
         "UPDATE source_onboarding_runs SET reconciled_at = now() "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "slack",
+        run_id,
+        "slack",
     )
     original_reconciled = await fresh_db.fetchval(
         "SELECT reconciled_at FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "slack",
+        run_id,
+        "slack",
     )
     # Pre-emit `source_onboarding_completed` to TenantOnboarding's
     # inbox (simulating the prior Reconciler clean pass).
@@ -666,7 +791,8 @@ async def test_reconciler_replays_completion_for_already_reconciled_run(
         signal_kind=SIGNAL_KIND_SOURCE_COMPLETED,
         idempotency_key=f"{run_id}:slack",
         signal_data={
-            "onboarding_run_id": str(run_id), "source": "slack",
+            "onboarding_run_id": str(run_id),
+            "source": "slack",
         },
     )
 
@@ -674,7 +800,11 @@ async def test_reconciler_replays_completion_for_already_reconciled_run(
     # different idempotency key from any prior shards_completed,
     # so it lands fresh in Reconciler's inbox and gets processed).
     await _emit_shards_completed(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack", pass_count=1,
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
+        pass_count=1,
     )
 
     await _service(fresh_db).run(max_ticks=1)
@@ -683,20 +813,25 @@ async def test_reconciler_replays_completion_for_already_reconciled_run(
     new_reconciled = await fresh_db.fetchval(
         "SELECT reconciled_at FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "slack",
+        run_id,
+        "slack",
     )
     assert new_reconciled == original_reconciled
 
     # (b) LOAD-BEARING: exactly ONE source_onboarding_completed in
     # TenantOnboarding's inbox. The Reconciler's idempotent re-emit
     # deduped on the UNIQUE constraint (key `{run_id}:slack`).
-    n_completed = int(await fresh_db.fetchval(
-        "SELECT count(*) FROM workflow_signals "
-        "WHERE workflow_kind = $1 AND workflow_id = $2 "
-        "AND signal_kind = $3 AND idempotency_key = $4",
-        TENANT_ONBOARDING_INBOX_KIND, TENANT_ONBOARDING_INBOX_ID,
-        SIGNAL_KIND_SOURCE_COMPLETED, f"{run_id}:slack",
-    ))
+    n_completed = int(
+        await fresh_db.fetchval(
+            "SELECT count(*) FROM workflow_signals "
+            "WHERE workflow_kind = $1 AND workflow_id = $2 "
+            "AND signal_kind = $3 AND idempotency_key = $4",
+            TENANT_ONBOARDING_INBOX_KIND,
+            TENANT_ONBOARDING_INBOX_ID,
+            SIGNAL_KIND_SOURCE_COMPLETED,
+            f"{run_id}:slack",
+        )
+    )
     assert n_completed == 1, (
         f"Cross-service idempotency broken: TenantOnboarding's inbox "
         f"has {n_completed} source_onboarding_completed signals for "
@@ -709,6 +844,7 @@ async def test_reconciler_replays_completion_for_already_reconciled_run(
 # =====================================================================
 # 7. Pattern-alignment analyzer accepts reconciler.py.
 # =====================================================================
+
 
 def test_reconciler_passes_pattern_alignment_analyzer() -> None:
     """The M6.0 static analyzer must accept reconciler.py."""
@@ -733,8 +869,10 @@ def test_reconciler_passes_pattern_alignment_analyzer() -> None:
 # Progress event — `source.onboarding.complete` on the clean pass.
 # =====================================================================
 
+
 async def test_reconciler_emits_source_complete_progress_event(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The first clean pass publishes exactly one
     `source.onboarding.complete` on onboarding.progress; pass_count=0 +
@@ -752,10 +890,17 @@ async def test_reconciler_emits_source_complete_progress_event(
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="slack")
     await _seed_shard(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack", state="done",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
+        state="done",
     )
     await _emit_shards_completed(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
     )
 
     producer = _CapturingProducer()
@@ -764,8 +909,7 @@ async def test_reconciler_emits_source_complete_progress_event(
     complete = [
         SourceOnboardingComplete.model_validate_json(val)
         for topic, val, _ in producer.published
-        if topic == TOPIC_ONBOARDING_PROGRESS
-        and b"source.onboarding.complete" in val
+        if topic == TOPIC_ONBOARDING_PROGRESS and b"source.onboarding.complete" in val
     ]
     assert len(complete) == 1, (
         f"Expected one source.onboarding.complete; got {len(complete)}. "
@@ -787,7 +931,8 @@ async def test_reconciler_emits_source_complete_progress_event(
 
 
 async def test_reconciler_idempotent_replay_does_not_re_emit_complete(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A second source_shards_completed signal for an already-reconciled
     run re-emits the Bridge SIGNAL but NOT a second `source.onboarding.complete`
@@ -797,24 +942,35 @@ async def test_reconciler_idempotent_replay_does_not_re_emit_complete(
     tid = await _seed_tenant(fresh_db)
     run_id = await _seed_run(fresh_db, tenant_id=tid, source="slack")
     await _seed_shard(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack", state="done",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
+        state="done",
     )
     # First clean pass.
     await _emit_shards_completed(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack", pass_count=0,
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
+        pass_count=0,
     )
     producer = _CapturingProducer()
     await _service_p(fresh_db, producer).run(max_ticks=1)
 
     # Replay (a later pass_count key so emit_signal doesn't dedup the inbox).
     await _emit_shards_completed(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack", pass_count=1,
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
+        pass_count=1,
     )
     await _service_p(fresh_db, producer).run(max_ticks=1)
 
     complete_count = sum(
-        1 for _, val, _ in producer.published
-        if b"source.onboarding.complete" in val
+        1 for _, val, _ in producer.published if b"source.onboarding.complete" in val
     )
     assert complete_count == 1, (
         f"source.onboarding.complete fired {complete_count} times; the "

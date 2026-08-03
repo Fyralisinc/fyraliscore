@@ -89,3 +89,26 @@ async def test_workflow_startup_applies_strict_artifact_quarantine(
         assert decision.matched_scope == "artifact_quarantine"
     finally:
         await wiring.close()
+
+
+@pytest.mark.asyncio
+async def test_database_free_owner_fails_closed_when_signing_is_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOURCE_CONNECTOR_REQUIRE_SIGNED_ARTIFACTS", "true")
+    wiring = build_workflow_connector_wiring(
+        routing_config='{"revision":2,"global":"connector"}'
+    )
+    try:
+        decision = wiring.composition.routing.resolve(
+            RouteRequest(
+                uuid4(),
+                "fyralis/slack",
+                "slack",
+                "semantic.normalization",
+            )
+        )
+        assert decision.mode is ExecutionMode.LEGACY
+        assert decision.matched_scope == "artifact_quarantine"
+    finally:
+        await wiring.close()

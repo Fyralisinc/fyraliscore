@@ -17,6 +17,7 @@ from services.ingest.integrations.notion import webhook
 
 
 TENANT = UUID("00000000-0000-0000-0000-000000000001")
+INSTALLATION = UUID("00000000-0000-0000-0000-000000000002")
 
 
 # ---------------------------------------------------------------------
@@ -93,7 +94,11 @@ def _request_with_data_plane() -> tuple[SimpleNamespace, _FakeProducer, _FakeS3]
 
 
 def _outcome() -> SimpleNamespace:
-    return SimpleNamespace(tenant_id=TENANT, secret_ref="install:ref")
+    return SimpleNamespace(
+        tenant_id=TENANT,
+        installation_row_id=INSTALLATION,
+        secret_ref="install:ref",
+    )
 
 
 @pytest.fixture
@@ -146,6 +151,8 @@ async def test_page_event_fetches_and_shadow_writes(patch_client) -> None:
     # Per-source raw topic (source-isolation): notion -> notion lane.
     assert producer.produced[0]["topic"] == "ingestion.raw.notion"
     assert producer.produced[0]["key"] == str(TENANT).encode()
+    envelope = json.loads(producer.produced[0]["value"])
+    assert envelope["connector_installation_id"] == str(INSTALLATION)
 
 
 @pytest.mark.asyncio

@@ -26,12 +26,8 @@ def _thresholds(value: Mapping[str, Any] | None) -> RolloutThresholds:
         maximum_p95_regression_ratio=float(
             data.get("maximum_p95_regression_ratio", 1.25)
         ),
-        maximum_lifecycle_failures=int(
-            data.get("maximum_lifecycle_failures", 0)
-        ),
-        maximum_dlq_rate_delta=float(
-            data.get("maximum_dlq_rate_delta", 0.001)
-        ),
+        maximum_lifecycle_failures=int(data.get("maximum_lifecycle_failures", 0)),
+        maximum_dlq_rate_delta=float(data.get("maximum_dlq_rate_delta", 0.001)),
     )
 
 
@@ -74,18 +70,58 @@ class PostgresRolloutRepository:
     async def read_metrics(self, revision: RolloutRevision) -> RolloutMetrics:
         row = await self._pool.fetchrow(
             """
-            SELECT COALESCE(sum(executions), 0) AS executions,
-                   COALESCE(sum(failures), 0) AS failures,
-                   COALESCE(sum(parity_samples), 0) AS parity_samples,
-                   COALESCE(sum(parity_mismatches), 0) AS parity_mismatches,
-                   COALESCE(max(connector_p95_ms), 0) AS connector_p95_ms,
-                   COALESCE(max(legacy_p95_ms), 0) AS legacy_p95_ms,
-                   COALESCE(sum(lifecycle_failures), 0) AS lifecycle_failures,
-                   COALESCE(max(connector_dlq_rate), 0) AS connector_dlq_rate,
-                   COALESCE(max(baseline_dlq_rate), 0) AS baseline_dlq_rate
-              FROM source_connector_rollout_metric_windows
+            SELECT count(*) FILTER (
+                       WHERE event_type = 'execution'
+                         AND implementation = 'connector'
+                   ) AS executions,
+                   count(*) FILTER (
+                       WHERE event_type = 'execution'
+                         AND implementation = 'connector'
+                         AND outcome = 'failed'
+                   ) AS failures,
+                   count(*) FILTER (
+                       WHERE event_type = 'parity'
+                   ) AS parity_samples,
+                   count(*) FILTER (
+                       WHERE event_type = 'parity'
+                         AND parity_matches = FALSE
+                   ) AS parity_mismatches,
+                   COALESCE(percentile_cont(0.95) WITHIN GROUP (
+                       ORDER BY duration_ms
+                   ) FILTER (
+                       WHERE event_type = 'duration'
+                         AND implementation = 'connector'
+                   ), 0) AS connector_p95_ms,
+                   COALESCE(percentile_cont(0.95) WITHIN GROUP (
+                       ORDER BY duration_ms
+                   ) FILTER (
+                       WHERE event_type = 'duration'
+                         AND implementation = 'legacy'
+                   ), 0) AS legacy_p95_ms,
+                   count(*) FILTER (
+                       WHERE event_type = 'lifecycle' AND outcome = 'failed'
+                   ) AS lifecycle_failures,
+                   count(*) FILTER (
+                       WHERE event_type = 'dlq'
+                         AND implementation = 'connector'
+                   )::double precision / GREATEST(
+                       count(*) FILTER (
+                           WHERE event_type = 'execution'
+                             AND implementation = 'connector'
+                       ), 1
+                   ) AS connector_dlq_rate,
+                   count(*) FILTER (
+                       WHERE event_type = 'dlq'
+                         AND implementation = 'legacy'
+                   )::double precision / GREATEST(
+                       count(*) FILTER (
+                           WHERE event_type = 'execution'
+                             AND implementation = 'legacy'
+                       ), 1
+                   ) AS baseline_dlq_rate
+              FROM source_connector_rollout_events
              WHERE revision = $1
-               AND window_started_at >= now() - interval '30 minutes'
+               AND occurred_at >= now() - interval '30 minutes'
             """,
             revision.revision,
         )
@@ -99,6 +135,15 @@ class PostgresRolloutRepository:
             lifecycle_failures=int(row["lifecycle_failures"]),
             connector_dlq_rate=float(row["connector_dlq_rate"]),
             baseline_dlq_rate=float(row["baseline_dlq_rate"]),
+        )
+
+    async def prune_evidence(self, *, retention_hours: int = 24) -> None:
+        await self._pool.execute(
+            """
+            DELETE FROM source_connector_rollout_events
+             WHERE occurred_at < now() - make_interval(hours => $1)
+            """,
+            retention_hours,
         )
 
     async def create_staged(

@@ -16,6 +16,7 @@ parsed args. The underlying functions touch RLS-scoped tables + Google
 APIs, so they're stubbed here — this is a route-wiring guard, not a
 re-test of their internals.
 """
+
 from __future__ import annotations
 
 from uuid import UUID, uuid4
@@ -25,7 +26,7 @@ import pytest
 from fastapi import FastAPI
 
 from lib.observability import counter, reset_default_for_tests
-from services.app.gateway.product_workflow_metrics import (
+from lib.observability.product_workflow_events import (
     PRODUCT_WORKFLOW_EVENT_OUTCOMES,
     PRODUCT_WORKFLOW_EVENTS,
     PRODUCT_WORKFLOWS,
@@ -60,6 +61,7 @@ def _make_app(*, with_auth: bool, tenant_id: UUID | None = None) -> FastAPI:
 
     app = FastAPI()
     if with_auth:
+
         @app.middleware("http")
         async def _inject_auth(request, call_next):  # type: ignore[no-untyped-def]
             class _A:
@@ -76,7 +78,8 @@ def _make_app(*, with_auth: bool, tenant_id: UUID | None = None) -> FastAPI:
 
 def _client(app: FastAPI) -> httpx.AsyncClient:
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://t",
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://t",
     )
 
 
@@ -107,7 +110,11 @@ async def test_status_returns_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
         r = await c.get("/integrations/gmail/status")
 
     assert r.status_code == 200, r.text
-    assert r.json() == {"connected": True, "installation_id": "inst-1", "watches": {"total": 3}}
+    assert r.json() == {
+        "connected": True,
+        "installation_id": "inst-1",
+        "watches": {"total": 3},
+    }
     assert seen["tenant_id"] == tenant  # tenant came from request.state.auth
     assert (
         _events().get(
@@ -148,7 +155,9 @@ async def test_status_records_not_found_for_disconnected_snapshot(
 # ---------------------------------------------------------------------
 # POST /integrations/gmail/uninstall
 # ---------------------------------------------------------------------
-async def test_uninstall_requires_installation_id(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_uninstall_requires_installation_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     app = _make_app(with_auth=True, tenant_id=uuid4())
     async with _client(app) as c:
         r = await c.post("/integrations/gmail/uninstall", json={})
@@ -187,7 +196,10 @@ async def test_uninstall_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
     async with _client(app) as c:
         r = await c.post(
             "/integrations/gmail/uninstall",
-            json={"gmail_installation_id": str(install_id), "actor_email": "ops@acme.com"},
+            json={
+                "gmail_installation_id": str(install_id),
+                "actor_email": "ops@acme.com",
+            },
         )
 
     assert r.status_code == 200, r.text
@@ -228,7 +240,9 @@ async def test_mailbox_stop_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
     install_id = uuid4()
     seen: dict = {}
 
-    async def _fake_stop(*, tenant_id, gmail_installation_id, email_address, actor_email=None):
+    async def _fake_stop(
+        *, tenant_id, gmail_installation_id, email_address, actor_email=None
+    ):
         seen.update(
             tenant_id=tenant_id,
             gmail_installation_id=gmail_installation_id,

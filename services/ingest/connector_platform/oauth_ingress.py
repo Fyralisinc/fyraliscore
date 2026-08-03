@@ -107,12 +107,12 @@ async def _ensure_bootstrap_authority(
         """
         INSERT INTO source_connector_authority_grants (
           installation_id, tenant_id, connector_id, credential_owner,
-          granted_secret_slots, granted_scopes, granted_outbound_hosts,
+          granted_slot_names, granted_scopes, granted_outbound_hosts,
           maximum_trust_tier, provenance
         ) VALUES ($1, $2, $3, 'connector_oauth_bootstrap', $4, $5, $6,
                   'attested_agent', $7::jsonb)
         ON CONFLICT (installation_id) DO UPDATE
-          SET granted_secret_slots = EXCLUDED.granted_secret_slots,
+          SET granted_slot_names = EXCLUDED.granted_slot_names,
               granted_scopes = EXCLUDED.granted_scopes,
               granted_outbound_hosts = EXCLUDED.granted_outbound_hosts,
               revoked_at = NULL,
@@ -301,13 +301,13 @@ async def _persist_control_plane(
         """
         INSERT INTO source_connector_authority_grants (
           installation_id, tenant_id, connector_id, credential_owner,
-          granted_secret_slots, granted_scopes, granted_outbound_hosts,
+          granted_slot_names, granted_scopes, granted_outbound_hosts,
           maximum_trust_tier, provenance
         ) VALUES ($1, $2, $3, 'connector_oauth', $4, $5, $6,
                   'attested_agent', $7::jsonb)
         ON CONFLICT (installation_id) DO UPDATE
           SET credential_owner = EXCLUDED.credential_owner,
-              granted_secret_slots = EXCLUDED.granted_secret_slots,
+              granted_slot_names = EXCLUDED.granted_slot_names,
               granted_scopes = EXCLUDED.granted_scopes,
               granted_outbound_hosts = EXCLUDED.granted_outbound_hosts,
               provenance = EXCLUDED.provenance, revoked_at = NULL,
@@ -348,11 +348,27 @@ async def _persist_control_plane(
         )
 
 
-def _validate_scopes(registration: Any, result: OAuthResult) -> None:
+def _validate_result(
+    registration: Any,
+    result: OAuthResult,
+    candidates: tuple[SecretCandidate, ...],
+) -> None:
     requested = set(registration.manifest.spec.permissions.requested_scopes)
-    unexpected = set(result.granted_scopes) - requested
-    if unexpected:
-        raise ValueError(f"provider granted undeclared scopes: {sorted(unexpected)}")
+    granted = set(result.granted_scopes)
+    unexpected = granted - requested
+    missing = requested - granted
+    if unexpected or missing:
+        raise ValueError(
+            "provider scope grant does not match the connector manifest: "
+            f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+        )
+    returned_slots = {str(candidate.slot) for candidate in candidates}
+    requested_slots = set(registration.manifest.spec.permissions.secret_slots)
+    missing_slots = requested_slots - returned_slots
+    if missing_slots:
+        raise SecretStoreError(
+            f"OAuth capability omitted required secret slots: {sorted(missing_slots)}"
+        )
 
 
 async def _persist_result(
@@ -369,7 +385,7 @@ async def _persist_result(
     pool = request.app.state.pool
     secret_store = request.app.state.secret_store
     composition, registration = _composition(request, provider)  # type: ignore[misc]
-    _validate_scopes(registration, result)
+    _validate_result(registration, result, candidates)
     token = _candidate(candidates, "oauth_access_token")
     if token is None:
         raise SecretStoreError("OAuth capability returned no access token")
@@ -402,6 +418,7 @@ async def _persist_result(
                 label=f"slack_user_token:{external_id}:{user_id}",
                 tenant_id=tenant_id,
             )
+            secret_refs["oauth_user_access_token"] = str(user_ref)
         provider_secret_ref = signing_ref
     else:
         provider_secret_ref = await secret_store.put(

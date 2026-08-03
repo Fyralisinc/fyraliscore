@@ -24,6 +24,7 @@ from lib.llm.provider import (
     _codex_transport,
     _codex_should_use_cli_transport,
 )
+from lib.llm import provider as provider_mod
 
 
 # ---------------------------------------------------------------------
@@ -131,6 +132,8 @@ def test_config_from_env_defaults(monkeypatch):
     monkeypatch.delenv("LLM_TIMEOUT_SECONDS", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("CODEX_API_KEY", raising=False)
+    monkeypatch.delenv("CODEX_MODEL", raising=False)
+    monkeypatch.setattr(provider_mod, "_codex_config_model", lambda: None)
     monkeypatch.setenv("LLM_API_KEY", "k")
     cfg = LLMConfig.from_env()
     assert cfg.provider == "codex"

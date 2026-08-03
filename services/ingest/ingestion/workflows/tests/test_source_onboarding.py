@@ -29,6 +29,7 @@ A15 column-naming map applied throughout: tests write/read `id`,
 `shard_kind`, `shard_identifier`, `state`, `last_error` per the
 M1-shipped 0045 schema, not the M6.2a-prompt-words.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -41,7 +42,7 @@ import pytest
 
 from lib.observability import counter, reset_default_for_tests
 from lib.shared.ids import uuid7
-from services.app.gateway.product_workflow_metrics import (
+from lib.observability.product_workflow_events import (
     PRODUCT_WORKFLOW_EVENT_OUTCOMES,
     PRODUCT_WORKFLOW_EVENTS,
     PRODUCT_WORKFLOWS,
@@ -97,13 +98,17 @@ async def _seed_tenant(pool: asyncpg.Pool, label: str = "src") -> UUID:
     tid = uuid4()
     await pool.execute(
         "INSERT INTO tenants (id, name) VALUES ($1, $2)",
-        tid, f"{label}-{tid.hex[:8]}",
+        tid,
+        f"{label}-{tid.hex[:8]}",
     )
     return tid
 
 
 async def _seed_provider_install(
-    pool: asyncpg.Pool, *, tenant_id: UUID, provider: str,
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    provider: str,
 ) -> None:
     await pool.execute(
         """
@@ -111,7 +116,9 @@ async def _seed_provider_install(
             (id, tenant_id, provider, installation_id, enabled)
         VALUES ($1, $2, $3, $4, TRUE)
         """,
-        uuid7(), tenant_id, provider,
+        uuid7(),
+        tenant_id,
+        provider,
         f"inst-{tenant_id.hex[:8]}-{provider}",
     )
 
@@ -124,14 +131,18 @@ async def _seed_gmail_install(pool: asyncpg.Pool, *, tenant_id: UUID) -> None:
              scope, disabled_at)
         VALUES ($1, $2, $3, $4, 'gmail.readonly', NULL)
         """,
-        uuid7(), tenant_id,
+        uuid7(),
+        tenant_id,
         f"workspace-{tenant_id.hex[:8]}.example.com",
         f"svc-{tenant_id.hex[:8]}@example.iam.gserviceaccount.com",
     )
 
 
 async def _seed_onboarding_run(
-    pool: asyncpg.Pool, *, tenant_id: UUID, source: str = "slack",
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    source: str = "slack",
 ) -> UUID:
     run_id = uuid7()
     await pool.execute(
@@ -141,13 +152,20 @@ async def _seed_onboarding_run(
              sources_enabled, started_at)
         VALUES ($1, $2, 'install', $3, 'running', $4::text[], now())
         """,
-        run_id, tenant_id, f"wf-{run_id.hex[:8]}", [source],
+        run_id,
+        tenant_id,
+        f"wf-{run_id.hex[:8]}",
+        [source],
     )
     return run_id
 
 
 async def _seed_source_run(
-    pool: asyncpg.Pool, *, run_id: UUID, source: str, tenant_id: UUID,
+    pool: asyncpg.Pool,
+    *,
+    run_id: UUID,
+    source: str,
+    tenant_id: UUID,
     status: str = "pending",
 ) -> None:
     await pool.execute(
@@ -156,12 +174,19 @@ async def _seed_source_run(
             (onboarding_run_id, source, tenant_id, status)
         VALUES ($1, $2, $3, $4)
         """,
-        run_id, source, tenant_id, status,
+        run_id,
+        source,
+        tenant_id,
+        status,
     )
 
 
 async def _emit_source_requested(
-    pool: asyncpg.Pool, *, run_id: UUID, tenant_id: UUID, source: str,
+    pool: asyncpg.Pool,
+    *,
+    run_id: UUID,
+    tenant_id: UUID,
+    source: str,
 ) -> None:
     """Inject a source_onboarding_requested signal (simulates M6.1)."""
     await emit_signal(
@@ -179,7 +204,10 @@ async def _emit_source_requested(
 
 
 async def _emit_shard_completed(
-    pool: asyncpg.Pool, *, shard_id: UUID, status: str = "done",
+    pool: asyncpg.Pool,
+    *,
+    shard_id: UUID,
+    status: str = "done",
     failure_reason: str | None = None,
 ) -> None:
     """Inject a shard_fetch_completed signal (simulates Phase 2's
@@ -201,9 +229,15 @@ async def _emit_shard_completed(
 
 
 async def _seed_shard(
-    pool: asyncpg.Pool, *, run_id: UUID, tenant_id: UUID, source: str,
-    state: str = "pending", shard_kind: str = "slack_channel_window",
-    identifier: dict | None = None, last_error: str | None = None,
+    pool: asyncpg.Pool,
+    *,
+    run_id: UUID,
+    tenant_id: UUID,
+    source: str,
+    state: str = "pending",
+    shard_kind: str = "slack_channel_window",
+    identifier: dict | None = None,
+    last_error: str | None = None,
 ) -> UUID:
     """Seed an onboarding_shards row directly using the existing 0045
     schema columns (A15)."""
@@ -217,9 +251,15 @@ async def _seed_shard(
         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, now(),
                 CASE WHEN $8 IN ('done','failed') THEN now() ELSE NULL END)
         """,
-        shard_id, run_id, tenant_id, source, shard_kind,
+        shard_id,
+        run_id,
+        tenant_id,
+        source,
+        shard_kind,
         orjson.dumps(identifier or {"k": "v"}).decode("utf-8"),
-        1.0, state, last_error,
+        1.0,
+        state,
+        last_error,
     )
     return shard_id
 
@@ -243,8 +283,12 @@ class _CapturingProducer:
         self.published: list[tuple[str, bytes, bytes | None]] = []
 
     async def produce(
-        self, topic: str, value: bytes, *,
-        key: bytes | None = None, **_kw: Any,
+        self,
+        topic: str,
+        value: bytes,
+        *,
+        key: bytes | None = None,
+        **_kw: Any,
     ) -> None:
         self.published.append((topic, value, key))
 
@@ -253,12 +297,15 @@ class _CapturingProducer:
 
 
 def _service_p(
-    pool: asyncpg.Pool, producer: _CapturingProducer,
+    pool: asyncpg.Pool,
+    producer: _CapturingProducer,
 ) -> SourceOnboarding:
     return SourceOnboarding(
-        pool, kafka_producer=producer,
+        pool,
+        kafka_producer=producer,
         config=SourceOnboardingConfig(
-            tick_interval_seconds=0.01, max_signals_per_tick=20,
+            tick_interval_seconds=0.01,
+            max_signals_per_tick=20,
         ),
     )
 
@@ -286,8 +333,10 @@ async def _test_planner_empty(ctx: PlannerContext) -> list[Shard]:
 # 1. LOAD-BEARING — atomic new-request handling with test planner.
 # =====================================================================
 
+
 async def test_source_onboarding_handles_request_with_test_planner(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Emit source_onboarding_requested; tick service; assert in ONE
     Postgres-observable read that:
@@ -299,17 +348,25 @@ async def test_source_onboarding_handles_request_with_test_planner(
     All four changes are part of the same transaction (the service's
     per-signal claim_signals + writes block)."""
     monkeypatch.setitem(
-        PLANNER_DISPATCH, "slack", _test_planner_three_shards,
+        PLANNER_DISPATCH,
+        "slack",
+        _test_planner_three_shards,
     )
 
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
     run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
     await _seed_source_run(
-        fresh_db, run_id=run_id, source="slack", tenant_id=tid,
+        fresh_db,
+        run_id=run_id,
+        source="slack",
+        tenant_id=tid,
     )
     await _emit_source_requested(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
     )
 
     await _service(fresh_db).run(max_ticks=1)
@@ -321,9 +378,7 @@ async def test_source_onboarding_handles_request_with_test_planner(
         "ORDER BY created_at, id",
         run_id,
     )
-    assert len(shard_rows) == 3, (
-        f"Expected 3 shards; got {len(shard_rows)}."
-    )
+    assert len(shard_rows) == 3, f"Expected 3 shards; got {len(shard_rows)}."
     for row in shard_rows:
         assert row["state"] == "pending"
         assert row["shard_kind"] == "slack_channel_window"
@@ -331,28 +386,31 @@ async def test_source_onboarding_handles_request_with_test_planner(
         # shard_identifier is JSONB; asyncpg returns it as a string.
         ident_raw = row["shard_identifier"]
         ident = (
-            orjson.loads(ident_raw) if isinstance(ident_raw, (str, bytes))
+            orjson.loads(ident_raw)
+            if isinstance(ident_raw, (str, bytes))
             else dict(ident_raw)
         )
         assert "channel_id" in ident
 
     # (b) 3 shard_fetch_requested signals to ShardFetch inbox.
-    sig_count = int(await fresh_db.fetchval(
-        "SELECT count(*) FROM workflow_signals "
-        "WHERE workflow_kind = $1 AND workflow_id = $2 "
-        "AND signal_kind = $3",
-        SHARD_FETCH_INBOX_KIND, SHARD_FETCH_INBOX_ID,
-        SIGNAL_KIND_SHARD_REQUESTED,
-    ))
-    assert sig_count == 3, (
-        f"Expected 3 shard_fetch_requested signals; got {sig_count}."
+    sig_count = int(
+        await fresh_db.fetchval(
+            "SELECT count(*) FROM workflow_signals "
+            "WHERE workflow_kind = $1 AND workflow_id = $2 "
+            "AND signal_kind = $3",
+            SHARD_FETCH_INBOX_KIND,
+            SHARD_FETCH_INBOX_ID,
+            SIGNAL_KIND_SHARD_REQUESTED,
+        )
     )
+    assert sig_count == 3, f"Expected 3 shard_fetch_requested signals; got {sig_count}."
 
     # (c) source_onboarding_runs marked in_progress.
     status = await fresh_db.fetchval(
         "SELECT status FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "slack",
+        run_id,
+        "slack",
     )
     assert status == "in_progress"
 
@@ -361,8 +419,10 @@ async def test_source_onboarding_handles_request_with_test_planner(
         "SELECT consumed_at FROM workflow_signals "
         "WHERE workflow_kind = $1 AND workflow_id = $2 "
         "AND signal_kind = $3 AND idempotency_key = $4",
-        WORKFLOW_KIND, WORKFLOW_ID_INBOX,
-        SIGNAL_KIND_REQUESTED, f"{run_id}:slack",
+        WORKFLOW_KIND,
+        WORKFLOW_ID_INBOX,
+        SIGNAL_KIND_REQUESTED,
+        f"{run_id}:slack",
     )
     assert consumed_at is not None
 
@@ -371,8 +431,10 @@ async def test_source_onboarding_handles_request_with_test_planner(
 # 2. LOAD-BEARING — rollback on shard-insert failure (A12 contract).
 # =====================================================================
 
+
 async def test_source_onboarding_atomic_rollback_on_shard_insert_failure(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Monkeypatch _insert_shard to raise on the SECOND insert.
     Assert ALL four observable changes roll back:
@@ -387,20 +449,21 @@ async def test_source_onboarding_atomic_rollback_on_shard_insert_failure(
     integration level — same shape as M6.1's
     test_oauth_poller_atomic_rollback_on_signal_failure."""
     monkeypatch.setitem(
-        PLANNER_DISPATCH, "slack", _test_planner_three_shards,
+        PLANNER_DISPATCH,
+        "slack",
+        _test_planner_three_shards,
     )
 
     # Patch _insert_shard to raise on the second call.
     from services.ingest.ingestion.workflows import source_onboarding as so_module
+
     real = so_module._insert_shard
     call_count = {"n": 0}
 
     async def _failing_insert(*args, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 2:
-            raise RuntimeError(
-                "synthetic failure on 2nd insert — rollback test"
-            )
+            raise RuntimeError("synthetic failure on 2nd insert — rollback test")
         await real(*args, **kwargs)
 
     monkeypatch.setattr(so_module, "_insert_shard", _failing_insert)
@@ -409,10 +472,16 @@ async def test_source_onboarding_atomic_rollback_on_shard_insert_failure(
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
     run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
     await _seed_source_run(
-        fresh_db, run_id=run_id, source="slack", tenant_id=tid,
+        fresh_db,
+        run_id=run_id,
+        source="slack",
+        tenant_id=tid,
     )
     await _emit_source_requested(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
     )
 
     # The service surfaces the exception on tick.
@@ -420,28 +489,32 @@ async def test_source_onboarding_atomic_rollback_on_shard_insert_failure(
         await _service(fresh_db).run(max_ticks=1)
 
     # (a) NO shards survived rollback.
-    n_shards = int(await fresh_db.fetchval(
-        "SELECT count(*) FROM onboarding_shards WHERE onboarding_run_id = $1",
-        run_id,
-    ))
+    n_shards = int(
+        await fresh_db.fetchval(
+            "SELECT count(*) FROM onboarding_shards WHERE onboarding_run_id = $1",
+            run_id,
+        )
+    )
     assert n_shards == 0, (
         f"Atomic rollback broken: {n_shards} shard rows survived a "
         f"raised RuntimeError mid-transaction."
     )
 
     # (b) NO shard_fetch_requested signals survived.
-    n_sigs = int(await fresh_db.fetchval(
-        "SELECT count(*) FROM workflow_signals "
-        "WHERE signal_kind = $1",
-        SIGNAL_KIND_SHARD_REQUESTED,
-    ))
+    n_sigs = int(
+        await fresh_db.fetchval(
+            "SELECT count(*) FROM workflow_signals WHERE signal_kind = $1",
+            SIGNAL_KIND_SHARD_REQUESTED,
+        )
+    )
     assert n_sigs == 0
 
     # (c) source_onboarding_runs status still 'pending'.
     status = await fresh_db.fetchval(
         "SELECT status FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "slack",
+        run_id,
+        "slack",
     )
     assert status == "pending", (
         f"Parent run status leaked through rollback as {status!r}."
@@ -452,8 +525,10 @@ async def test_source_onboarding_atomic_rollback_on_shard_insert_failure(
         "SELECT consumed_at FROM workflow_signals "
         "WHERE workflow_kind = $1 AND workflow_id = $2 "
         "AND signal_kind = $3 AND idempotency_key = $4",
-        WORKFLOW_KIND, WORKFLOW_ID_INBOX,
-        SIGNAL_KIND_REQUESTED, f"{run_id}:slack",
+        WORKFLOW_KIND,
+        WORKFLOW_ID_INBOX,
+        SIGNAL_KIND_REQUESTED,
+        f"{run_id}:slack",
     )
     assert consumed_at is None, (
         "Signal consumed_at was set despite transaction rollback — "
@@ -465,8 +540,10 @@ async def test_source_onboarding_atomic_rollback_on_shard_insert_failure(
 # 3. NotImplementedError stub planner → run failed + completed-signal emitted.
 # =====================================================================
 
+
 async def test_source_onboarding_handles_not_implemented_planner(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Inject a not-implemented planner stub for slack and verify:
       (a) source_onboarding_runs marked 'failed' with informative
@@ -481,8 +558,10 @@ async def test_source_onboarding_handles_not_implemented_planner(
     raise-NotImplementedError handling.
     """
     from services.ingest.ingestion.planners import _not_implemented_planner
+
     monkeypatch.setitem(
-        PLANNER_DISPATCH, "slack",
+        PLANNER_DISPATCH,
+        "slack",
         _not_implemented_planner("slack", "M6.5"),
     )
 
@@ -490,10 +569,16 @@ async def test_source_onboarding_handles_not_implemented_planner(
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
     run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
     await _seed_source_run(
-        fresh_db, run_id=run_id, source="slack", tenant_id=tid,
+        fresh_db,
+        run_id=run_id,
+        source="slack",
+        tenant_id=tid,
     )
     await _emit_source_requested(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
     )
 
     await _service(fresh_db).run(max_ticks=1)
@@ -502,7 +587,8 @@ async def test_source_onboarding_handles_not_implemented_planner(
     row = await fresh_db.fetchrow(
         "SELECT status, failure_reason FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "slack",
+        run_id,
+        "slack",
     )
     assert row["status"] == "failed"
     assert "M6.5" in (row["failure_reason"] or ""), (
@@ -515,14 +601,15 @@ async def test_source_onboarding_handles_not_implemented_planner(
         "SELECT signal_data FROM workflow_signals "
         "WHERE workflow_kind = $1 AND workflow_id = $2 "
         "AND signal_kind = $3 AND idempotency_key = $4",
-        TENANT_ONBOARDING_INBOX_KIND, TENANT_ONBOARDING_INBOX_ID,
-        SIGNAL_KIND_COMPLETED, f"{run_id}:slack",
+        TENANT_ONBOARDING_INBOX_KIND,
+        TENANT_ONBOARDING_INBOX_ID,
+        SIGNAL_KIND_COMPLETED,
+        f"{run_id}:slack",
     )
     assert completion is not None
     data_raw = completion["signal_data"]
     data = (
-        orjson.loads(data_raw) if isinstance(data_raw, (str, bytes))
-        else dict(data_raw)
+        orjson.loads(data_raw) if isinstance(data_raw, (str, bytes)) else dict(data_raw)
     )
     assert "M6.5" in data.get("failure_reason", "")
     assert (
@@ -535,10 +622,12 @@ async def test_source_onboarding_handles_not_implemented_planner(
     )
 
     # (c) NO shards created — the stub raised before any insert.
-    n_shards = int(await fresh_db.fetchval(
-        "SELECT count(*) FROM onboarding_shards WHERE onboarding_run_id = $1",
-        run_id,
-    ))
+    n_shards = int(
+        await fresh_db.fetchval(
+            "SELECT count(*) FROM onboarding_shards WHERE onboarding_run_id = $1",
+            run_id,
+        )
+    )
     assert n_shards == 0
 
 
@@ -546,8 +635,10 @@ async def test_source_onboarding_handles_not_implemented_planner(
 # 3b. Unexpected planner exception → run failed + service keeps serving.
 # =====================================================================
 
+
 async def test_source_onboarding_handles_unexpected_planner_exception(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Per A19: framework dispatch call sites catch Exception, not
     narrow subclasses. Verify that a planner raising RuntimeError
@@ -558,6 +649,7 @@ async def test_source_onboarding_handles_unexpected_planner_exception(
     Load-bearing test for the 29b797c fix that broadened
     SourceOnboarding's planner exception handler.
     """
+
     async def _exploding_planner(ctx):
         raise RuntimeError("simulated planner failure")
 
@@ -567,10 +659,16 @@ async def test_source_onboarding_handles_unexpected_planner_exception(
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
     run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
     await _seed_source_run(
-        fresh_db, run_id=run_id, source="slack", tenant_id=tid,
+        fresh_db,
+        run_id=run_id,
+        source="slack",
+        tenant_id=tid,
     )
     await _emit_source_requested(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
     )
 
     # Service does NOT crash — tick completes normally.
@@ -579,13 +677,13 @@ async def test_source_onboarding_handles_unexpected_planner_exception(
     row = await fresh_db.fetchrow(
         "SELECT status, failure_reason FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "slack",
+        run_id,
+        "slack",
     )
     assert row["status"] == "failed"
     failure_reason = row["failure_reason"] or ""
     assert "RuntimeError" in failure_reason, (
-        f"failure_reason should contain exception type name; "
-        f"got {failure_reason!r}"
+        f"failure_reason should contain exception type name; got {failure_reason!r}"
     )
     assert "simulated planner failure" in failure_reason
 
@@ -593,14 +691,15 @@ async def test_source_onboarding_handles_unexpected_planner_exception(
         "SELECT signal_data FROM workflow_signals "
         "WHERE workflow_kind = $1 AND workflow_id = $2 "
         "AND signal_kind = $3 AND idempotency_key = $4",
-        TENANT_ONBOARDING_INBOX_KIND, TENANT_ONBOARDING_INBOX_ID,
-        SIGNAL_KIND_COMPLETED, f"{run_id}:slack",
+        TENANT_ONBOARDING_INBOX_KIND,
+        TENANT_ONBOARDING_INBOX_ID,
+        SIGNAL_KIND_COMPLETED,
+        f"{run_id}:slack",
     )
     assert completion is not None
     data_raw = completion["signal_data"]
     data = (
-        orjson.loads(data_raw) if isinstance(data_raw, (str, bytes))
-        else dict(data_raw)
+        orjson.loads(data_raw) if isinstance(data_raw, (str, bytes)) else dict(data_raw)
     )
     assert "RuntimeError" in data.get("failure_reason", "")
 
@@ -609,8 +708,10 @@ async def test_source_onboarding_handles_unexpected_planner_exception(
 # 4. Empty planner result → immediate success.
 # =====================================================================
 
+
 async def test_source_onboarding_handles_empty_planner_result(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Test planner returns []; assert run immediately completes
     (source has nothing to fetch — edge case)."""
@@ -619,13 +720,21 @@ async def test_source_onboarding_handles_empty_planner_result(
     tid = await _seed_tenant(fresh_db)
     await _seed_gmail_install(fresh_db, tenant_id=tid)
     run_id = await _seed_onboarding_run(
-        fresh_db, tenant_id=tid, source="gmail",
+        fresh_db,
+        tenant_id=tid,
+        source="gmail",
     )
     await _seed_source_run(
-        fresh_db, run_id=run_id, source="gmail", tenant_id=tid,
+        fresh_db,
+        run_id=run_id,
+        source="gmail",
+        tenant_id=tid,
     )
     await _emit_source_requested(
-        fresh_db, run_id=run_id, tenant_id=tid, source="gmail",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="gmail",
     )
 
     await _service(fresh_db).run(max_ticks=1)
@@ -634,7 +743,8 @@ async def test_source_onboarding_handles_empty_planner_result(
     status = await fresh_db.fetchval(
         "SELECT status FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "gmail",
+        run_id,
+        "gmail",
     )
     assert status == "completed"
 
@@ -645,29 +755,33 @@ async def test_source_onboarding_handles_empty_planner_result(
         "SELECT signal_data FROM workflow_signals "
         "WHERE workflow_kind = $1 AND workflow_id = $2 "
         "AND signal_kind = $3 AND idempotency_key = $4",
-        RECONCILER_INBOX_KIND, RECONCILER_INBOX_ID,
-        SIGNAL_KIND_SHARDS_COMPLETED, f"{run_id}:gmail:pass_0",
+        RECONCILER_INBOX_KIND,
+        RECONCILER_INBOX_ID,
+        SIGNAL_KIND_SHARDS_COMPLETED,
+        f"{run_id}:gmail:pass_0",
     )
     assert completion is not None
     data_raw = completion["signal_data"]
     data = (
-        orjson.loads(data_raw) if isinstance(data_raw, (str, bytes))
-        else dict(data_raw)
+        orjson.loads(data_raw) if isinstance(data_raw, (str, bytes)) else dict(data_raw)
     )
     # No failure_reason on the success path.
     assert "failure_reason" not in data
 
     # No shards.
-    n_shards = int(await fresh_db.fetchval(
-        "SELECT count(*) FROM onboarding_shards WHERE onboarding_run_id = $1",
-        run_id,
-    ))
+    n_shards = int(
+        await fresh_db.fetchval(
+            "SELECT count(*) FROM onboarding_shards WHERE onboarding_run_id = $1",
+            run_id,
+        )
+    )
     assert n_shards == 0
 
 
 # =====================================================================
 # 5. Completion roll-up — all shards 'done' → run 'completed'.
 # =====================================================================
+
 
 async def test_source_onboarding_completes_when_all_shards_done(
     fresh_db: asyncpg.Pool,
@@ -681,22 +795,35 @@ async def test_source_onboarding_completes_when_all_shards_done(
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="github")
     run_id = await _seed_onboarding_run(
-        fresh_db, tenant_id=tid, source="github",
+        fresh_db,
+        tenant_id=tid,
+        source="github",
     )
     await _seed_source_run(
-        fresh_db, run_id=run_id, source="github", tenant_id=tid,
+        fresh_db,
+        run_id=run_id,
+        source="github",
+        tenant_id=tid,
         status="in_progress",
     )
     # 3 'done' shards.
     for _ in range(3):
         await _seed_shard(
-            fresh_db, run_id=run_id, tenant_id=tid, source="github",
-            state="done", shard_kind="github_repo_events",
+            fresh_db,
+            run_id=run_id,
+            tenant_id=tid,
+            source="github",
+            state="done",
+            shard_kind="github_repo_events",
         )
     # 1 'in_progress' shard — the one whose completion we'll emit.
     last_shard = await _seed_shard(
-        fresh_db, run_id=run_id, tenant_id=tid, source="github",
-        state="in_progress", shard_kind="github_repo_events",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="github",
+        state="in_progress",
+        shard_kind="github_repo_events",
     )
 
     await _emit_shard_completed(fresh_db, shard_id=last_shard, status="done")
@@ -705,7 +832,8 @@ async def test_source_onboarding_completes_when_all_shards_done(
 
     # (a) Last shard now 'done'.
     last_state = await fresh_db.fetchval(
-        "SELECT state FROM onboarding_shards WHERE id = $1", last_shard,
+        "SELECT state FROM onboarding_shards WHERE id = $1",
+        last_shard,
     )
     assert last_state == "done"
 
@@ -713,26 +841,32 @@ async def test_source_onboarding_completes_when_all_shards_done(
     status = await fresh_db.fetchval(
         "SELECT status FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "github",
+        run_id,
+        "github",
     )
     assert status == "completed"
 
     # (c) M6.2b chain change: success path emits source_shards_completed
     # to Reconciler inbox (not source_onboarding_completed). pass_count
     # is 0 (no re-shares yet for this run).
-    n_emits = int(await fresh_db.fetchval(
-        "SELECT count(*) FROM workflow_signals "
-        "WHERE workflow_kind = $1 AND workflow_id = $2 "
-        "AND signal_kind = $3 AND idempotency_key = $4",
-        RECONCILER_INBOX_KIND, RECONCILER_INBOX_ID,
-        SIGNAL_KIND_SHARDS_COMPLETED, f"{run_id}:github:pass_0",
-    ))
+    n_emits = int(
+        await fresh_db.fetchval(
+            "SELECT count(*) FROM workflow_signals "
+            "WHERE workflow_kind = $1 AND workflow_id = $2 "
+            "AND signal_kind = $3 AND idempotency_key = $4",
+            RECONCILER_INBOX_KIND,
+            RECONCILER_INBOX_ID,
+            SIGNAL_KIND_SHARDS_COMPLETED,
+            f"{run_id}:github:pass_0",
+        )
+    )
     assert n_emits == 1
 
 
 # =====================================================================
 # 6. Failure roll-up — any shard 'failed' → run 'failed'.
 # =====================================================================
+
 
 async def test_source_onboarding_marks_run_failed_if_any_shard_failed(
     fresh_db: asyncpg.Pool,
@@ -746,25 +880,42 @@ async def test_source_onboarding_marks_run_failed_if_any_shard_failed(
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="github")
     run_id = await _seed_onboarding_run(
-        fresh_db, tenant_id=tid, source="github",
+        fresh_db,
+        tenant_id=tid,
+        source="github",
     )
     await _seed_source_run(
-        fresh_db, run_id=run_id, source="github", tenant_id=tid,
+        fresh_db,
+        run_id=run_id,
+        source="github",
+        tenant_id=tid,
         status="in_progress",
     )
     for _ in range(2):
         await _seed_shard(
-            fresh_db, run_id=run_id, tenant_id=tid, source="github",
-            state="done", shard_kind="github_repo_events",
+            fresh_db,
+            run_id=run_id,
+            tenant_id=tid,
+            source="github",
+            state="done",
+            shard_kind="github_repo_events",
         )
     await _seed_shard(
-        fresh_db, run_id=run_id, tenant_id=tid, source="github",
-        state="failed", shard_kind="github_repo_events",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="github",
+        state="failed",
+        shard_kind="github_repo_events",
         last_error="repo permission denied",
     )
     last_shard = await _seed_shard(
-        fresh_db, run_id=run_id, tenant_id=tid, source="github",
-        state="in_progress", shard_kind="github_repo_events",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="github",
+        state="in_progress",
+        shard_kind="github_repo_events",
     )
     await _emit_shard_completed(fresh_db, shard_id=last_shard, status="done")
 
@@ -773,11 +924,11 @@ async def test_source_onboarding_marks_run_failed_if_any_shard_failed(
     row = await fresh_db.fetchrow(
         "SELECT status, failure_reason FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "github",
+        run_id,
+        "github",
     )
     assert row["status"] == "failed", (
-        f"Run status should be 'failed' when any sibling failed; "
-        f"got {row['status']!r}."
+        f"Run status should be 'failed' when any sibling failed; got {row['status']!r}."
     )
     assert "repo permission denied" in (row["failure_reason"] or "")
 
@@ -785,6 +936,7 @@ async def test_source_onboarding_marks_run_failed_if_any_shard_failed(
 # =====================================================================
 # 7. Concurrent shard-completion signals → exactly one parent emit.
 # =====================================================================
+
 
 async def test_source_onboarding_concurrent_completion_signals(
     fresh_db: asyncpg.Pool,
@@ -799,16 +951,25 @@ async def test_source_onboarding_concurrent_completion_signals(
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="discord")
     run_id = await _seed_onboarding_run(
-        fresh_db, tenant_id=tid, source="discord",
+        fresh_db,
+        tenant_id=tid,
+        source="discord",
     )
     await _seed_source_run(
-        fresh_db, run_id=run_id, source="discord", tenant_id=tid,
+        fresh_db,
+        run_id=run_id,
+        source="discord",
+        tenant_id=tid,
         status="in_progress",
     )
     shard_ids = [
         await _seed_shard(
-            fresh_db, run_id=run_id, tenant_id=tid, source="discord",
-            state="in_progress", shard_kind="discord_channel_window",
+            fresh_db,
+            run_id=run_id,
+            tenant_id=tid,
+            source="discord",
+            state="in_progress",
+            shard_kind="discord_channel_window",
         )
         for _ in range(3)
     ]
@@ -829,13 +990,17 @@ async def test_source_onboarding_concurrent_completion_signals(
     # to Reconciler inbox. The idempotency-key dedup test still holds
     # — only one rollup emit per run+source+pass_count across
     # concurrent SourceOnboarding replicas.
-    n_emits = int(await fresh_db.fetchval(
-        "SELECT count(*) FROM workflow_signals "
-        "WHERE workflow_kind = $1 AND workflow_id = $2 "
-        "AND signal_kind = $3 AND idempotency_key = $4",
-        RECONCILER_INBOX_KIND, RECONCILER_INBOX_ID,
-        SIGNAL_KIND_SHARDS_COMPLETED, f"{run_id}:discord:pass_0",
-    ))
+    n_emits = int(
+        await fresh_db.fetchval(
+            "SELECT count(*) FROM workflow_signals "
+            "WHERE workflow_kind = $1 AND workflow_id = $2 "
+            "AND signal_kind = $3 AND idempotency_key = $4",
+            RECONCILER_INBOX_KIND,
+            RECONCILER_INBOX_ID,
+            SIGNAL_KIND_SHARDS_COMPLETED,
+            f"{run_id}:discord:pass_0",
+        )
+    )
     assert n_emits == 1, (
         f"Expected exactly one source_shards_completed emit "
         f"under concurrent completion-signal drains; got {n_emits}. "
@@ -844,18 +1009,21 @@ async def test_source_onboarding_concurrent_completion_signals(
     )
 
     # All shards 'done'.
-    n_done = int(await fresh_db.fetchval(
-        "SELECT count(*) FROM onboarding_shards "
-        "WHERE onboarding_run_id = $1 AND state = 'done'",
-        run_id,
-    ))
+    n_done = int(
+        await fresh_db.fetchval(
+            "SELECT count(*) FROM onboarding_shards "
+            "WHERE onboarding_run_id = $1 AND state = 'done'",
+            run_id,
+        )
+    )
     assert n_done == 3
 
     # Parent run 'completed'.
     status = await fresh_db.fetchval(
         "SELECT status FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "discord",
+        run_id,
+        "discord",
     )
     assert status == "completed"
 
@@ -863,6 +1031,7 @@ async def test_source_onboarding_concurrent_completion_signals(
 # =====================================================================
 # 8. Edge case — install was disabled between trigger and pickup.
 # =====================================================================
+
 
 async def test_source_onboarding_handles_missing_install(
     fresh_db: asyncpg.Pool,
@@ -875,10 +1044,16 @@ async def test_source_onboarding_handles_missing_install(
     # No provider_install seeded.
     run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
     await _seed_source_run(
-        fresh_db, run_id=run_id, source="slack", tenant_id=tid,
+        fresh_db,
+        run_id=run_id,
+        source="slack",
+        tenant_id=tid,
     )
     await _emit_source_requested(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
     )
 
     await _service(fresh_db).run(max_ticks=1)
@@ -886,7 +1061,8 @@ async def test_source_onboarding_handles_missing_install(
     row = await fresh_db.fetchrow(
         "SELECT status, failure_reason FROM source_onboarding_runs "
         "WHERE onboarding_run_id = $1 AND source = $2",
-        run_id, "slack",
+        run_id,
+        "slack",
     )
     assert row["status"] == "failed"
     assert "No active install" in (row["failure_reason"] or "")
@@ -896,8 +1072,10 @@ async def test_source_onboarding_handles_missing_install(
         "SELECT signal_data FROM workflow_signals "
         "WHERE workflow_kind = $1 AND workflow_id = $2 "
         "AND signal_kind = $3 AND idempotency_key = $4",
-        TENANT_ONBOARDING_INBOX_KIND, TENANT_ONBOARDING_INBOX_ID,
-        SIGNAL_KIND_COMPLETED, f"{run_id}:slack",
+        TENANT_ONBOARDING_INBOX_KIND,
+        TENANT_ONBOARDING_INBOX_ID,
+        SIGNAL_KIND_COMPLETED,
+        f"{run_id}:slack",
     )
     assert completion is not None
 
@@ -905,6 +1083,7 @@ async def test_source_onboarding_handles_missing_install(
 # =====================================================================
 # 9. Pattern-alignment analyzer accepts source_onboarding.py.
 # =====================================================================
+
 
 def test_source_onboarding_passes_pattern_alignment_analyzer() -> None:
     """The M6.0 static analyzer must accept source_onboarding.py."""
@@ -929,8 +1108,10 @@ def test_source_onboarding_passes_pattern_alignment_analyzer() -> None:
 # 10. Progress event — `source.onboarding.started`.
 # =====================================================================
 
+
 async def test_source_onboarding_emits_source_started_progress_event(
-    fresh_db: asyncpg.Pool, monkeypatch: pytest.MonkeyPatch,
+    fresh_db: asyncpg.Pool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A successful plan publishes exactly one `source.onboarding.started`
     on onboarding.progress, carrying the planned shard count."""
@@ -942,16 +1123,24 @@ async def test_source_onboarding_emits_source_started_progress_event(
     )
 
     monkeypatch.setitem(
-        PLANNER_DISPATCH, "slack", _test_planner_three_shards,
+        PLANNER_DISPATCH,
+        "slack",
+        _test_planner_three_shards,
     )
     tid = await _seed_tenant(fresh_db)
     await _seed_provider_install(fresh_db, tenant_id=tid, provider="slack")
     run_id = await _seed_onboarding_run(fresh_db, tenant_id=tid)
     await _seed_source_run(
-        fresh_db, run_id=run_id, source="slack", tenant_id=tid,
+        fresh_db,
+        run_id=run_id,
+        source="slack",
+        tenant_id=tid,
     )
     await _emit_source_requested(
-        fresh_db, run_id=run_id, tenant_id=tid, source="slack",
+        fresh_db,
+        run_id=run_id,
+        tenant_id=tid,
+        source="slack",
     )
 
     producer = _CapturingProducer()
@@ -960,8 +1149,7 @@ async def test_source_onboarding_emits_source_started_progress_event(
     started = [
         SourceOnboardingStarted.model_validate_json(val)
         for topic, val, _ in producer.published
-        if topic == TOPIC_ONBOARDING_PROGRESS
-        and b"source.onboarding.started" in val
+        if topic == TOPIC_ONBOARDING_PROGRESS and b"source.onboarding.started" in val
     ]
     assert len(started) == 1, (
         f"Expected one source.onboarding.started; got {len(started)}. "

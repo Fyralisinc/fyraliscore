@@ -45,6 +45,7 @@ objects (deleted / un-shared since the event fired) are logged and
 acknowledged with 200 WITHOUT a write — backfill/poll covers the rest of
 the tree on its cadence.
 """
+
 from __future__ import annotations
 
 from typing import Any, Mapping
@@ -69,6 +70,7 @@ log = structlog.get_logger("integrations.notion.webhook")
 # ---------------------------------------------------------------------
 # Verification handshake (unsigned, intercepted pre-verify)
 # ---------------------------------------------------------------------
+
 
 def is_verification_handshake(payload: Mapping[str, Any] | None) -> bool:
     """True for Notion's one-time subscription verification POST.
@@ -110,6 +112,7 @@ def handle_verification_handshake(
 # ---------------------------------------------------------------------
 # Event path (verified, tenant-resolved)
 # ---------------------------------------------------------------------
+
 
 def _entity(payload: Mapping[str, Any]) -> tuple[str | None, str | None]:
     """Extract ``(entity_id, entity_type)`` from a Notion event payload."""
@@ -171,7 +174,9 @@ async def handle_notion_event(
             status_code=200,
         )
 
-    client = await _build_workspace_client(outcome, str(workspace_id) if workspace_id else None)
+    client = await _build_workspace_client(
+        outcome, str(workspace_id) if workspace_id else None
+    )
     try:
         page = await client.retrieve_page(entity_id)
     except NotionApiError as exc:
@@ -206,6 +211,7 @@ async def handle_notion_event(
     written = await _shadow_write_page(
         request,
         tenant_id=outcome.tenant_id,
+        connector_installation_id=outcome.installation_row_id,
         page=page,
         event_type=event_type,
         entity_id=entity_id,
@@ -224,6 +230,7 @@ async def _shadow_write_page(
     request: Request,
     *,
     tenant_id: Any,
+    connector_installation_id: Any,
     page: dict[str, Any],
     event_type: str | None,
     entity_id: str,
@@ -248,6 +255,7 @@ async def _shadow_write_page(
             tenant_id=tenant_id,
             source="notion",
             ingress_kind="webhook",
+            connector_installation_id=connector_installation_id,
             raw_body=orjson.dumps(page),
             s3_client=ndp.s3_client,
             kafka_producer=ndp.producer,

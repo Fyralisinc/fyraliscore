@@ -48,6 +48,16 @@ BehaviorCheck = Callable[[], Awaitable[None]]
 @dataclass(frozen=True)
 class BehavioralFixture:
     checks: Mapping[str, BehaviorCheck]
+    required_behaviors: tuple[str, ...] = REQUIRED_BEHAVIORS
+
+    def __post_init__(self) -> None:
+        if len(self.required_behaviors) != len(set(self.required_behaviors)):
+            raise ValueError("required behavioral checks must be unique")
+        unknown = set(self.required_behaviors) - set(REQUIRED_BEHAVIORS)
+        if unknown:
+            raise ValueError(
+                f"unknown required behavioral checks: {tuple(sorted(unknown))}"
+            )
 
 
 def canonical(value: Any) -> str:
@@ -160,10 +170,10 @@ class BehavioralConformanceSuite:
         fixture: BehavioralFixture,
     ) -> ConformanceReport:
         checks: list[ConformanceCheck] = []
-        unknown = set(fixture.checks) - set(REQUIRED_BEHAVIORS)
+        unknown = set(fixture.checks) - set(fixture.required_behaviors)
         if unknown:
             raise ValueError(f"unknown behavioral checks: {tuple(sorted(unknown))}")
-        for name in REQUIRED_BEHAVIORS:
+        for name in fixture.required_behaviors:
             operation = fixture.checks.get(name)
             if operation is None:
                 checks.append(

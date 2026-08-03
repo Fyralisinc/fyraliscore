@@ -21,6 +21,7 @@ then verify over the raw bytes — the phone_number_id is not a secret, so this 
 safe (an attacker can't forge the HMAC without the app secret). Set
 WHATSAPP_ALLOW_UNSIGNED=1 to bypass verification for local debugging only.
 """
+
 from __future__ import annotations
 
 import json
@@ -190,7 +191,9 @@ def _first_phone_number_id(payload: dict[str, Any]) -> str | None:
     return None
 
 
-async def _lookup_installation(pool: Any, phone_number_id: str) -> dict[str, Any] | None:
+async def _lookup_installation(
+    pool: Any, phone_number_id: str
+) -> dict[str, Any] | None:
     """Resolve a phone_number_id -> installation row before tenant context exists."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -284,6 +287,7 @@ async def _publish_items_kafka(
     items: list[dict[str, Any]],
     *,
     tenant_id: UUID,
+    connector_installation_id: UUID,
     phone_number_id: str,
     kafka_producer: Any,
     s3_client: Any,
@@ -301,12 +305,18 @@ async def _publish_items_kafka(
                 tenant_id=tenant_id,
                 source="whatsapp",  # type: ignore[arg-type]  — in SourceLiteral
                 ingress_kind="webhook",
+                connector_installation_id=connector_installation_id,
                 raw_body=raw_body,
                 s3_client=s3_client,
                 kafka_producer=kafka_producer,
-                ingress_metadata={"event_type": event_type, "phone_number_id": phone_number_id},
+                ingress_metadata={
+                    "event_type": event_type,
+                    "phone_number_id": phone_number_id,
+                },
             )
-        remaining = await coalesced_flush(kafka_producer, timeout_seconds=CUTOVER_FLUSH_TIMEOUT_SEC)
+        remaining = await coalesced_flush(
+            kafka_producer, timeout_seconds=CUTOVER_FLUSH_TIMEOUT_SEC
+        )
         if remaining:
             log.warning("whatsapp.kafka_flush_incomplete", remaining=remaining)
             return False
@@ -443,7 +453,9 @@ def build_whatsapp_router(*, debug_endpoints_enabled: bool = False) -> APIRouter
         install = await _lookup_installation(deps.pool, phone_number_id)
         if install is None or not install.get("enabled"):
             # Unknown/disabled number — ack 200 so Meta stops retrying, but record it.
-            log.warning("whatsapp.unknown_installation", phone_number_id=phone_number_id)
+            log.warning(
+                "whatsapp.unknown_installation", phone_number_id=phone_number_id
+            )
             return JSONResponse(
                 {"status": "ignored", "reason": "unknown_or_disabled_installation"},
                 status_code=200,
@@ -451,6 +463,7 @@ def build_whatsapp_router(*, debug_endpoints_enabled: bool = False) -> APIRouter
 
         allow_unsigned = _unsigned_webhooks_allowed()
         if not allow_unsigned:
+
             async def legacy_verify() -> bool:
                 try:
                     secret_store = _secret_store_for_request(request, deps.pool)
@@ -504,7 +517,9 @@ def build_whatsapp_router(*, debug_endpoints_enabled: bool = False) -> APIRouter
                     {"status": "verification_unavailable"}, status_code=503
                 )
             if not verified:
-                log.warning("whatsapp.signature_invalid", phone_number_id=phone_number_id)
+                log.warning(
+                    "whatsapp.signature_invalid", phone_number_id=phone_number_id
+                )
                 return JSONResponse({"status": "signature_invalid"}, status_code=401)
 
         tenant_id: UUID = install["tenant_id"]
@@ -517,7 +532,9 @@ def build_whatsapp_router(*, debug_endpoints_enabled: bool = False) -> APIRouter
         items: list[dict[str, Any]] = []
         n_messages = n_statuses = 0
         for value in _iter_change_values(payload):
-            metadata = value.get("metadata") if isinstance(value.get("metadata"), dict) else {}
+            metadata = (
+                value.get("metadata") if isinstance(value.get("metadata"), dict) else {}
+            )
             contacts = value.get("contacts") or []
             for msg in value.get("messages") or []:
                 if isinstance(msg, dict):
@@ -553,6 +570,7 @@ def build_whatsapp_router(*, debug_endpoints_enabled: bool = False) -> APIRouter
         if use_kafka and await _publish_items_kafka(
             items,
             tenant_id=tenant_id,
+            connector_installation_id=install["id"],
             phone_number_id=phone_number_id,
             kafka_producer=kafka_producer,
             s3_client=s3_client,
@@ -622,7 +640,10 @@ def build_whatsapp_router(*, debug_endpoints_enabled: bool = False) -> APIRouter
             phone_number_id = str(body["phone_number_id"])
         except (KeyError, ValueError):
             return JSONResponse(
-                {"status": "missing_or_bad", "need": ["tenant_id (uuid)", "phone_number_id"]},
+                {
+                    "status": "missing_or_bad",
+                    "need": ["tenant_id (uuid)", "phone_number_id"],
+                },
                 status_code=400,
             )
         if not phone_number_id:
@@ -741,13 +762,13 @@ def build_whatsapp_router(*, debug_endpoints_enabled: bool = False) -> APIRouter
                     """
                     INSERT INTO source_connector_authority_grants (
                       installation_id, tenant_id, connector_id,
-                      credential_owner, granted_secret_slots,
+                      credential_owner, granted_slot_names,
                       maximum_trust_tier, provenance
                     ) VALUES ($1, $2, 'fyralis/whatsapp',
                               'whatsapp_installations', ARRAY['app_secret']::text[],
                               'attested_agent', $3::jsonb)
                     ON CONFLICT (installation_id) DO UPDATE
-                      SET granted_secret_slots = EXCLUDED.granted_secret_slots,
+                      SET granted_slot_names = EXCLUDED.granted_slot_names,
                           revoked_at = NULL,
                           authority_generation =
                             source_connector_authority_grants.authority_generation + 1,
@@ -840,11 +861,17 @@ def build_whatsapp_router(*, debug_endpoints_enabled: bool = False) -> APIRouter
                     "source_actor_ref": r["source_actor_ref"],
                     "content_text": r["content_text"],
                     "content": content,
-                    "occurred_at": r["occurred_at"].isoformat() if r["occurred_at"] else None,
-                    "ingested_at": r["ingested_at"].isoformat() if r["ingested_at"] else None,
+                    "occurred_at": r["occurred_at"].isoformat()
+                    if r["occurred_at"]
+                    else None,
+                    "ingested_at": r["ingested_at"].isoformat()
+                    if r["ingested_at"]
+                    else None,
                 }
             )
-        return JSONResponse({"tenant_id": str(tenant_uuid), "observations": observations})
+        return JSONResponse(
+            {"tenant_id": str(tenant_uuid), "observations": observations}
+        )
 
     return router
 

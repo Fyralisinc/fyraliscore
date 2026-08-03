@@ -6,8 +6,6 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from services.ingest.connectors import native
-
 from services.ingest.connector_platform.execution import LegacyExecutionRouter
 from services.ingest.connector_platform.pilots import build_pilot_composition
 from services.ingest.connector_runtime.host_services import HostServicesFactory
@@ -16,7 +14,8 @@ from services.ingest.connector_runtime.policy import ExecutionMode, RoutingPolic
 from services.ingest.connector_runtime.shadow import InMemoryShadowReportSink
 from services.ingest.source_contract.errors import BindingError
 from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
+from services.ingest.source_contract.errors import PermissionDeniedError
+from services.ingest.source_contract.host_services import SecretValue
 
 
 def _install(source: str) -> dict:
@@ -30,46 +29,9 @@ def _install(source: str) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_planner_and_fetcher_execute_end_to_end_through_registry(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_planner_and_fetcher_execute_end_to_end_through_registry() -> None:
     install = _install("slack")
     planner_context = SimpleNamespace(install=install)
-    planner_calls = 0
-    fetch_calls = 0
-
-    async def planner(_context):
-        nonlocal planner_calls
-        planner_calls += 1
-        return [
-            Shard(
-                shard_kind="slack_channel_window",
-                shard_identifier={"channel_id": "C1"},
-            )
-        ]
-
-    async def fetcher(_install, _identifier, _cursor):
-        nonlocal fetch_calls
-        fetch_calls += 1
-        return FetchResult(
-            records=[
-                {
-                    "type": "event_callback",
-                    "event": {
-                        "type": "message",
-                        "channel": "C1",
-                        "ts": "1700000000.000001",
-                        "text": "hello",
-                    },
-                }
-            ],
-            end_of_data=True,
-        )
-
-    monkeypatch.setitem(PLANNER_DISPATCH, "slack", planner)
-    monkeypatch.setitem(FETCHER_DISPATCH, "slack", fetcher)
-    monkeypatch.setattr(native, "plan_shards_slack", planner)
-    monkeypatch.setattr(native, "fetch_page_slack", fetcher)
     policy = RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)
     composition = build_pilot_composition(policy)
     metrics: list[tuple[str, tuple]] = []
@@ -77,12 +39,43 @@ async def test_planner_and_fetcher_execute_end_to_end_through_registry(
     def increment(name, _value, attributes):
         metrics.append((name, attributes))
 
-    async with httpx.AsyncClient() as client:
+    async def provider(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("conversations.list"):
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "channels": [{"id": "C1", "name": "general"}],
+                    "response_metadata": {"next_cursor": ""},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "messages": [
+                    {
+                        "type": "message",
+                        "ts": "1700000000.000001",
+                        "text": "hello",
+                    }
+                ],
+                "response_metadata": {"next_cursor": ""},
+            },
+        )
+
+    async def read_secret(_installation, slot):
+        if str(slot) == "oauth_user_access_token":
+            raise PermissionDeniedError("fixture has no user token")
+        return SecretValue.from_text("xoxb")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as client:
         router = LegacyExecutionRouter(
             composition,
             HostServicesFactory(
                 http_client=client,
                 metric_incrementer=increment,
+                secret_reader=read_secret,
             ),
         )
         shards = await router.plan("slack", planner_context)
@@ -94,8 +87,6 @@ async def test_planner_and_fetcher_execute_end_to_end_through_registry(
             shard_kind=shards[0].shard_kind,
         )
 
-    assert planner_calls == 1
-    assert fetch_calls == 1
     assert shards[0].shard_kind == "slack_channel_window"
     assert page.end_of_data
     assert page.records[0]["event"]["text"] == "hello"
@@ -118,21 +109,39 @@ async def test_shadow_fetch_compares_cursor_and_publication_without_cutover(
         nonlocal calls
         calls += 1
         return FetchResult(
-            records=[{"object": "page", "id": "page-1"}],
-            next_cursor={"cursor": "next"},
-            end_of_data=False,
+            records=[{"object": "page", "_fyralis_workspace_id": "w1"}],
+            next_cursor={
+                "stack": [],
+                "items_seen": 1,
+                "last_edited_at": None,
+                "seeded": True,
+            },
+            end_of_data=True,
         )
 
     monkeypatch.setitem(FETCHER_DISPATCH, "notion", fetcher)
-    monkeypatch.setattr(native, "fetch_page_notion", fetcher)
     composition = build_pilot_composition(
         RoutingPolicy(global_mode=ExecutionMode.SHADOW)
     )
     sink = InMemoryShadowReportSink()
-    async with httpx.AsyncClient() as client:
+
+    async def provider(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [{"object": "page"}],
+                "has_more": False,
+                "next_cursor": None,
+            },
+        )
+
+    async def read_secret(_installation, _slot):
+        return SecretValue.from_text("notion-token")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as client:
         router = LegacyExecutionRouter(
             composition,
-            HostServicesFactory(http_client=client),
+            HostServicesFactory(http_client=client, secret_reader=read_secret),
             shadow_sink=sink,
         )
         result = await router.fetch(
@@ -143,27 +152,16 @@ async def test_shadow_fetch_compares_cursor_and_publication_without_cutover(
             shadow_safe=True,
         )
 
-    assert calls == 2
-    assert result.records == [{"object": "page", "id": "page-1"}]
+    assert calls == 1
+    assert result.records == [{"object": "page", "_fyralis_workspace_id": "w1"}]
     assert sink.reports[0].matches
 
 
 @pytest.mark.asyncio
-async def test_pilot_binding_rejects_install_without_credential_grant(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_pilot_binding_rejects_install_without_credential_grant() -> None:
     install = _install("slack")
     install["secret_ref"] = None
     planner_context = SimpleNamespace(install=install)
-    calls = 0
-
-    async def planner(_context):
-        nonlocal calls
-        calls += 1
-        return []
-
-    monkeypatch.setitem(PLANNER_DISPATCH, "slack", planner)
-    monkeypatch.setattr(native, "plan_shards_slack", planner)
     async with httpx.AsyncClient() as client:
         router = LegacyExecutionRouter(
             build_pilot_composition(RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)),
@@ -172,13 +170,9 @@ async def test_pilot_binding_rejects_install_without_credential_grant(
         with pytest.raises(BindingError):
             await router.plan("slack", planner_context)
 
-    assert calls == 0
-
 
 @pytest.mark.asyncio
-async def test_router_uses_durable_authority_instead_of_install_inference(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_router_uses_durable_authority_instead_of_install_inference() -> None:
     install = _install("slack")
     install["secret_ref"] = None
     planner_context = SimpleNamespace(install=install)
@@ -192,7 +186,11 @@ async def test_router_uses_durable_authority_instead_of_install_inference(
                 generation=1,
                 credential_owner="oauth_callback",
                 secret_slots=frozenset(
-                    {"oauth_access_token", "webhook_signing_secret"}
+                    {
+                        "oauth_access_token",
+                        "oauth_user_access_token",
+                        "webhook_signing_secret",
+                    }
                 ),
                 outbound_hosts=frozenset({"slack.com"}),
                 scopes=frozenset(
@@ -203,6 +201,10 @@ async def test_router_uses_durable_authority_instead_of_install_inference(
                         "groups:history",
                         "users:read",
                         "team:read",
+                        "im:read",
+                        "im:history",
+                        "mpim:read",
+                        "mpim:history",
                     }
                 ),
                 maximum_trust_tier="attested_agent",
@@ -214,15 +216,21 @@ async def test_router_uses_durable_authority_instead_of_install_inference(
         async def revoke(self, installation_id, *, revoked_at, reason):
             raise AssertionError("not used")
 
-    async def planner(_context):
-        return []
+    async def provider(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"ok": True, "channels": [], "response_metadata": {"next_cursor": ""}},
+        )
 
-    monkeypatch.setitem(PLANNER_DISPATCH, "slack", planner)
-    monkeypatch.setattr(native, "plan_shards_slack", planner)
-    async with httpx.AsyncClient() as client:
+    async def read_secret(_installation, slot):
+        if str(slot) == "oauth_user_access_token":
+            raise PermissionDeniedError("fixture has no user token")
+        return SecretValue.from_text("xoxb")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as client:
         router = LegacyExecutionRouter(
             build_pilot_composition(RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)),
-            HostServicesFactory(http_client=client),
+            HostServicesFactory(http_client=client, secret_reader=read_secret),
             authority_repository=Repository(),
             require_durable_authority=True,
         )

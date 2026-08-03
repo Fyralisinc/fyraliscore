@@ -29,6 +29,7 @@ No OAuth state token is needed (the user never bounces through
 Google for consent — DWD is pre-granted in the Admin Console). The
 "connect" wizard is a pure first-party form with backend validation.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -44,7 +45,7 @@ from lib.shared.errors import CompanyOSError
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
 
-from services.app.gateway.product_workflow_metrics import (
+from lib.observability.product_workflow_events import (
     ProductWorkflowEvent,
     ProductWorkflowOutcome,
     record_product_workflow_event,
@@ -59,13 +60,19 @@ from services.ingest.integrations.gmail.client import (
     GoogleApiError,
     GoogleHttpClient,
 )
-from services.ingest.integrations.gmail.directory import enumerate_domain, resolve_inclusion
+from services.ingest.integrations.gmail.directory import (
+    enumerate_domain,
+    resolve_inclusion,
+)
 from services.ingest.integrations.gmail.dwd import DwdError, get_minter
 from services.ingest.integrations.gmail.optout import fetch_optout_emails
 from services.ingest.integrations.gmail.pubsub import PubsubAdmin
 from services.ingest.integrations.gmail.status_api import get_gmail_status
 from services.ingest.integrations.gmail.uninstall import stop_mailbox, uninstall_install
-from services.ingest.integrations.gmail.watch import activate_watch, upsert_pending_watch
+from services.ingest.integrations.gmail.watch import (
+    activate_watch,
+    upsert_pending_watch,
+)
 
 
 log = structlog.get_logger("integrations.gmail.oauth")
@@ -116,20 +123,23 @@ async def connect_preflight(request: Request) -> JSONResponse:
         directory = DirectoryClient(http, admin_email)
         try:
             enumeration = await enumerate_domain(
-                directory, workspace_domain=workspace_domain,
+                directory,
+                workspace_domain=workspace_domain,
             )
         except (GoogleApiError, DwdError) as exc:
             return _dwd_remediation(scope_alias, exc)
 
-    return JSONResponse(content={
-        "ok": True,
-        "workspace_domain": workspace_domain,
-        "admin_email": admin_email,
-        "scope": SCOPE_ALIAS[scope_alias],
-        "users": enumeration["users"],
-        "groups": enumeration["groups"],
-        "org_units": enumeration["org_units"],
-    })
+    return JSONResponse(
+        content={
+            "ok": True,
+            "workspace_domain": workspace_domain,
+            "admin_email": admin_email,
+            "scope": SCOPE_ALIAS[scope_alias],
+            "users": enumeration["users"],
+            "groups": enumeration["groups"],
+            "org_units": enumeration["org_units"],
+        }
+    )
 
 
 @router.post("/connect/finalize")
@@ -175,8 +185,11 @@ async def connect_finalize(request: Request) -> JSONResponse:
                   disabled_at = NULL
             RETURNING id
             """,
-            uuid7(), tenant_id, workspace_domain,
-            minter.service_account_email, scope_alias,
+            uuid7(),
+            tenant_id,
+            workspace_domain,
+            minter.service_account_email,
+            scope_alias,
             __dumps(inclusion_spec),
         )
         await write_install_audit(
@@ -207,9 +220,10 @@ async def connect_finalize(request: Request) -> JSONResponse:
                 WHERE gmail_installation_id IS NOT NULL
                 DO NOTHING
             """,
-            uuid7(), tenant_id, install_id,
-            __dumps({"scope": scope_alias,
-                     "workspace_domain": workspace_domain}),
+            uuid7(),
+            tenant_id,
+            install_id,
+            __dumps({"scope": scope_alias, "workspace_domain": workspace_domain}),
         )
 
     # Provisioning runs out-of-band: it makes external API calls
@@ -226,12 +240,14 @@ async def connect_finalize(request: Request) -> JSONResponse:
     )
     _record_source_event("source_install_completed", "success")
 
-    return JSONResponse(content={
-        "ok": True,
-        "installation_id": str(install_id),
-        "scope": scope_alias,
-        "provisioning": "started",
-    })
+    return JSONResponse(
+        content={
+            "ok": True,
+            "installation_id": str(install_id),
+            "scope": scope_alias,
+            "provisioning": "started",
+        }
+    )
 
 
 @router.get("/status")
@@ -266,11 +282,13 @@ async def gmail_uninstall(request: Request) -> JSONResponse:
         actor_email=actor_email,
     )
     _record_source_event("source_uninstalled", "success")
-    return JSONResponse(content={
-        "ok": True,
-        "gmail_installation_id": str(install_id),
-        "status": "uninstalled",
-    })
+    return JSONResponse(
+        content={
+            "ok": True,
+            "gmail_installation_id": str(install_id),
+            "status": "uninstalled",
+        }
+    )
 
 
 @router.post("/mailbox/stop")
@@ -290,11 +308,13 @@ async def gmail_stop_mailbox(request: Request) -> JSONResponse:
         email_address=email_address,
         actor_email=actor_email,
     )
-    return JSONResponse(content={
-        "ok": True,
-        "email_address": email_address,
-        "status": "stopped",
-    })
+    return JSONResponse(
+        content={
+            "ok": True,
+            "email_address": email_address,
+            "status": "stopped",
+        }
+    )
 
 
 def _require_installation_id(body: dict[str, Any]) -> UUID:
@@ -308,7 +328,9 @@ def _require_installation_id(body: dict[str, Any]) -> UUID:
     try:
         return UUID(raw_id)
     except (ValueError, AttributeError, TypeError):
-        raise HTTPException(status_code=400, detail="gmail_installation_id must be a UUID")
+        raise HTTPException(
+            status_code=400, detail="gmail_installation_id must be a UUID"
+        )
 
 
 def _record_source_event(
@@ -391,8 +413,11 @@ async def _provision_install(
                 ) VALUES ($1, $2, $3, $4, $5)
                 ON CONFLICT (topic_name) DO NOTHING
                 """,
-                uuid7(), tenant_id, gmail_installation_id,
-                resources.topic_name, resources.subscription_name,
+                uuid7(),
+                tenant_id,
+                gmail_installation_id,
+                resources.topic_name,
+                resources.subscription_name,
             )
 
             install = await tctx.fetchrow(
@@ -400,7 +425,8 @@ async def _provision_install(
                 gmail_installation_id,
             )
             optouts = await fetch_optout_emails(
-                tctx, gmail_installation_id=gmail_installation_id,
+                tctx,
+                gmail_installation_id=gmail_installation_id,
             )
 
         minter = get_minter()
@@ -420,7 +446,8 @@ async def _provision_install(
                    SET resolved_user_count = $2, resolved_at = now()
                  WHERE id = $1
                 """,
-                gmail_installation_id, len(emails),
+                gmail_installation_id,
+                len(emails),
             )
             for email in emails:
                 await upsert_pending_watch(
@@ -438,7 +465,8 @@ async def _provision_install(
                 try:
                     async with tenant_transaction(tenant_id) as tctx:
                         await activate_watch(
-                            tctx, gmail,
+                            tctx,
+                            gmail,
                             gmail_installation_id=gmail_installation_id,
                             email_address=email,
                             scope=scope_long,
@@ -447,7 +475,8 @@ async def _provision_install(
                 except GoogleApiError as exc:
                     log.warning(
                         "gmail.provision.watch_failed",
-                        email=email, error=str(exc)[:200],
+                        email=email,
+                        error=str(exc)[:200],
                     )
 
         log.info(
@@ -466,11 +495,14 @@ async def _provision_install(
 def _service_account_client_id() -> str:
     """The DWD client ID (numeric) is needed to authorize scopes in the
     customer's Admin Console. Surfaced via env to avoid hard-coding."""
-    return os.environ.get("GMAIL_SERVICE_ACCOUNT_CLIENT_ID", "(set GMAIL_SERVICE_ACCOUNT_CLIENT_ID)")
+    return os.environ.get(
+        "GMAIL_SERVICE_ACCOUNT_CLIENT_ID", "(set GMAIL_SERVICE_ACCOUNT_CLIENT_ID)"
+    )
 
 
 def __dumps(d: Any) -> str:
     import json
+
     return json.dumps(d, default=str)
 
 

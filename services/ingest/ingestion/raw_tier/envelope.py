@@ -12,6 +12,7 @@ Versioning policy:
   - breaking changes bump to v2 — a new model class consumers can
     opt into.
 """
+
 from __future__ import annotations
 
 from datetime import datetime
@@ -22,11 +23,31 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 SourceLiteral = Literal[
-    "slack", "github", "discord", "gmail", "notion", "google_calendar",
-    "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram",
-    "brex", "ramp", "gusto", "deel",
-    "fireflies", "signal", "aws", "miro", "figma", "carta",
-    "hibob", "ashby", "linkedin",
+    "slack",
+    "github",
+    "discord",
+    "gmail",
+    "notion",
+    "google_calendar",
+    "google_drive",
+    "jira",
+    "mercury",
+    "quickbooks",
+    "grafana",
+    "telegram",
+    "brex",
+    "ramp",
+    "gusto",
+    "deel",
+    "fireflies",
+    "signal",
+    "aws",
+    "miro",
+    "figma",
+    "carta",
+    "hibob",
+    "ashby",
+    "linkedin",
     "whatsapp",
 ]
 # "poll" is the Gmail live-via-Kafka cutover ingress: the push handler /
@@ -65,6 +86,7 @@ class RawEnvelope(BaseModel):
     content_hash: str = Field(min_length=1)
     ingested_at: datetime
     ingress_kind: IngressKindLiteral
+    connector_installation_id: UUID | None = None
     ingress_metadata: dict[str, Any] = Field(default_factory=dict)
     idem_hints: dict[str, str] = Field(default_factory=dict)
 

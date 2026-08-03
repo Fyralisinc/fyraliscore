@@ -255,6 +255,13 @@ services:
     command: python -m services.ingest.ingestion.workflows.reconciler
     healthcheck: *consumer-healthcheck
 
+  # Reconciles desired/observed connector installation state, health probes,
+  # credential retirement, artifact quarantine, and uninstall cleanup.
+  source_connector_lifecycle:
+    <<: *worker
+    command: python -m services.ingest.connector_platform.lifecycle_worker
+    healthcheck: *consumer-healthcheck
+
   # Generic supervisor for EXTENSION-contributed background workers (ADR-0004).
   # Discovers every installed extension's `company_os.workers` BackgroundWorker
   # and runs it under one process — e.g. the github-intel ordered FSM worker +

@@ -17,6 +17,7 @@ Gmail/Calendar dedicated-table shape (NOT the OAuth bot-token path):
   jira_installations; live uses provider_installations — the two are seeded
   together but stay independent.
 """
+
 from __future__ import annotations
 
 import json
@@ -27,7 +28,7 @@ import structlog
 
 from lib.shared.ids import uuid7
 from lib.shared.tenant_context import tenant_transaction
-from services.app.webhooks.provider_installations import (
+from services.ingest.integrations.provider_installations import (
     upsert_provider_installation_for_tenant,
 )
 
@@ -38,7 +39,12 @@ log = structlog.get_logger("integrations.jira.onboarding")
 def site_host(base_url: str) -> str:
     """The site host used as the provider_installations.installation_id for
     webhook tenant resolution (e.g. https://acme.atlassian.net -> acme.atlassian.net)."""
-    return base_url.replace("https://", "").replace("http://", "").rstrip("/").split("/")[0]
+    return (
+        base_url.replace("https://", "")
+        .replace("http://", "")
+        .rstrip("/")
+        .split("/")[0]
+    )
 
 
 async def finalize_install(
@@ -79,8 +85,13 @@ async def finalize_install(
                     disabled_at = NULL
             RETURNING id
             """,
-            uuid7(), tenant_id, base_url, account_email, secret_ref,
-            cloud_id, webhook_secret_ref,
+            uuid7(),
+            tenant_id,
+            base_url,
+            account_email,
+            secret_ref,
+            cloud_id,
+            webhook_secret_ref,
         )
 
         for key in keys:
@@ -96,8 +107,12 @@ async def finalize_install(
                                  project_id = COALESCE(EXCLUDED.project_id, jira_projects.project_id),
                                  project_name = COALESCE(EXCLUDED.project_name, jira_projects.project_name)
                 """,
-                uuid7(), tenant_id, install_id, key,
-                m.get("project_id"), m.get("project_name"),
+                uuid7(),
+                tenant_id,
+                install_id,
+                key,
+                m.get("project_id"),
+                m.get("project_name"),
             )
 
         # Emit the onboarding trigger so the M6 backfill chain fires. Like
@@ -114,13 +129,16 @@ async def finalize_install(
                 WHERE installation_row_id IS NOT NULL
                 DO NOTHING
             """,
-            uuid7(), tenant_id, install_id,
+            uuid7(),
+            tenant_id,
+            install_id,
             json.dumps({"base_url": base_url, "projects": keys}),
         )
 
     log.info(
         "jira_install_finalized",
-        base_url=base_url, project_count=len(keys),
+        base_url=base_url,
+        project_count=len(keys),
     )
     return install_id
 

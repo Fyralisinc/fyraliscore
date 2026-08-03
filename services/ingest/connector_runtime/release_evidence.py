@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Sequence
@@ -12,7 +13,7 @@ from types import MappingProxyType
 from services.ingest.connector_runtime.definitions import ConnectorCandidate
 
 
-RELEASE_EVIDENCE_SCHEMA = "sources.fyralis.io/release-evidence/v1"
+RELEASE_EVIDENCE_SCHEMA = "sources.fyralis.io/release-evidence/v2"
 
 
 @dataclass(frozen=True)
@@ -20,14 +21,35 @@ class ConnectorReleaseEvidence:
     connector_id: str
     connector_version: str
     structural_fingerprint: str
+    behavioral_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         if re.fullmatch(r"[0-9a-f]{64}", self.structural_fingerprint) is None:
             raise ValueError("release evidence fingerprint must be a lowercase SHA-256")
+        if (
+            self.behavioral_fingerprint is not None
+            and re.fullmatch(r"[0-9a-f]{64}", self.behavioral_fingerprint) is None
+        ):
+            raise ValueError(
+                "behavioral evidence fingerprint must be a lowercase SHA-256"
+            )
 
     @property
     def key(self) -> tuple[str, str]:
         return self.connector_id, self.connector_version
+
+    @property
+    def admission_fingerprint(self) -> str:
+        """Bind structural and behavioral proof into the signed admission value."""
+
+        if self.behavioral_fingerprint is None:
+            return self.structural_fingerprint
+        digest = hashlib.sha256()
+        digest.update(b"fyralis-connector-conformance-v2\0")
+        digest.update(self.structural_fingerprint.encode())
+        digest.update(b"\0")
+        digest.update(self.behavioral_fingerprint.encode())
+        return digest.hexdigest()
 
 
 class ReleaseEvidenceCatalog:
@@ -40,7 +62,7 @@ class ReleaseEvidenceCatalog:
     @property
     def approved_fingerprints(self) -> frozenset[str]:
         return frozenset(
-            record.structural_fingerprint for record in self._by_key.values()
+            record.admission_fingerprint for record in self._by_key.values()
         )
 
     def require(
@@ -59,7 +81,7 @@ class ReleaseEvidenceCatalog:
             manifest = candidate.manifest
             key = (manifest.connector_id, manifest.metadata.version)
             candidate_keys.add(key)
-            expected = self.require(*key).structural_fingerprint
+            expected = self.require(*key).admission_fingerprint
             if candidate.conformance_fingerprint != expected:
                 raise ValueError(
                     f"release evidence mismatch for {key[0]}@{key[1]}: "
@@ -87,11 +109,17 @@ def load_release_evidence(path: str | Path) -> ReleaseEvidenceCatalog:
         raise ValueError(f"release evidence {evidence_path} must contain connectors")
     records: list[ConnectorReleaseEvidence] = []
     for item in raw_records:
-        if not isinstance(item, dict) or set(item) != {
+        required = {
             "connectorId",
             "connectorVersion",
             "structuralFingerprint",
-        }:
+        }
+        allowed = required | {"behavioralFingerprint"}
+        if (
+            not isinstance(item, dict)
+            or not required.issubset(item)
+            or not set(item).issubset(allowed)
+        ):
             raise ValueError(
                 f"release evidence {evidence_path} contains an invalid record"
             )
@@ -100,6 +128,11 @@ def load_release_evidence(path: str | Path) -> ReleaseEvidenceCatalog:
                 connector_id=str(item["connectorId"]),
                 connector_version=str(item["connectorVersion"]),
                 structural_fingerprint=str(item["structuralFingerprint"]),
+                behavioral_fingerprint=(
+                    str(item["behavioralFingerprint"])
+                    if item.get("behavioralFingerprint") is not None
+                    else None
+                ),
             )
         )
     return ReleaseEvidenceCatalog(records)

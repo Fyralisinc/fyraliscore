@@ -60,16 +60,26 @@ async def verify_migrated_whatsapp_webhook(
         "enabled": install.get("enabled", True),
     }
     async with httpx.AsyncClient(follow_redirects=False) as client:
+        evidence_sink = getattr(
+            app_state, "source_connector_rollout_evidence", None
+        )
         hosts = build_production_host_services_factory(
             ProductionHostBackends(
                 pool=runtime.pool,
                 secret_store=runtime.secret_store,
                 http_client=client,
+                metric_incrementer=(
+                    evidence_sink.increment if evidence_sink is not None else None
+                ),
+                metric_observer=(
+                    evidence_sink.observe if evidence_sink is not None else None
+                ),
             )
         )
         router = LegacyExecutionRouter(
             composition,
             hosts,
+            shadow_sink=evidence_sink,
             authority_repository=PostgresAuthorityRepository(runtime.pool),
             require_durable_authority=True,
         )

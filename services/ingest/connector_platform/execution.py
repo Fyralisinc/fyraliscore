@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
+import json
 from typing import Any, TypeVar
 from uuid import UUID, uuid4
 
@@ -58,6 +59,7 @@ from services.ingest.source_contract.models import (
     PlanRequest,
     PollRequest,
     ReconciliationRequest,
+    ShardSummary,
     ShardPlan,
     VerifiedWebhookResult,
 )
@@ -73,6 +75,18 @@ def _value(record: Any, key: str, default: Any = None) -> Any:
     except (KeyError, TypeError):
         getter = getattr(record, "get", None)
         return getter(key, default) if getter is not None else default
+
+
+def _object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, (str, bytes)):
+        parsed = json.loads(value)
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    try:
+        return dict(value)
+    except (TypeError, ValueError):
+        return {}
 
 
 def _legacy_shard(shard: ShardPlan) -> Shard:
@@ -130,6 +144,14 @@ class LegacyExecutionRouter:
         except Exception:
             return False
         return True
+
+    def is_native(self, source: str) -> bool:
+        try:
+            return self._composition.registry.for_source(source).origin.startswith(
+                "first-party-native:"
+            )
+        except Exception:
+            return False
 
     def _installation(self, source: str, install: Any) -> InstallationRef:
         description = self._composition.registry.for_source(source).describe()
@@ -286,7 +308,9 @@ class LegacyExecutionRouter:
                     if isinstance(record.payload, dict)
                 ],
                 next_cursor=(
-                    page.next_cursor.payload if page.next_cursor is not None else None
+                    (page.checkpoint or page.next_cursor).payload
+                    if (page.checkpoint or page.next_cursor) is not None
+                    else None
                 ),
                 end_of_data=page.end_of_data,
             )
@@ -346,7 +370,9 @@ class LegacyExecutionRouter:
                     if isinstance(record.payload, dict)
                 ],
                 next_cursor=(
-                    page.next_cursor.payload if page.next_cursor is not None else None
+                    (page.checkpoint or page.next_cursor).payload
+                    if (page.checkpoint or page.next_cursor) is not None
+                    else None
                 ),
                 end_of_data=page.end_of_data,
             )
@@ -428,7 +454,30 @@ class LegacyExecutionRouter:
             decision = await capability.reconcile(
                 ReconciliationRequest(
                     run_id=UUID(str(_value(run, "onboarding_run_id", uuid4()))),
-                    shards=(),
+                    shards=tuple(
+                        ShardSummary(
+                            shard_id=UUID(str(_value(shard, "id"))),
+                            shard=ShardPlan(
+                                kind=str(_value(shard, "shard_kind", "legacy_shard")),
+                                identifier=_object(
+                                    _value(shard, "shard_identifier", {})
+                                ),
+                            ),
+                            state=str(_value(shard, "state", "unknown")),
+                            cursor=(
+                                CursorState(
+                                    schema_version=1,
+                                    payload=_object(_value(shard, "cursor")),
+                                )
+                                if _value(shard, "cursor") is not None
+                                else None
+                            ),
+                            record_count=max(
+                                0, int(_value(shard, "observations_seen", 0))
+                            ),
+                        )
+                        for shard in shards
+                    ),
                     pass_number=max(
                         1, int(_value(run, "reconciliation_pass_count", 0)) + 1
                     ),
