@@ -60,6 +60,53 @@ CREATE TABLE IF NOT EXISTS source_connector_authority_grants (
 CREATE INDEX IF NOT EXISTS source_connector_authority_tenant_idx
   ON source_connector_authority_grants (tenant_id, connector_id);
 
+CREATE TABLE IF NOT EXISTS source_connector_credentials (
+  installation_id UUID NOT NULL
+                      REFERENCES source_connector_installations(id) ON DELETE CASCADE,
+  tenant_id       UUID NOT NULL REFERENCES tenants(id),
+  slot            TEXT NOT NULL CHECK (slot <> ''),
+  secret_ref      TEXT NOT NULL CHECK (secret_ref <> ''),
+  state           TEXT NOT NULL DEFAULT 'pending'
+                      CHECK (state IN ('pending', 'current', 'retired', 'rejected')),
+  generation      BIGINT NOT NULL DEFAULT 1 CHECK (generation > 0),
+  owner           TEXT NOT NULL,
+  provenance      JSONB NOT NULL DEFAULT '{}'::jsonb
+                      CHECK (jsonb_typeof(provenance) = 'object'),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  verified_at     TIMESTAMPTZ,
+  retired_at      TIMESTAMPTZ,
+  PRIMARY KEY (installation_id, slot, secret_ref)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS source_connector_one_current_credential_idx
+  ON source_connector_credentials (installation_id, slot)
+  WHERE state = 'current';
+
+CREATE TABLE IF NOT EXISTS source_connector_installation_data (
+  installation_id UUID NOT NULL
+                      REFERENCES source_connector_installations(id) ON DELETE CASCADE,
+  tenant_id       UUID NOT NULL REFERENCES tenants(id),
+  namespace       TEXT NOT NULL CHECK (namespace <> ''),
+  generation      BIGINT NOT NULL DEFAULT 1 CHECK (generation > 0),
+  values          JSONB NOT NULL DEFAULT '{}'::jsonb
+                      CHECK (jsonb_typeof(values) = 'object'),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (installation_id, namespace)
+);
+
+CREATE TABLE IF NOT EXISTS source_connector_callbacks (
+  endpoint_id      UUID PRIMARY KEY,
+  installation_id UUID NOT NULL
+                       REFERENCES source_connector_installations(id) ON DELETE CASCADE,
+  tenant_id       UUID NOT NULL REFERENCES tenants(id),
+  purpose         TEXT NOT NULL CHECK (purpose <> ''),
+  nonce_secret_ref TEXT NOT NULL CHECK (nonce_secret_ref <> ''),
+  status          TEXT NOT NULL DEFAULT 'active'
+                      CHECK (status IN ('active', 'disabled', 'retired')),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (installation_id, purpose, status)
+);
+
 CREATE TABLE IF NOT EXISTS source_connector_artifacts (
   connector_id            TEXT NOT NULL,
   connector_version       TEXT NOT NULL,
@@ -129,10 +176,16 @@ INSERT INTO source_connector_authority_grants (
 )
 SELECT id, tenant_id, 'fyralis/' || provider, 'provider_installations',
        CASE provider
-         WHEN 'slack' THEN ARRAY['webhook_signing_secret']::text[]
+         WHEN 'slack' THEN ARRAY['oauth_access_token', 'webhook_signing_secret']::text[]
          ELSE ARRAY['oauth_access_token']::text[]
        END,
-       ARRAY[]::text[],
+       CASE provider
+         WHEN 'slack' THEN ARRAY[
+           'channels:read', 'channels:history', 'groups:read',
+           'groups:history', 'users:read', 'team:read'
+         ]::text[]
+         ELSE ARRAY[]::text[]
+       END,
        CASE provider
          WHEN 'slack' THEN ARRAY['slack.com']::text[]
          ELSE ARRAY['api.notion.com']::text[]
@@ -146,6 +199,34 @@ SELECT id, tenant_id, 'fyralis/' || provider, 'provider_installations',
  WHERE provider IN ('slack', 'notion')
    AND secret_ref IS NOT NULL
 ON CONFLICT (installation_id) DO NOTHING;
+
+INSERT INTO source_connector_credentials (
+  installation_id, tenant_id, slot, secret_ref, state, owner, provenance
+)
+SELECT id, tenant_id,
+       CASE provider
+         WHEN 'slack' THEN 'webhook_signing_secret'
+         ELSE 'oauth_access_token'
+       END,
+       secret_ref, 'current', 'provider_installations',
+       jsonb_build_object('migrated_by', '0187')
+  FROM provider_installations
+ WHERE provider IN ('slack', 'notion')
+   AND secret_ref IS NOT NULL
+ON CONFLICT DO NOTHING;
+
+INSERT INTO source_connector_credentials (
+  installation_id, tenant_id, slot, secret_ref, state, owner, provenance
+)
+SELECT install.id, install.tenant_id, 'oauth_access_token', secret.id::text,
+       'current', 'encrypted_secrets',
+       jsonb_build_object('migrated_by', '0187', 'legacy_label', secret.label)
+  FROM provider_installations AS install
+  JOIN encrypted_secrets AS secret
+    ON secret.tenant_id = install.tenant_id
+   AND secret.label = 'slack_bot_token:' || install.installation_id
+ WHERE install.provider = 'slack'
+ON CONFLICT DO NOTHING;
 
 ALTER TABLE source_connector_installations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE source_connector_installations FORCE ROW LEVEL SECURITY;
@@ -166,6 +247,51 @@ ALTER TABLE source_connector_authority_grants ENABLE ROW LEVEL SECURITY;
 ALTER TABLE source_connector_authority_grants FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON source_connector_authority_grants;
 CREATE POLICY tenant_isolation ON source_connector_authority_grants
+  USING (
+    current_setting('app.current_tenant', true) IS NULL
+    OR current_setting('app.current_tenant', true) = ''
+    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+  )
+  WITH CHECK (
+    current_setting('app.current_tenant', true) IS NULL
+    OR current_setting('app.current_tenant', true) = ''
+    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+  );
+
+ALTER TABLE source_connector_credentials ENABLE ROW LEVEL SECURITY;
+ALTER TABLE source_connector_credentials FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON source_connector_credentials;
+CREATE POLICY tenant_isolation ON source_connector_credentials
+  USING (
+    current_setting('app.current_tenant', true) IS NULL
+    OR current_setting('app.current_tenant', true) = ''
+    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+  )
+  WITH CHECK (
+    current_setting('app.current_tenant', true) IS NULL
+    OR current_setting('app.current_tenant', true) = ''
+    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+  );
+
+ALTER TABLE source_connector_installation_data ENABLE ROW LEVEL SECURITY;
+ALTER TABLE source_connector_installation_data FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON source_connector_installation_data;
+CREATE POLICY tenant_isolation ON source_connector_installation_data
+  USING (
+    current_setting('app.current_tenant', true) IS NULL
+    OR current_setting('app.current_tenant', true) = ''
+    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+  )
+  WITH CHECK (
+    current_setting('app.current_tenant', true) IS NULL
+    OR current_setting('app.current_tenant', true) = ''
+    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+  );
+
+ALTER TABLE source_connector_callbacks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE source_connector_callbacks FORCE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS tenant_isolation ON source_connector_callbacks;
+CREATE POLICY tenant_isolation ON source_connector_callbacks
   USING (
     current_setting('app.current_tenant', true) IS NULL
     OR current_setting('app.current_tenant', true) = ''

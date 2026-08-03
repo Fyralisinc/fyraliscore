@@ -6,7 +6,10 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from services.ingest.connector_platform.pilots import build_pilot_composition
+from services.ingest.connector_platform.pilots import (
+    build_pilot_composition,
+    default_migrated_routing_policy,
+)
 from services.ingest.connector_platform.routing_config import (
     RoutingConfigurationController,
     parse_routing_policy,
@@ -35,7 +38,11 @@ def wire_source_connector_runtime(
         if routing_config is None
         else routing_config
     )
-    policy = parse_routing_policy(raw_config)
+    policy = (
+        parse_routing_policy(raw_config)
+        if raw_config
+        else default_migrated_routing_policy()
+    )
     composition = build_pilot_composition(policy)
     controller = RoutingConfigurationController(composition.routing)
     wiring = SourceConnectorRuntimeWiring(composition, controller)

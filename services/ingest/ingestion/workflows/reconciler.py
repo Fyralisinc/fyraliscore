@@ -786,7 +786,7 @@ async def _run_service() -> None:
         client_id="workflow-reconciler",
     ))
     await producer.start()
-    connector_wiring = build_workflow_connector_wiring()
+    connector_wiring = build_workflow_connector_wiring(pool=pool)
     # M6.3: per-source reconcilers may need pool access for auxiliary reads
     # (e.g., Gmail reads workflow_states for each shard's final_history_id).
     # Register the pool with every per-source module via the shared helper —

@@ -1475,7 +1475,7 @@ async def _run_service() -> None:
         client_id="workflow-source_onboarding",
     ))
     await producer.start()
-    connector_wiring = build_workflow_connector_wiring()
+    connector_wiring = build_workflow_connector_wiring(pool=pool)
     config = SourceOnboardingConfig(
         tick_interval_seconds=float(
             os.environ.get("SOURCE_ONBOARDING_TICK_SEC", "5.0"),

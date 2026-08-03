@@ -1546,7 +1546,6 @@ async def _run_service() -> None:
         client_id="workflow-shard_fetch",
     ))
     await producer.start()
-    connector_wiring = build_workflow_connector_wiring()
 
     # Raw-tier S3 client for the backfill producer (A27.1). S3_ENDPOINT_URL
     # is optional (None → real AWS); S3_RAW_BUCKET defaults to fyralis-raw,
@@ -1557,6 +1556,11 @@ async def _run_service() -> None:
         region_name=os.environ.get("S3_REGION_NAME", "auto"),
     )
     await s3_client.connect()
+    connector_wiring = build_workflow_connector_wiring(
+        pool=pool,
+        s3_raw_client=s3_client,
+        kafka_producer=producer,
+    )
 
     config = ShardFetchConfig(
         tick_interval_seconds=float(
