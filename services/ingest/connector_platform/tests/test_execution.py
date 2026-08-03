@@ -10,6 +10,7 @@ from services.ingest.connector_platform.execution import LegacyExecutionRouter
 from services.ingest.connector_platform.pilots import build_pilot_composition
 from services.ingest.connector_runtime.host_services import HostServicesFactory
 from services.ingest.connector_runtime.failures import RuntimeConnectorFailure
+from services.ingest.connector_runtime.authority import InstallationAuthority
 from services.ingest.connector_runtime.policy import ExecutionMode, RoutingPolicy
 from services.ingest.connector_runtime.shadow import InMemoryShadowReportSink
 from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
@@ -168,3 +169,46 @@ async def test_pilot_binding_rejects_install_without_credential_grant(
             await router.plan("slack", planner_context)
 
     assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_router_uses_durable_authority_instead_of_install_inference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install = _install("slack")
+    install["secret_ref"] = None
+    planner_context = SimpleNamespace(install=install)
+
+    class Repository:
+        async def load(self, installation_id):
+            return InstallationAuthority(
+                installation_id=installation_id,
+                tenant_id=install["tenant_id"],
+                connector_id="fyralis/slack",
+                generation=1,
+                credential_owner="oauth_callback",
+                secret_slots=frozenset({"webhook_signing_secret"}),
+                outbound_hosts=frozenset({"slack.com"}),
+                maximum_trust_tier="attested_agent",
+            )
+
+        async def grant(self, authority):
+            raise AssertionError("not used")
+
+        async def revoke(self, installation_id, *, revoked_at, reason):
+            raise AssertionError("not used")
+
+    async def planner(_context):
+        return []
+
+    monkeypatch.setitem(PLANNER_DISPATCH, "slack", planner)
+    async with httpx.AsyncClient() as client:
+        router = LegacyExecutionRouter(
+            build_pilot_composition(
+                RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)
+            ),
+            HostServicesFactory(http_client=client),
+            authority_repository=Repository(),
+            require_durable_authority=True,
+        )
+        assert await router.plan("slack", planner_context) == []

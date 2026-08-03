@@ -11,6 +11,7 @@ from services.ingest.connector_platform.legacy_context import (
     LegacyBindingPayload,
     legacy_binding_scope,
 )
+from services.ingest.connector_runtime.authority import AuthorityRepository
 from services.ingest.connector_runtime.composition import ConnectorRuntimeComposition
 from services.ingest.connector_runtime.execution import (
     CapabilityExecutionRequest,
@@ -43,6 +44,7 @@ from services.ingest.source_contract.capabilities import (
     WEBHOOK_V1,
 )
 from services.ingest.source_contract.connector import GrantedAuthority
+from services.ingest.source_contract.errors import BindingError
 from services.ingest.source_contract.models import (
     BoundedWebhookRequest,
     CursorState,
@@ -105,6 +107,8 @@ class LegacyExecutionRouter:
         *,
         shadow_sink: ShadowReportSink | None = None,
         deadline_seconds: float = 60.0,
+        authority_repository: AuthorityRepository | None = None,
+        require_durable_authority: bool = False,
     ) -> None:
         self._composition = composition
         self._host_services = host_services
@@ -114,6 +118,8 @@ class LegacyExecutionRouter:
             shadow_sink=shadow_sink,
         )
         self._deadline_seconds = deadline_seconds
+        self._authority_repository = authority_repository
+        self._require_durable_authority = require_durable_authority
 
     def supports(self, source: str) -> bool:
         try:
@@ -167,13 +173,24 @@ class LegacyExecutionRouter:
             observed_generation=installation.generation,
         )
 
-    def _base(
+    async def _base(
         self,
         source: str,
         install: Any,
     ) -> tuple[InstallationRef, GrantedAuthority, Any, InstallationLifecycle]:
         installation = self._installation(source, install)
         authority = self._authority(source, install)
+        if self._authority_repository is not None:
+            durable = await self._authority_repository.load(installation.id)
+            if durable is not None:
+                authority = durable.validate_for(installation)
+            elif self._require_durable_authority:
+                raise BindingError(
+                    "installation has no durable authority grant",
+                    details={"installation_id": str(installation.id)},
+                )
+        elif self._require_durable_authority:
+            raise BindingError("durable authority repository is unavailable")
         services = self._host_services.build(
             installation.id,
             authority,
@@ -192,7 +209,7 @@ class LegacyExecutionRouter:
         shadow_safe: bool = False,
     ) -> list[Shard]:
         install = planner_context.install
-        installation, authority, services, lifecycle = self._base(source, install)
+        installation, authority, services, lifecycle = await self._base(source, install)
         payload = LegacyBindingPayload(
             install=install,
             planner_context=planner_context,
@@ -232,7 +249,7 @@ class LegacyExecutionRouter:
         shard_kind: str | None = None,
         shadow_safe: bool = False,
     ) -> FetchResult:
-        installation, authority, services, lifecycle = self._base(source, install)
+        installation, authority, services, lifecycle = await self._base(source, install)
         payload = LegacyBindingPayload(
             install=install,
             external_installation_id=str(_value(install, "installation_id", "")),
@@ -296,7 +313,7 @@ class LegacyExecutionRouter:
         *,
         shadow_safe: bool = False,
     ) -> FetchResult:
-        installation, authority, services, lifecycle = self._base(source, install)
+        installation, authority, services, lifecycle = await self._base(source, install)
         payload = LegacyBindingPayload(
             install=install,
             external_installation_id=str(_value(install, "installation_id", "")),
@@ -354,7 +371,7 @@ class LegacyExecutionRouter:
         input: IdentityInput,
         legacy_call: Callable[[], Awaitable[str]],
     ) -> str:
-        installation, authority, services, lifecycle = self._base(source, install)
+        installation, authority, services, lifecycle = await self._base(source, install)
         payload = LegacyBindingPayload(
             install=install,
             external_installation_id=str(_value(install, "installation_id", "")),
@@ -387,7 +404,7 @@ class LegacyExecutionRouter:
         *,
         shadow_safe: bool = False,
     ) -> LegacyReconciliationDecision:
-        installation, authority, services, lifecycle = self._base(source, install)
+        installation, authority, services, lifecycle = await self._base(source, install)
         payload = LegacyBindingPayload(
             install=install,
             external_installation_id=str(_value(install, "installation_id", "")),
@@ -446,7 +463,7 @@ class LegacyExecutionRouter:
         input: NormalizationInput,
         legacy_call: Callable[[], Awaitable[LegacyDraft]],
     ) -> LegacyDraft:
-        installation, authority, services, lifecycle = self._base(source, install)
+        installation, authority, services, lifecycle = await self._base(source, install)
         payload = LegacyBindingPayload(
             install=install,
             external_installation_id=str(_value(install, "installation_id", "")),
@@ -483,7 +500,7 @@ class LegacyExecutionRouter:
         request_value: BoundedWebhookRequest,
         legacy_call: LegacyWebhookCall,
     ) -> VerifiedWebhookResult:
-        installation, authority, services, lifecycle = self._base(source, install)
+        installation, authority, services, lifecycle = await self._base(source, install)
         payload = LegacyBindingPayload(
             install=install,
             external_installation_id=str(_value(install, "installation_id", "")),

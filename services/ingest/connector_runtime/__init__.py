@@ -1,5 +1,10 @@
 """Host-side registry and binding support for Source Connectors."""
 
+from services.ingest.connector_runtime.authority import (
+    AuthorityRepository,
+    InstallationAuthority,
+)
+
 from services.ingest.connector_runtime.composition import (
     ConnectorRuntimeComposition,
     build_runtime_composition,
@@ -35,6 +40,7 @@ from services.ingest.connector_runtime.registry import (
 
 
 __all__ = [
+    "AuthorityRepository",
     "AtomicRoutingPolicy",
     "CapabilityExecutionRequest",
     "ConnectorCandidate",
@@ -47,6 +53,7 @@ __all__ = [
     "ExecutionMode",
     "HostCompatibility",
     "HostServicesFactory",
+    "InstallationAuthority",
     "LegacyConnectorAdapter",
     "RegisteredConnector",
     "RegistryBuildResult",
