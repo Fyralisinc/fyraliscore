@@ -451,14 +451,38 @@ def build_whatsapp_router(*, debug_endpoints_enabled: bool = False) -> APIRouter
 
         allow_unsigned = _unsigned_webhooks_allowed()
         if not allow_unsigned:
+            async def legacy_verify() -> bool:
+                try:
+                    secret_store = _secret_store_for_request(request, deps.pool)
+                    app_secret = await _resolve_install_secret(
+                        secret_store,
+                        install,
+                        ref_field="app_secret_ref",
+                        legacy_field="app_secret",
+                        label="app_secret",
+                    )
+                except (SecretStoreError, _WhatsAppSecretResolutionError):
+                    raise
+                app_secret = app_secret or _dev_env_secret("WHATSAPP_APP_SECRET")
+                if not app_secret:
+                    raise SecretStoreError("WhatsApp app secret is unavailable")
+                return verify_signature(
+                    app_secret,
+                    raw,
+                    request.headers.get("X-Hub-Signature-256"),
+                )
+
             try:
-                secret_store = _secret_store_for_request(request, deps.pool)
-                app_secret = await _resolve_install_secret(
-                    secret_store,
-                    install,
-                    ref_field="app_secret_ref",
-                    legacy_field="app_secret",
-                    label="app_secret",
+                from services.ingest.connector_platform.whatsapp_ingress import (
+                    verify_migrated_whatsapp_webhook,
+                )
+
+                verified = await verify_migrated_whatsapp_webhook(
+                    app_state=request.app.state,
+                    install=install,
+                    body=raw,
+                    headers=request.headers,
+                    legacy_verify=legacy_verify,
                 )
             except (SecretStoreError, _WhatsAppSecretResolutionError) as exc:
                 original = getattr(exc, "original", exc)
@@ -471,12 +495,15 @@ def build_whatsapp_router(*, debug_endpoints_enabled: bool = False) -> APIRouter
                     {"status": "app_secret_unavailable"},
                     status_code=503,
                 )
-            app_secret = app_secret or _dev_env_secret("WHATSAPP_APP_SECRET")
-            if not app_secret:
-                log.error("whatsapp.no_app_secret", phone_number_id=phone_number_id)
-                return JSONResponse({"status": "no_app_secret_configured"}, status_code=503)
-            sig = request.headers.get("X-Hub-Signature-256")
-            if not verify_signature(app_secret, raw, sig):
+            except Exception as exc:  # runtime/control-plane failure
+                log.error(
+                    "whatsapp.connector_verification_unavailable",
+                    error_type=type(exc).__name__,
+                )
+                return JSONResponse(
+                    {"status": "verification_unavailable"}, status_code=503
+                )
+            if not verified:
                 log.warning("whatsapp.signature_invalid", phone_number_id=phone_number_id)
                 return JSONResponse({"status": "signature_invalid"}, status_code=401)
 
@@ -677,6 +704,7 @@ def build_whatsapp_router(*, debug_endpoints_enabled: bool = False) -> APIRouter
                     enabled              = true,
                     updated_at           = now()
                 RETURNING id, tenant_id, phone_number_id, waba_id, display_phone_number, enabled,
+                          app_secret_ref AS connector_app_secret_ref,
                           (app_secret_ref IS NOT NULL) AS has_app_secret_ref,
                           (verify_token_ref IS NOT NULL) AS has_verify_token_ref,
                           (access_token_ref IS NOT NULL) AS has_access_token_ref
@@ -689,7 +717,70 @@ def build_whatsapp_router(*, debug_endpoints_enabled: bool = False) -> APIRouter
                 verify_token_ref,
                 access_token_ref,
             )
+            connector_app_secret_ref = row["connector_app_secret_ref"]
+            await conn.execute(
+                """
+                INSERT INTO source_connector_installations (
+                  id, tenant_id, connector_id, external_installation_id,
+                  desired_state, observed_phase, observed_generation,
+                  bound_connector_version, provenance
+                ) VALUES ($1, $2, 'fyralis/whatsapp', $3, 'Ready', 'Ready', 1,
+                          '1.0.0', $4::jsonb)
+                ON CONFLICT (id) DO UPDATE
+                  SET desired_state = 'Ready', observed_phase = 'Ready',
+                      external_installation_id = EXCLUDED.external_installation_id,
+                      updated_at = now()
+                """,
+                row["id"],
+                tenant_id,
+                phone_number_id,
+                json.dumps({"origin": "whatsapp_registration"}),
+            )
+            if connector_app_secret_ref is not None:
+                await conn.execute(
+                    """
+                    INSERT INTO source_connector_authority_grants (
+                      installation_id, tenant_id, connector_id,
+                      credential_owner, granted_secret_slots,
+                      maximum_trust_tier, provenance
+                    ) VALUES ($1, $2, 'fyralis/whatsapp',
+                              'whatsapp_installations', ARRAY['app_secret']::text[],
+                              'attested_agent', $3::jsonb)
+                    ON CONFLICT (installation_id) DO UPDATE
+                      SET granted_secret_slots = EXCLUDED.granted_secret_slots,
+                          revoked_at = NULL,
+                          authority_generation =
+                            source_connector_authority_grants.authority_generation + 1,
+                          updated_at = now()
+                    """,
+                    row["id"],
+                    tenant_id,
+                    json.dumps({"verified_by": "registration"}),
+                )
+                await conn.execute(
+                    """
+                    UPDATE source_connector_credentials
+                       SET state = 'retired', retired_at = now()
+                     WHERE installation_id = $1 AND slot = 'app_secret'
+                       AND state = 'current'
+                    """,
+                    row["id"],
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO source_connector_credentials (
+                      installation_id, tenant_id, slot, secret_ref, state,
+                      owner, provenance, verified_at
+                    ) VALUES ($1, $2, 'app_secret', $3, 'current',
+                              'whatsapp_installations', $4::jsonb, now())
+                    """,
+                    row["id"],
+                    tenant_id,
+                    connector_app_secret_ref,
+                    json.dumps({"rotation": "registration"}),
+                )
         out = dict(row)
+        out.pop("connector_app_secret_ref", None)
         out["id"] = str(out["id"])
         out["tenant_id"] = str(out["tenant_id"])
         log.info("whatsapp.installation_registered", phone_number_id=phone_number_id)

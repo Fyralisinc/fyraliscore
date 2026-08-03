@@ -235,6 +235,43 @@ SELECT id, tenant_id,
    AND secret_ref IS NOT NULL
 ON CONFLICT DO NOTHING;
 
+-- WhatsApp is a complete live-webhook connector. Its deliberately deferred
+-- backfill placeholders are not declared capabilities and remain non-runnable.
+INSERT INTO source_connector_installations (
+  id, tenant_id, connector_id, external_installation_id,
+  desired_state, observed_phase, observed_generation,
+  bound_connector_version, provenance
+)
+SELECT id, tenant_id, 'fyralis/whatsapp', phone_number_id,
+       CASE WHEN enabled THEN 'Ready' ELSE 'Paused' END,
+       CASE WHEN enabled THEN 'Ready' ELSE 'Paused' END,
+       1, '1.0.0',
+       jsonb_build_object('storage', 'whatsapp_installations', 'migrated_by', '0187')
+  FROM whatsapp_installations
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO source_connector_authority_grants (
+  installation_id, tenant_id, connector_id, credential_owner,
+  granted_secret_slots, granted_scopes, granted_outbound_hosts,
+  maximum_trust_tier, provenance
+)
+SELECT id, tenant_id, 'fyralis/whatsapp', 'whatsapp_installations',
+       ARRAY['app_secret']::text[], ARRAY[]::text[], ARRAY[]::text[],
+       'attested_agent',
+       jsonb_build_object('migrated_by', '0187')
+  FROM whatsapp_installations
+ WHERE app_secret_ref IS NOT NULL
+ON CONFLICT (installation_id) DO NOTHING;
+
+INSERT INTO source_connector_credentials (
+  installation_id, tenant_id, slot, secret_ref, state, owner, provenance
+)
+SELECT id, tenant_id, 'app_secret', app_secret_ref, 'current',
+       'whatsapp_installations', jsonb_build_object('migrated_by', '0187')
+  FROM whatsapp_installations
+ WHERE app_secret_ref IS NOT NULL
+ON CONFLICT DO NOTHING;
+
 INSERT INTO source_connector_credentials (
   installation_id, tenant_id, slot, secret_ref, state, owner, provenance
 )

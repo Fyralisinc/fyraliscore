@@ -271,6 +271,74 @@ class NativeSlackWebhook:
         secret = await self._binding.services.secrets.resolve(
             SlotId("webhook_signing_secret")
         )
+
+
+class NativeWhatsAppWebhook:
+    def __init__(self, binding: BindingContext) -> None:
+        self._binding = binding
+
+    async def verify_and_decode(
+        self,
+        request: BoundedWebhookRequest,
+        context: OperationContext,
+    ) -> VerifiedWebhookResult:
+        from services.ingest.integrations.whatsapp.signature import verify_signature
+
+        secret = await self._binding.services.secrets.resolve(SlotId("app_secret"))
+        headers = {key.lower(): value for key, value in request.headers.items()}
+        if not verify_signature(
+            secret.reveal_text(),
+            request.body,
+            headers.get("x-hub-signature-256"),
+        ):
+            from services.ingest.source_contract.errors import (
+                AuthenticationRejectedError,
+            )
+
+            raise AuthenticationRejectedError("Meta webhook signature is invalid")
+        payload = json.loads(request.body)
+        events: list[VerifiedWebhookEvent] = []
+        for entry in payload.get("entry") or []:
+            if not isinstance(entry, dict):
+                continue
+            for change in entry.get("changes") or []:
+                if not isinstance(change, dict):
+                    continue
+                value = change.get("value")
+                if not isinstance(value, dict):
+                    continue
+                metadata = value.get("metadata") or {}
+                phone_number_id = metadata.get("phone_number_id")
+                if not isinstance(phone_number_id, str) or not phone_number_id:
+                    continue
+                contacts = value.get("contacts") or []
+                for message in value.get("messages") or []:
+                    if isinstance(message, dict):
+                        events.append(
+                            VerifiedWebhookEvent(
+                                external_installation_id=phone_number_id,
+                                native_event_type="message",
+                                record=_source_record(
+                                    {
+                                        "message": message,
+                                        "metadata": metadata,
+                                        "contacts": contacts,
+                                    }
+                                ),
+                            )
+                        )
+                for status in value.get("statuses") or []:
+                    if isinstance(status, dict):
+                        events.append(
+                            VerifiedWebhookEvent(
+                                external_installation_id=phone_number_id,
+                                native_event_type="status",
+                                record=_source_record(
+                                    {"status": status, "metadata": metadata}
+                                ),
+                            )
+                        )
+        return VerifiedWebhookResult(events=tuple(events))
         headers = {key.lower(): value for key, value in request.headers.items()}
         timestamp = headers.get("x-slack-request-timestamp", "")
         signature = headers.get("x-slack-signature", "")
@@ -346,6 +414,17 @@ class OAuthCleanup:
         )
 
 
+class LocalCredentialCleanup:
+    async def cleanup(
+        self, request: CleanupRequest, context: OperationContext
+    ) -> CleanupResult:
+        return CleanupResult(
+            complete=True,
+            remote_revoked=False,
+            reason_code="host_retires_local_credentials",
+        )
+
+
 __all__ = [
     "DirectHistoricalPull",
     "DirectIncrementalPoll",
@@ -354,6 +433,8 @@ __all__ = [
     "CredentialHealthProbe",
     "NativeIdentity",
     "NativeSlackWebhook",
+    "NativeWhatsAppWebhook",
     "NativeSourceConnector",
     "OAuthCleanup",
+    "LocalCredentialCleanup",
 ]

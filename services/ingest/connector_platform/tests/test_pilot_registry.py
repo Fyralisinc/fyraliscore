@@ -5,6 +5,8 @@ from services.ingest.connector_platform.pilots import (
     NOTION_CONNECTOR_ID,
     SLACK_CONFORMANCE_FINGERPRINT,
     SLACK_CONNECTOR_ID,
+    WHATSAPP_CONFORMANCE_FINGERPRINT,
+    WHATSAPP_CONNECTOR_ID,
     build_pilot_candidates,
     build_pilot_composition,
 )
@@ -24,6 +26,7 @@ def test_pilot_composition_is_immutable_and_native_pilots_are_authoritative() ->
     assert composition.registry.connector_ids() == (
         NOTION_CONNECTOR_ID,
         SLACK_CONNECTOR_ID,
+        WHATSAPP_CONNECTOR_ID,
     )
     assert composition.registry.list_by_capability(WEBHOOK_V1.ref)[0].source == "slack"
     assert (
@@ -51,3 +54,8 @@ def test_pilot_registration_evidence_matches_independent_conformance() -> None:
     assert reports[SLACK_CONNECTOR_ID].fingerprint == SLACK_CONFORMANCE_FINGERPRINT
     assert reports[NOTION_CONNECTOR_ID].passed
     assert reports[NOTION_CONNECTOR_ID].fingerprint == NOTION_CONFORMANCE_FINGERPRINT
+    assert reports[WHATSAPP_CONNECTOR_ID].passed
+    assert (
+        reports[WHATSAPP_CONNECTOR_ID].fingerprint
+        == WHATSAPP_CONFORMANCE_FINGERPRINT
+    )

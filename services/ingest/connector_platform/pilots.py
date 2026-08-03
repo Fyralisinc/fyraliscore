@@ -12,8 +12,10 @@ from services.ingest.connectors.native import (
     CredentialHealthProbe,
     NativeIdentity,
     NativeSlackWebhook,
+    NativeWhatsAppWebhook,
     NativeSourceConnector,
     OAuthCleanup,
+    LocalCredentialCleanup,
 )
 from services.ingest.connectors.oauth import (
     NotionOAuthCapability,
@@ -34,6 +36,7 @@ from services.ingest.ingestion.fetchers.notion import fetch_page_notion
 from services.ingest.ingestion.fetchers.slack import fetch_page_slack
 from services.ingest.ingestion.handlers.notion import handle_notion_object
 from services.ingest.ingestion.handlers.slack import handle_slack_message
+from services.ingest.ingestion.handlers.whatsapp import handle_whatsapp
 from services.ingest.ingestion.planners.notion import plan_shards_notion
 from services.ingest.ingestion.planners.slack import plan_shards_slack
 from services.ingest.ingestion.reconcilers.notion import reconcile_notion
@@ -57,11 +60,15 @@ from services.ingest.source_contract.versioning import SemanticVersion
 
 SLACK_CONNECTOR_ID = "fyralis/slack"
 NOTION_CONNECTOR_ID = "fyralis/notion"
+WHATSAPP_CONNECTOR_ID = "fyralis/whatsapp"
 SLACK_CONFORMANCE_FINGERPRINT = (
     "591ed744a68c1aefd4e0ef71855c2a100b2169a346decc982d930a0d8e622aec"
 )
 NOTION_CONFORMANCE_FINGERPRINT = (
     "392f7674f1a0624bffbded98f01621967cee9e2aa7794f941a3590922a76e7cc"
+)
+WHATSAPP_CONFORMANCE_FINGERPRINT = (
+    "cc1801064595208840a999529c84574ec947004a3bc7617af6c12ed5cb146adc"
 )
 
 
@@ -157,6 +164,23 @@ NOTION_MANIFEST = _manifest(
 )
 
 
+WHATSAPP_MANIFEST = _manifest(
+    connector_id=WHATSAPP_CONNECTOR_ID,
+    source="whatsapp",
+    display_name="WhatsApp",
+    capabilities=(
+        (HEALTH_PROBE_V1.ref.id, 1),
+        (CLEANUP_V1.ref.id, 1),
+        (WEBHOOK_V1.ref.id, 1),
+        (IDENTITY_V1.ref.id, 1),
+        (NORMALIZATION_V1.ref.id, 1),
+    ),
+    ingress_kinds=("webhook",),
+    secret_slots=("app_secret",),
+    outbound_hosts=(),
+)
+
+
 def _payload(input: IdentityInput) -> dict[str, Any]:
     if not isinstance(input.record.payload, dict):
         raise ValueError("pilot identity requires a JSON object")
@@ -181,6 +205,28 @@ def _notion_identity(input: IdentityInput) -> str:
     if not isinstance(object_type, str) or not isinstance(object_id, str):
         raise ValueError("Notion identity requires object and id")
     return idempotency.notion_object(object_type, object_id)
+
+
+def _whatsapp_identity(input: IdentityInput) -> str:
+    payload = _payload(input)
+    metadata = payload.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    phone_number_id = metadata.get("phone_number_id")
+    message = payload.get("message")
+    if isinstance(message, dict) and isinstance(message.get("id"), str):
+        return idempotency.whatsapp_message(phone_number_id, message["id"])
+    status = payload.get("status")
+    if (
+        isinstance(status, dict)
+        and isinstance(status.get("id"), str)
+        and isinstance(status.get("status"), str)
+    ):
+        return idempotency.whatsapp_status(
+            phone_number_id,
+            status["id"],
+            status["status"],
+        )
+    raise ValueError("WhatsApp identity requires a message or status ID")
 
 
 def build_slack_candidate() -> ConnectorCandidate:
@@ -267,8 +313,39 @@ def build_notion_candidate() -> ConnectorCandidate:
     )
 
 
+def build_whatsapp_candidate() -> ConnectorCandidate:
+    connector = NativeSourceConnector(
+        WHATSAPP_MANIFEST,
+        {
+            HEALTH_PROBE_V1.ref: lambda context: CredentialHealthProbe(
+                context, ("app_secret",)
+            ),
+            CLEANUP_V1.ref: lambda _context: LocalCredentialCleanup(),
+            WEBHOOK_V1.ref: lambda context: NativeWhatsAppWebhook(context),
+            IDENTITY_V1.ref: lambda _context: NativeIdentity(_whatsapp_identity),
+            NORMALIZATION_V1.ref: lambda _context: DirectNormalization(
+                handle_whatsapp
+            ),
+        },
+    )
+    return connector.candidate(
+        (
+            HEALTH_PROBE_V1,
+            CLEANUP_V1,
+            WEBHOOK_V1,
+            IDENTITY_V1,
+            NORMALIZATION_V1,
+        ),
+        conformance_fingerprint=WHATSAPP_CONFORMANCE_FINGERPRINT,
+    )
+
+
 def build_pilot_candidates() -> tuple[ConnectorCandidate, ...]:
-    return (build_slack_candidate(), build_notion_candidate())
+    return (
+        build_slack_candidate(),
+        build_notion_candidate(),
+        build_whatsapp_candidate(),
+    )
 
 
 def build_pilot_composition(
@@ -284,6 +361,7 @@ def build_pilot_composition(
             {
                 SLACK_CONFORMANCE_FINGERPRINT,
                 NOTION_CONFORMANCE_FINGERPRINT,
+                WHATSAPP_CONFORMANCE_FINGERPRINT,
             }
         ),
     )
@@ -303,6 +381,7 @@ def default_migrated_routing_policy(*, revision: int = 1) -> RoutingPolicy:
         connector_modes={
             SLACK_CONNECTOR_ID: ExecutionMode.CONNECTOR,
             NOTION_CONNECTOR_ID: ExecutionMode.CONNECTOR,
+            WHATSAPP_CONNECTOR_ID: ExecutionMode.CONNECTOR,
         },
     )
 
@@ -314,9 +393,13 @@ __all__ = [
     "SLACK_CONNECTOR_ID",
     "SLACK_CONFORMANCE_FINGERPRINT",
     "SLACK_MANIFEST",
+    "WHATSAPP_CONNECTOR_ID",
+    "WHATSAPP_CONFORMANCE_FINGERPRINT",
+    "WHATSAPP_MANIFEST",
     "build_notion_candidate",
     "build_pilot_candidates",
     "build_pilot_composition",
+    "build_whatsapp_candidate",
     "default_migrated_routing_policy",
     "build_slack_candidate",
 ]
