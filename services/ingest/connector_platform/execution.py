@@ -36,6 +36,8 @@ from services.ingest.ingestion.reconcilers import (
 )
 from services.ingest.source_contract.capabilities import (
     HISTORICAL_PULL_V1,
+    IDENTITY_V1,
+    INCREMENTAL_POLL_V1,
     NORMALIZATION_V1,
     RECONCILIATION_V1,
     WEBHOOK_V1,
@@ -49,6 +51,7 @@ from services.ingest.source_contract.models import (
     InstallationRef,
     NormalizationInput,
     PlanRequest,
+    PollRequest,
     ReconciliationRequest,
     ShardPlan,
     VerifiedWebhookResult,
@@ -111,6 +114,13 @@ class LegacyExecutionRouter:
             shadow_sink=shadow_sink,
         )
         self._deadline_seconds = deadline_seconds
+
+    def supports(self, source: str) -> bool:
+        try:
+            self._composition.registry.for_source(source)
+        except Exception:
+            return False
+        return True
 
     def _installation(self, source: str, install: Any) -> InstallationRef:
         description = self._composition.registry.for_source(source).describe()
@@ -265,6 +275,97 @@ class LegacyExecutionRouter:
                 ShadowDimension.CURSOR: value.next_cursor,
                 ShadowDimension.STATE: value.end_of_data,
             },
+        )
+        with legacy_binding_scope(payload):
+            return await self._executor.execute(request)
+
+    async def poll(
+        self,
+        source: str,
+        install: Any,
+        shard_identifier: dict[str, Any],
+        cursor: dict[str, Any] | None,
+        *,
+        shadow_safe: bool = False,
+    ) -> FetchResult:
+        installation, authority, services, lifecycle = self._base(source, install)
+        payload = LegacyBindingPayload(
+            install=install,
+            external_installation_id=str(_value(install, "installation_id", "")),
+            poll_shard_identifier=shard_identifier,
+        )
+
+        async def legacy_call() -> FetchResult:
+            return await FETCHER_DISPATCH[source](install, shard_identifier, cursor)
+
+        async def connector_call(capability: Any, operation: Any) -> FetchResult:
+            page = await capability.poll(
+                PollRequest(
+                    cursor=CursorState(schema_version=1, payload=cursor)
+                    if cursor is not None
+                    else None,
+                ),
+                operation,
+            )
+            return FetchResult(
+                records=[
+                    dict(record.payload)
+                    for record in page.records
+                    if isinstance(record.payload, dict)
+                ],
+                next_cursor=(
+                    page.next_cursor.payload if page.next_cursor is not None else None
+                ),
+                end_of_data=page.end_of_data,
+            )
+
+        request = CapabilityExecutionRequest(
+            installation=installation,
+            source=source,
+            authority=authority,
+            services=services,
+            capability=INCREMENTAL_POLL_V1,
+            connector_call=connector_call,
+            legacy_call=legacy_call,
+            deadline=self._deadline(),
+            lifecycle=lifecycle,
+            shadow_safe=shadow_safe,
+            shadow_projection=lambda value: {
+                ShadowDimension.PUBLICATION: value.records,
+                ShadowDimension.CURSOR: value.next_cursor,
+                ShadowDimension.STATE: value.end_of_data,
+            },
+        )
+        with legacy_binding_scope(payload):
+            return await self._executor.execute(request)
+
+    async def identity(
+        self,
+        source: str,
+        install: Any,
+        input: IdentityInput,
+        legacy_call: Callable[[], Awaitable[str]],
+    ) -> str:
+        installation, authority, services, lifecycle = self._base(source, install)
+        payload = LegacyBindingPayload(
+            install=install,
+            external_installation_id=str(_value(install, "installation_id", "")),
+        )
+
+        async def connector_call(capability: Any, _operation: Any) -> str:
+            return capability.external_id(input)
+
+        request = CapabilityExecutionRequest(
+            installation=installation,
+            source=source,
+            authority=authority,
+            services=services,
+            capability=IDENTITY_V1,
+            connector_call=connector_call,
+            legacy_call=legacy_call,
+            deadline=self._deadline(),
+            lifecycle=lifecycle,
+            shadow_projection=lambda value: {ShadowDimension.IDENTITY: value},
         )
         with legacy_binding_scope(payload):
             return await self._executor.execute(request)
