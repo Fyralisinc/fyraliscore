@@ -145,6 +145,7 @@ class ContinuousInstallationController:
         host_services: HostServicesFactory,
         *,
         operation_timeout_seconds: float = 30.0,
+        admitted_connector_ids: frozenset[str] | None = None,
     ) -> None:
         self._registry = registry
         self._authorities = authority_repository
@@ -152,10 +153,20 @@ class ContinuousInstallationController:
         self._host_services = host_services
         self._transitions = InstallationLifecycleController()
         self._operation_timeout_seconds = operation_timeout_seconds
+        self._admitted_connector_ids = admitted_connector_ids
 
     async def _observe(
         self, lifecycle: InstallationLifecycle, now: datetime
     ) -> LifecycleEvidence:
+        if (
+            self._admitted_connector_ids is not None
+            and lifecycle.connector_id not in self._admitted_connector_ids
+        ):
+            return LifecycleEvidence(
+                failure_reason=(
+                    "ArtifactQuarantined: connector artifact is not admitted"
+                )
+            )
         installation = InstallationRef(
             id=lifecycle.installation_id,
             tenant_id=lifecycle.tenant_id,

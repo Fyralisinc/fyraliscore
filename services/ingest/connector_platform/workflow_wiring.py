@@ -7,12 +7,20 @@ from dataclasses import dataclass
 
 import httpx
 
+from services.ingest.connector_platform.artifact_store import (
+    PostgresArtifactRepository,
+)
 from services.ingest.connector_platform.execution import LegacyExecutionRouter
 from services.ingest.connector_platform.authority_store import (
     PostgresAuthorityRepository,
 )
+from services.ingest.connector_platform.deployment import (
+    ArtifactAdmissionController,
+    ArtifactAdmissionSettings,
+)
 from services.ingest.connector_platform.pilots import (
     build_pilot_composition,
+    build_runtime_candidates,
     default_migrated_routing_policy,
 )
 from services.ingest.connector_platform.routing_config import (
@@ -39,10 +47,13 @@ class WorkflowConnectorWiring:
     router: LegacyExecutionRouter
     http_client: httpx.AsyncClient
     rollout: FleetRoutingController | None = None
+    artifact_admission: ArtifactAdmissionController | None = None
 
     async def refresh_routing(self) -> None:
         if self.rollout is not None:
             await self.rollout.refresh_once()
+        if self.artifact_admission is not None:
+            await self.artifact_admission.refresh()
 
     async def watch_routing(self, stop_event: object) -> None:
         if self.rollout is not None:
@@ -99,6 +110,7 @@ def build_workflow_connector_wiring(
         require_durable_authority=authority_repository is not None,
     )
     rollout = None
+    artifact_admission = None
     if pool is not None:
         rollout_repository = PostgresRolloutRepository(pool)
         rollout = FleetRoutingController(
@@ -106,7 +118,19 @@ def build_workflow_connector_wiring(
             RoutingConfigurationController(composition.routing),
             actor=f"workflow:{os.getpid()}",
         )
-    return WorkflowConnectorWiring(composition, router, client, rollout)
+        artifact_admission = ArtifactAdmissionController(
+            PostgresArtifactRepository(pool),
+            composition.routing,
+            build_runtime_candidates(),
+            ArtifactAdmissionSettings.from_env(),
+        )
+    return WorkflowConnectorWiring(
+        composition,
+        router,
+        client,
+        rollout,
+        artifact_admission,
+    )
 
 
 __all__ = ["WorkflowConnectorWiring", "build_workflow_connector_wiring"]

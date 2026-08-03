@@ -11,11 +11,21 @@ from lib.shared.secrets import build_secret_store
 from services.ingest.connector_platform.authority_store import (
     PostgresAuthorityRepository,
 )
+from services.ingest.connector_platform.artifact_store import (
+    PostgresArtifactRepository,
+)
+from services.ingest.connector_platform.deployment import (
+    ArtifactAdmissionController,
+    ArtifactAdmissionSettings,
+)
 from services.ingest.connector_platform.lifecycle_controller import (
     ContinuousInstallationController,
     PostgresInstallationLifecycleRepository,
 )
-from services.ingest.connector_platform.pilots import build_pilot_composition
+from services.ingest.connector_platform.pilots import (
+    build_pilot_composition,
+    build_runtime_candidates,
+)
 from services.ingest.connector_platform.production_host_services import (
     ProductionHostBackends,
     build_production_host_services_factory,
@@ -38,11 +48,21 @@ async def run_lifecycle_worker(stop_event: asyncio.Event | None = None) -> None:
                 callback_base_url=os.environ.get("CONNECTOR_CALLBACK_BASE_URL"),
             )
         )
+        artifact_admission = await ArtifactAdmissionController(
+            PostgresArtifactRepository(pool),
+            composition.routing,
+            build_runtime_candidates(),
+            ArtifactAdmissionSettings.from_env(),
+        ).refresh()
         controller = ContinuousInstallationController(
             composition.registry,
             PostgresAuthorityRepository(pool),
             PostgresInstallationLifecycleRepository(pool),
             host_services,
+            admitted_connector_ids=frozenset(
+                candidate.manifest.connector_id
+                for candidate in artifact_admission.candidates
+            ),
         )
         await controller.run(
             stop,

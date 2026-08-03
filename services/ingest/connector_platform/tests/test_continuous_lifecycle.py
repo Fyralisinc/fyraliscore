@@ -115,3 +115,22 @@ async def test_continuous_controller_reconciles_cleanup_and_revokes_authority() 
     assert repository.lifecycle.observed is InstallationPhase.REMOVED
     assert repository.retired
     assert authorities.revoked
+
+
+@pytest.mark.asyncio
+async def test_continuous_controller_rejects_quarantined_artifact() -> None:
+    lifecycle = _installation()
+    authorities = _Authorities(_authority(lifecycle))
+    repository = _LifecycleRepository(lifecycle)
+    async with httpx.AsyncClient() as client:
+        controller = ContinuousInstallationController(
+            build_pilot_composition().registry,
+            authorities,
+            repository,
+            HostServicesFactory(http_client=client),
+            admitted_connector_ids=frozenset(),
+        )
+        await controller.run_once()
+
+    assert repository.lifecycle.observed is InstallationPhase.FAILED
+    assert repository.lifecycle.conditions[-1].reason == "ReconcileFailed"

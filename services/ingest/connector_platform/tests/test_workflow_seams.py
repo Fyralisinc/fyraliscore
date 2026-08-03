@@ -5,6 +5,10 @@ from uuid import uuid4
 
 import pytest
 
+from services.ingest.connector_platform.workflow_wiring import (
+    build_workflow_connector_wiring,
+)
+from services.ingest.connector_runtime.policy import ExecutionMode, RouteRequest
 from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
 from services.ingest.ingestion.workflows.shard_fetch import (
     _FetchLoopContext,
@@ -50,3 +54,38 @@ async def test_non_pilot_fetch_keeps_legacy_dispatch(
 
     assert result.end_of_data
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_workflow_startup_applies_strict_artifact_quarantine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Pool:
+        async def fetchrow(self, query, *args):
+            return None
+
+        async def fetch(self, query, *args):
+            return []
+
+        async def execute(self, query, *args):
+            return "UPDATE 0"
+
+    monkeypatch.setenv("SOURCE_CONNECTOR_REQUIRE_SIGNED_ARTIFACTS", "true")
+    wiring = build_workflow_connector_wiring(
+        pool=Pool(),
+        secret_store=object(),
+    )
+    try:
+        await wiring.refresh_routing()
+        decision = wiring.composition.routing.resolve(
+            RouteRequest(
+                uuid4(),
+                "fyralis/slack",
+                "slack",
+                "ingestion.historical_pull",
+            )
+        )
+        assert decision.mode is ExecutionMode.LEGACY
+        assert decision.matched_scope == "artifact_quarantine"
+    finally:
+        await wiring.close()
