@@ -49,6 +49,7 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 import orjson
 from aiokafka import AIOKafkaConsumer, ConsumerRebalanceListener
@@ -215,6 +216,11 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
     else:
         consumer.subscribe(raw_topics)
     await s3.connect()
+    from services.ingest.connector_platform.workflow_wiring import (
+        build_workflow_connector_wiring,
+    )
+
+    connector_wiring = build_workflow_connector_wiring()
 
     consumed = 0
     produced = 0
@@ -243,7 +249,12 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
                 _bump("normalizer.messages_consumed")
                 _record_lag(msg)
 
-                if await _process_message(msg, s3, producer):
+                if await _process_message(
+                    msg,
+                    s3,
+                    producer,
+                    connector_router=connector_wiring.router,
+                ):
                     produced += 1
                     _bump("normalizer.messages_produced")
 
@@ -270,7 +281,12 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
                 produced_in_group = 0
                 async with sem:
                     for m in group:
-                        if await _process_message(m, s3, producer):
+                        if await _process_message(
+                            m,
+                            s3,
+                            producer,
+                            connector_router=connector_wiring.router,
+                        ):
                             produced_in_group += 1
                 return produced_in_group
 
@@ -318,6 +334,7 @@ async def run_worker(config: WorkerConfig) -> dict[str, int]:
                     break
     finally:
         ticker.cancel()
+        await connector_wiring.close()
         if health is not None:
             health.shutdown()
         await consumer.stop()
@@ -338,6 +355,8 @@ async def _process_message(
     msg: Any,
     s3: S3Client,
     producer: IdempotentProducer,
+    *,
+    connector_router: Any | None = None,
 ) -> bool:
     """Normalize one raw message and publish to `ingestion.normalized.<source>`.
 
@@ -355,7 +374,10 @@ async def _process_message(
         # _normalize_one_with_envelope parses the envelope FIRST so the
         # invariant-failure branch has it available for the DLQ publish.
         envelope_or_none, produced = await _normalize_one_with_envelope(
-            msg.value, s3, producer,
+            msg.value,
+            s3,
+            producer,
+            connector_router=connector_router,
         )
         last_envelope = envelope_or_none
     except EnvelopeInvariantError as exc:
@@ -445,6 +467,8 @@ async def _normalize_one_with_envelope(
     envelope_bytes: bytes,
     s3: S3Client,
     producer: IdempotentProducer,
+    *,
+    connector_router: Any | None = None,
 ) -> tuple[RawEnvelope | None, bool]:
     """Process one raw envelope. Returns (envelope, produced):
 
@@ -528,9 +552,48 @@ async def _normalize_one_with_envelope(
     # function. For live ingress, headers={} (the verified-at-ingress
     # info is already in `envelope.ingress_metadata`); for backfill,
     # headers carry the replayed webhook_metadata (A27.3).
-    handler = get_handler(channel)
     validate_ingest_json_payload(payload, channel=channel)
-    draft = await handler(payload, headers)
+    handler = get_handler(channel)
+
+    async def legacy_normalize():
+        return await handler(payload, headers)
+
+    if connector_router is not None and connector_router.supports(envelope.source):
+        from services.ingest.source_contract.models import (
+            NormalizationInput,
+            SourceRecord,
+        )
+
+        draft = await connector_router.normalize(
+            envelope.source,
+            {
+                "id": uuid5(
+                    NAMESPACE_URL,
+                    f"fyralis:semantic:{envelope.tenant_id}:{envelope.source}",
+                ),
+                "tenant_id": envelope.tenant_id,
+                "installation_id": "stateless-semantic-binding",
+                "secret_ref": "stateless-semantic-authority",
+                "enabled": True,
+            },
+            NormalizationInput(
+                record=SourceRecord(
+                    native_type=str(
+                        payload.get("object")
+                        or payload.get("type")
+                        or "record"
+                    ),
+                    payload=payload,
+                ),
+                ingress_kind=envelope.ingress_kind,
+                ingress_metadata=headers,
+                raw_object_key=envelope.raw_s3_key,
+                content_hash=envelope.content_hash,
+            ),
+            legacy_normalize,
+        )
+    else:
+        draft = await legacy_normalize()
 
     normalized = NormalizedEnvelope(
         envelope_version=1,

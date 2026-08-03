@@ -1136,13 +1136,32 @@ async def _resolve_and_verify_webhook(
     tenant_id = outcome.tenant_id if isinstance(outcome, Resolved) else None
 
     secrets = await load_secrets(provider, tenant_id, app_state=request.app.state)
-    try:
-        verified = await verifier.verify(
+
+    async def legacy_verify() -> VerifiedContext:
+        return await verifier.verify(
             body=raw,
             headers=request.headers,
             secrets=secrets,
             now=time.time(),
         )
+
+    try:
+        if isinstance(outcome, Resolved):
+            from services.ingest.connector_platform.webhook_ingress import (
+                execute_migrated_webhook,
+            )
+
+            verified = await execute_migrated_webhook(
+                app_state=request.app.state,
+                provider=provider,
+                installation_row_id=outcome.installation_row_id,
+                tenant_id=outcome.tenant_id,
+                body=raw,
+                headers=request.headers,
+                legacy_verify=legacy_verify,
+            )
+        else:
+            verified = await legacy_verify()
     except WebhookVerificationError as exc:
         return _err_response(exc)
     except Exception as exc:  # pragma: no cover — defensive
