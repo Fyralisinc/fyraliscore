@@ -922,7 +922,7 @@ async def _fetch_page(
     # raises RateLimitWaitExceeded, caught by _run_fetch_loop as transient.
     if rate_limiter is not None:
         await rate_limiter.acquire(source=ctx.source, tenant_id=ctx.tenant_id)
-    if connector_router is not None:
+    if connector_router is not None and connector_router.supports(ctx.source):
         return await connector_router.fetch(
             ctx.source,
             install,

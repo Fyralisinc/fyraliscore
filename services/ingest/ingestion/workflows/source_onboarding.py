@@ -1171,7 +1171,10 @@ class SourceOnboarding(LongRunningService):
             source_client=source_client,
         )
         try:
-            if self._connector_router is None:
+            if (
+                self._connector_router is None
+                or not self._connector_router.supports(source)
+            ):
                 shards = await PLANNER_DISPATCH[source](ctx)
             else:
                 shards = await self._connector_router.plan(source, ctx)
