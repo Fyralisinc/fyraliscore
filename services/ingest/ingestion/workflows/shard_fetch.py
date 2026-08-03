@@ -825,6 +825,7 @@ class _FetchLoopContext:
     shard_id: UUID
     tenant_id: UUID
     source: str
+    shard_kind: str
     shard_identifier: dict[str, Any]
     loop_started_at: dt.datetime
     records_fetched: int = 0
@@ -836,10 +837,17 @@ class _FetchLoopContext:
             orjson.loads(ident_raw) if isinstance(ident_raw, (str, bytes))
             else dict(ident_raw)
         )
+        try:
+            shard_kind = shard["shard_kind"]
+        except KeyError:
+            # Older tests/fixtures predate the selected-column mirror; the
+            # identifier has always carried the source-specific kind.
+            shard_kind = shard_identifier.get("shard_kind", "legacy_shard")
         return cls(
             shard_id=shard["id"],
             tenant_id=shard["tenant_id"],
             source=shard["source"],
+            shard_kind=shard_kind,
             shard_identifier=shard_identifier,
             loop_started_at=dt.datetime.now(tz=dt.timezone.utc),
         )
@@ -907,12 +915,21 @@ async def _fetch_page(
     *,
     install: asyncpg.Record,
     cursor: dict[str, Any] | None,
+    connector_router: Any | None = None,
 ) -> Any:
     # FetchPage rate-limit gate (LLD §13): acquire one token for the
     # (source, method) bucket BEFORE the upstream page call. A bounded wait
     # raises RateLimitWaitExceeded, caught by _run_fetch_loop as transient.
     if rate_limiter is not None:
         await rate_limiter.acquire(source=ctx.source, tenant_id=ctx.tenant_id)
+    if connector_router is not None:
+        return await connector_router.fetch(
+            ctx.source,
+            install,
+            ctx.shard_identifier,
+            cursor,
+            shard_kind=ctx.shard_kind,
+        )
     fetcher = FETCHER_DISPATCH[ctx.source]
     return await fetcher(install, ctx.shard_identifier, cursor)
 
@@ -1017,11 +1034,16 @@ async def _run_fetch_pages(
     ctx: _FetchLoopContext,
     *,
     install: asyncpg.Record,
+    connector_router: Any | None = None,
 ) -> bool:
     while True:
         current_state, cursor = await _load_fetch_cursor(pool, ctx)
         result = await _fetch_page(
-            rate_limiter, ctx, install=install, cursor=cursor,
+            rate_limiter,
+            ctx,
+            install=install,
+            cursor=cursor,
+            connector_router=connector_router,
         )
         ctx.records_fetched += len(result.records)
         messages = await _write_fetch_page_messages(
@@ -1093,6 +1115,7 @@ class ShardFetch(LongRunningService):
         config: ShardFetchConfig | None = None,
         s3_client: S3Client | None = None,
         rate_limiter: FetchRateLimiter | None = None,
+        connector_router: Any | None = None,
     ) -> None:
         self._pool = pool
         self._kafka_producer = kafka_producer
@@ -1107,6 +1130,7 @@ class ShardFetch(LongRunningService):
         # prior behaviour. When set, one token is consumed per page fetch
         # from the (source, method) bucket before the upstream call.
         self._rate_limiter = rate_limiter
+        self._connector_router = connector_router
 
     @property
     def tick_interval_seconds(self) -> float:
@@ -1316,6 +1340,7 @@ class ShardFetch(LongRunningService):
                 self._config,
                 ctx,
                 install=install,
+                connector_router=self._connector_router,
             ):
                 return
 
@@ -1509,6 +1534,9 @@ async def _run_service() -> None:
     )
     from services.ingest.ingestion.rate_limit import RateLimiter
     from services.ingest.ingestion.workflows.runtime import make_workflow_pool
+    from services.ingest.connector_platform.workflow_wiring import (
+        build_workflow_connector_wiring,
+    )
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
     producer = IdempotentProducer(ProducerConfig(
@@ -1518,6 +1546,7 @@ async def _run_service() -> None:
         client_id="workflow-shard_fetch",
     ))
     await producer.start()
+    connector_wiring = build_workflow_connector_wiring()
 
     # Raw-tier S3 client for the backfill producer (A27.1). S3_ENDPOINT_URL
     # is optional (None → real AWS); S3_RAW_BUCKET defaults to fyralis-raw,
@@ -1577,6 +1606,7 @@ async def _run_service() -> None:
     service = ShardFetch(
         pool, producer, config=config, s3_client=s3_client,
         rate_limiter=rate_limiter,
+        connector_router=connector_wiring.router,
     )
 
     stop_event = asyncio.Event()
@@ -1609,6 +1639,7 @@ async def _run_service() -> None:
         await asyncio.gather(ticker, return_exceptions=True)
         if health is not None:
             health.shutdown()
+        await connector_wiring.close()
         await producer.stop()
         await s3_client.close()
         if redis is not None:

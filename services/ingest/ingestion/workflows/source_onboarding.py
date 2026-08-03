@@ -1003,12 +1003,16 @@ class SourceOnboarding(LongRunningService):
         *,
         kafka_producer: Any | None = None,
         config: SourceOnboardingConfig | None = None,
+        connector_router: Any | None = None,
     ) -> None:
         self._pool = pool
         # OPTIONAL progress-event producer (see TenantOnboarding); None in
         # unit tests, wired by `_run_service` in production.
         self._kafka_producer = kafka_producer
         self._config = config or SourceOnboardingConfig()
+        # Side-by-side Source Connector facade. None preserves the exact
+        # pre-Phase-2 dispatch call; a wired facade still defaults to legacy.
+        self._connector_router = connector_router
 
     @property
     def tick_interval_seconds(self) -> float:
@@ -1167,7 +1171,10 @@ class SourceOnboarding(LongRunningService):
             source_client=source_client,
         )
         try:
-            shards = await PLANNER_DISPATCH[source](ctx)
+            if self._connector_router is None:
+                shards = await PLANNER_DISPATCH[source](ctx)
+            else:
+                shards = await self._connector_router.plan(source, ctx)
         except NotImplementedError as exc:
             failure_reason = str(exc)
             await conn.execute(
@@ -1452,6 +1459,9 @@ async def _run_service() -> None:
         make_workflow_pool,
         start_workflow_health,
     )
+    from services.ingest.connector_platform.workflow_wiring import (
+        build_workflow_connector_wiring,
+    )
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
     # Progress-event producer for `source.onboarding.started` (LLD §6).
@@ -1462,6 +1472,7 @@ async def _run_service() -> None:
         client_id="workflow-source_onboarding",
     ))
     await producer.start()
+    connector_wiring = build_workflow_connector_wiring()
     config = SourceOnboardingConfig(
         tick_interval_seconds=float(
             os.environ.get("SOURCE_ONBOARDING_TICK_SEC", "5.0"),
@@ -1473,7 +1484,12 @@ async def _run_service() -> None:
             "SOURCE_ONBOARDING_INSTANCE", WORKFLOW_ID_DEFAULT,
         ),
     )
-    service = SourceOnboarding(pool, kafka_producer=producer, config=config)
+    service = SourceOnboarding(
+        pool,
+        kafka_producer=producer,
+        config=config,
+        connector_router=connector_wiring.router,
+    )
 
     stop_event = asyncio.Event()
     loop = asyncio.get_event_loop()
@@ -1490,6 +1506,7 @@ async def _run_service() -> None:
     finally:
         log.info("workflow.source_onboarding.shutting_down")
         await health_shutdown()
+        await connector_wiring.close()
         await producer.stop()
         await pool.close()
     log.info("workflow.source_onboarding.exited")

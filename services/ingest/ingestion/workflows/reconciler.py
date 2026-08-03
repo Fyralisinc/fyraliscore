@@ -189,6 +189,13 @@ SHARD_FETCH_INBOX_ID = "shard_fetch"
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
+_LOAD_PILOT_INSTALL_SQL = """
+SELECT id, tenant_id, provider, installation_id, enabled
+  FROM provider_installations
+ WHERE tenant_id = $1 AND provider = $2 AND enabled = TRUE
+ LIMIT 1
+"""
+
 
 # ---------------------------------------------------------------------
 # SQL.
@@ -431,12 +438,14 @@ class Reconciler(LongRunningService):
         *,
         kafka_producer: Any | None = None,
         config: ReconcilerConfig | None = None,
+        connector_router: Any | None = None,
     ) -> None:
         self._pool = pool
         # OPTIONAL progress-event producer (see TenantOnboarding); None in
         # unit tests, wired by `_run_service` in production.
         self._kafka_producer = kafka_producer
         self._config = config or ReconcilerConfig()
+        self._connector_router = connector_router
 
     @property
     def tick_interval_seconds(self) -> float:
@@ -559,8 +568,28 @@ class Reconciler(LongRunningService):
         # facing "not yet implemented" distinction); control flow is
         # identical.
         try:
+            install = None
+            if (
+                self._connector_router is not None
+                and self._connector_router.supports(source)
+            ):
+                install = await conn.fetchrow(
+                    _LOAD_PILOT_INSTALL_SQL,
+                    run["tenant_id"],
+                    source,
+                )
+            dispatch = (
+                self._connector_router.reconcile(
+                    source,
+                    install,
+                    shards,
+                    run,
+                )
+                if install is not None
+                else RECONCILER_DISPATCH[source](shards, run)
+            )
             decision = await asyncio.wait_for(
-                RECONCILER_DISPATCH[source](shards, run),
+                dispatch,
                 timeout=RECONCILER_DISPATCH_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
@@ -744,6 +773,9 @@ async def _run_service() -> None:
         make_workflow_pool,
         start_workflow_health,
     )
+    from services.ingest.connector_platform.workflow_wiring import (
+        build_workflow_connector_wiring,
+    )
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
     # Progress-event producer for `source.onboarding.complete` (LLD §6).
@@ -754,6 +786,7 @@ async def _run_service() -> None:
         client_id="workflow-reconciler",
     ))
     await producer.start()
+    connector_wiring = build_workflow_connector_wiring()
     # M6.3: per-source reconcilers may need pool access for auxiliary reads
     # (e.g., Gmail reads workflow_states for each shard's final_history_id).
     # Register the pool with every per-source module via the shared helper —
@@ -776,7 +809,12 @@ async def _run_service() -> None:
             "RECONCILER_INSTANCE", WORKFLOW_ID_DEFAULT,
         ),
     )
-    service = Reconciler(pool, kafka_producer=producer, config=config)
+    service = Reconciler(
+        pool,
+        kafka_producer=producer,
+        config=config,
+        connector_router=connector_wiring.router,
+    )
 
     stop_event = asyncio.Event()
     loop = asyncio.get_event_loop()
@@ -793,6 +831,7 @@ async def _run_service() -> None:
     finally:
         log.info("workflow.reconciler.shutting_down")
         await health_shutdown()
+        await connector_wiring.close()
         await producer.stop()
         await pool.close()
     log.info("workflow.reconciler.exited")
