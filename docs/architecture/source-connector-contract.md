@@ -1,14 +1,15 @@
 # Fyralis Source Connector Contract
 
-Status: **Proposed architecture; research and design only**<br>
+Status: **Phase 1 foundation implemented; awaiting architectural review**<br>
 Audience: ingestion, platform, security, and product engineers<br>
 Last reviewed: 2026-08-03
 
 This document defines the target architecture for making a data source a
-first-class Fyralis primitive. It deliberately does not contain production
-implementation. The contracts and names shown below are illustrative enough to
-guide implementation, but they are not accepted APIs until Phase 2 is reviewed
-and approved.
+first-class Fyralis primitive. The Phase 1 logical contract, registry,
+coexistence adapter, and conformance skeleton now exist alongside the legacy
+runtime without carrying production traffic. They remain v1alpha1 APIs pending
+review; runtime integration and source migration require explicit approval of
+this phase.
 
 ## 1. Executive summary
 
