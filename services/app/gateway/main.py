@@ -59,6 +59,9 @@ from services.ingest.integrations.github.gateway_wiring import (
     close_github_gateway_state,
     wire_github_gateway_state,
 )
+from services.ingest.connector_platform.startup import (
+    wire_source_connector_runtime,
+)
 
 
 log = get_logger("gateway")
@@ -808,6 +811,16 @@ def build_app(
                 alias_repo=alias_repo,
                 embedder=embedder,
                 rate_limiter=rate_limiter,
+            )
+
+            connector_wiring = wire_source_connector_runtime(app_.state)
+            startup_status.ok(
+                "source_connector_runtime",
+                required=False,
+                detail=(
+                    f"connectors={len(connector_wiring.composition.registry)} "
+                    f"fingerprint={connector_wiring.composition.registry_fingerprint}"
+                ),
             )
 
             await _start_extension_startup_hooks(
