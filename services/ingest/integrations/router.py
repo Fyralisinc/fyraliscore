@@ -31,6 +31,10 @@ from services.ingest.integrations.discord import oauth as discord_oauth
 from services.ingest.integrations.github import oauth as github_oauth
 from services.ingest.integrations.notion import oauth as notion_oauth
 from services.ingest.integrations.slack import oauth as slack_oauth
+from services.ingest.connector_platform.oauth_ingress import (
+    execute_oauth_callback,
+    execute_oauth_install,
+)
 
 
 def build_integrations_router() -> APIRouter:
@@ -40,11 +44,22 @@ def build_integrations_router() -> APIRouter:
 
     @router.get("/slack/install")
     async def slack_install(request: Request):
-        return await slack_oauth.install_handler(request)
+        return await execute_oauth_install(
+            request,
+            provider="slack",
+            legacy_handler=lambda: slack_oauth.install_handler(request),
+        )
 
     @router.get("/slack/callback")
     async def slack_callback(request: Request):
-        return await _callback_with_metrics(slack_oauth.callback_handler, request)
+        return await _callback_with_metrics(
+            lambda _request: execute_oauth_callback(
+                request,
+                provider="slack",
+                legacy_handler=lambda: slack_oauth.callback_handler(request),
+            ),
+            request,
+        )
 
     @router.get("/discord/install")
     async def discord_install(request: Request):
@@ -64,11 +79,22 @@ def build_integrations_router() -> APIRouter:
 
     @router.get("/notion/install")
     async def notion_install(request: Request):
-        return await notion_oauth.install_handler(request)
+        return await execute_oauth_install(
+            request,
+            provider="notion",
+            legacy_handler=lambda: notion_oauth.install_handler(request),
+        )
 
     @router.get("/notion/callback")
     async def notion_callback(request: Request):
-        return await _callback_with_metrics(notion_oauth.callback_handler, request)
+        return await _callback_with_metrics(
+            lambda _request: execute_oauth_callback(
+                request,
+                provider="notion",
+                legacy_handler=lambda: notion_oauth.callback_handler(request),
+            ),
+            request,
+        )
 
     return router
 

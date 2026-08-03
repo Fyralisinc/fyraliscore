@@ -129,6 +129,28 @@ class SlackOAuthCapability:
                 ),
             ),
         ]
+        authed_user = payload.get("authed_user")
+        user_id = None
+        user_scopes = None
+        if isinstance(authed_user, dict):
+            user_token = authed_user.get("access_token")
+            user_id = authed_user.get("id")
+            user_scopes = authed_user.get("scope")
+            if (
+                isinstance(user_token, str)
+                and user_token
+                and isinstance(user_id, str)
+                and user_id
+            ):
+                candidates.append(
+                    SecretCandidate(
+                        slot=SlotId("oauth_user_access_token"),
+                        value=SecretValue.from_text(user_token),
+                    )
+                )
+            else:
+                user_id = None
+                user_scopes = None
         scopes = tuple(
             sorted(
                 set(str(payload.get("scope") or "").split(","))
@@ -139,7 +161,11 @@ class SlackOAuthCapability:
             OAuthResult(
                 external_installation_id=team_id,
                 granted_scopes=scopes,
-                metadata={"team_name": team.get("name")},
+                metadata={
+                    "team_name": team.get("name"),
+                    "authed_user_id": user_id,
+                    "granted_user_scopes": user_scopes,
+                },
             ),
             tuple(candidates),
         )
