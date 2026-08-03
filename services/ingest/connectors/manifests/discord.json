@@ -1,0 +1,107 @@
+{
+  "apiVersion": "sources.fyralis.io/v1",
+  "kind": "SourceConnector",
+  "metadata": {
+    "id": "fyralis/discord",
+    "source": "discord",
+    "displayName": "Discord",
+    "version": "1.0.0",
+    "owner": "ingestion"
+  },
+  "spec": {
+    "contract": ">=1.0,<2.0",
+    "implementation": "services.ingest.connectors.fleet:build_discord_connector",
+    "artifactModules": [
+      "services.ingest.connectors.native",
+      "services.ingest.connectors.profiles"
+    ],
+    "maturity": "stable",
+    "capabilities": [
+      {
+        "id": "installation.configure",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "installation.secret_rotation",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "health.probe",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "bot_token",
+          "webhook_public_key"
+        ]
+      },
+      {
+        "id": "lifecycle.cleanup",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "ingestion.historical_pull",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "bot_token"
+        ]
+      },
+      {
+        "id": "ingestion.reconciliation",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "ingestion.webhook",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "webhook_public_key"
+        ]
+      },
+      {
+        "id": "ingestion.gateway_stream",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "bot_token"
+        ]
+      },
+      {
+        "id": "semantic.identity",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "semantic.normalization",
+        "version": 1,
+        "required": true
+      }
+    ],
+    "ingressKinds": [
+      "backfill",
+      "gateway",
+      "webhook"
+    ],
+    "permissions": {
+      "secretSlots": [
+        "bot_token",
+        "webhook_public_key"
+      ],
+      "outboundHosts": [
+        "discord.com"
+      ],
+      "requestedScopes": []
+    },
+    "trust": {
+      "maximumTier": "attested_agent"
+    },
+    "runtime": {
+      "isolation": "in_process_trusted",
+      "resourceClass": "io_standard"
+    }
+  }
+}

@@ -9,13 +9,12 @@ from services.ingest.connector_conformance import (
     ConnectorConformanceSuite,
     assert_connector_conforms,
 )
-from services.ingest.connector_platform.catalog import build_compatibility_candidates
 from services.ingest.connector_runtime.composition import (
     ConnectorRuntimeComposition,
     build_runtime_composition,
 )
 from services.ingest.connector_runtime.discovery import candidate_from_manifest
-from services.ingest.connector_runtime.policy import RoutingPolicy
+from services.ingest.connector_runtime.policy import ExecutionMode, RoutingPolicy
 from services.ingest.connector_runtime.registry import (
     ConnectorCandidate,
     HostCompatibility,
@@ -29,7 +28,6 @@ from services.ingest.source_contract.manifest import (
     load_connector_manifests,
 )
 from services.ingest.source_contract.versioning import SemanticVersion
-
 
 SLACK_CONNECTOR_ID = "fyralis/slack"
 NOTION_CONNECTOR_ID = "fyralis/notion"
@@ -105,17 +103,25 @@ def build_pilot_candidates() -> tuple[ConnectorCandidate, ...]:
 
 
 def build_runtime_candidates() -> tuple[ConnectorCandidate, ...]:
-    """Return the admitted native and compatibility catalog candidates."""
+    """Return the admitted native catalog for all source families."""
 
-    candidates = build_pilot_candidates() + build_compatibility_candidates()
+    candidates = tuple(
+        _conformed_native_candidate(manifest)
+        for manifest in sorted(
+            _NATIVE_MANIFESTS.values(), key=lambda item: item.connector_id
+        )
+    )
     _RELEASE_EVIDENCE.validate(candidates)
     return candidates
+
+
+build_fleet_candidates = build_runtime_candidates
 
 
 def build_pilot_composition(
     policy: RoutingPolicy | None = None,
 ) -> ConnectorRuntimeComposition:
-    """Build the complete catalog; execution remains legacy unless opted in."""
+    """Build the complete native catalog with stable-v1 execution preferred."""
 
     candidates = build_runtime_candidates()
     host = HostCompatibility(
@@ -130,10 +136,16 @@ def build_pilot_composition(
     )
 
 
-def default_migrated_routing_policy(*, revision: int = 1) -> RoutingPolicy:
-    """Return the safe bootstrap policy; durable policy must opt into connector mode."""
+build_fleet_composition = build_pilot_composition
 
-    return RoutingPolicy(revision=revision)
+
+def default_migrated_routing_policy(*, revision: int = 1) -> RoutingPolicy:
+    """Prefer stable-v1 execution; signed admission can still quarantine to legacy."""
+
+    return RoutingPolicy(revision=revision, global_mode=ExecutionMode.CONNECTOR)
+
+
+default_native_routing_policy = default_migrated_routing_policy
 
 
 def release_evidence_catalog() -> ReleaseEvidenceCatalog:
@@ -141,15 +153,17 @@ def release_evidence_catalog() -> ReleaseEvidenceCatalog:
 
 
 __all__ = [
-    "NOTION_CONNECTOR_ID",
     "NOTION_CONFORMANCE_FINGERPRINT",
+    "NOTION_CONNECTOR_ID",
     "NOTION_MANIFEST",
-    "SLACK_CONNECTOR_ID",
     "SLACK_CONFORMANCE_FINGERPRINT",
+    "SLACK_CONNECTOR_ID",
     "SLACK_MANIFEST",
-    "WHATSAPP_CONNECTOR_ID",
     "WHATSAPP_CONFORMANCE_FINGERPRINT",
+    "WHATSAPP_CONNECTOR_ID",
     "WHATSAPP_MANIFEST",
+    "build_fleet_candidates",
+    "build_fleet_composition",
     "build_notion_candidate",
     "build_pilot_candidates",
     "build_pilot_composition",
@@ -157,5 +171,6 @@ __all__ = [
     "build_slack_candidate",
     "build_whatsapp_candidate",
     "default_migrated_routing_policy",
+    "default_native_routing_policy",
     "release_evidence_catalog",
 ]

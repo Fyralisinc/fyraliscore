@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from uuid import uuid4
+
+from services.ingest.connector_conformance import ConnectorConformanceSuite
+from services.ingest.connector_platform.catalog import CONNECTOR_CATALOG
 from services.ingest.connector_platform.pilots import (
     NOTION_CONFORMANCE_FINGERPRINT,
     NOTION_CONNECTOR_ID,
@@ -9,36 +13,38 @@ from services.ingest.connector_platform.pilots import (
     WHATSAPP_CONNECTOR_ID,
     build_pilot_candidates,
     build_pilot_composition,
+    release_evidence_catalog,
 )
-from services.ingest.connector_conformance import ConnectorConformanceSuite
-from services.ingest.connector_platform.catalog import CONNECTOR_CATALOG
-from services.ingest.connector_platform.pilots import release_evidence_catalog
 from services.ingest.connector_runtime.policy import ExecutionMode, RouteRequest
 from services.ingest.source_contract.capabilities import (
     HISTORICAL_PULL_V1,
     INCREMENTAL_POLL_V1,
     WEBHOOK_V1,
 )
-from uuid import uuid4
 
 
-def test_pilot_composition_is_immutable_and_bootstraps_legacy_safe() -> None:
+def test_fleet_composition_is_immutable_and_bootstraps_native() -> None:
     composition = build_pilot_composition()
 
     assert len(composition.registry.connector_ids()) == 26
     assert set(composition.registry.connector_ids()) == {
         entry.connector_id for entry in CONNECTOR_CATALOG
     }
-    assert composition.registry.list_by_capability(WEBHOOK_V1.ref)[0].source == "slack"
+    assert "slack" in {
+        item.source for item in composition.registry.list_by_capability(WEBHOOK_V1.ref)
+    }
     assert "notion" in {
         item.source
         for item in composition.registry.list_by_capability(INCREMENTAL_POLL_V1.ref)
     }
-    assert {
+    native_backfill_sources = {
         item.source
         for item in composition.registry.list_by_capability(HISTORICAL_PULL_V1.ref)
         if item.origin.startswith("first-party-native")
-    } == {"slack", "notion"}
+    }
+    assert native_backfill_sources == {
+        entry.source for entry in CONNECTOR_CATALOG if "backfill" in entry.ingress_kinds
+    }
     assert (
         composition.routing.resolve(
             RouteRequest(
@@ -48,7 +54,7 @@ def test_pilot_composition_is_immutable_and_bootstraps_legacy_safe() -> None:
                 capability=HISTORICAL_PULL_V1.ref.id,
             )
         ).mode
-        is ExecutionMode.LEGACY
+        is ExecutionMode.CONNECTOR
     )
 
 

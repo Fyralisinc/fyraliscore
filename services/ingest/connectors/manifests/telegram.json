@@ -1,0 +1,96 @@
+{
+  "apiVersion": "sources.fyralis.io/v1",
+  "kind": "SourceConnector",
+  "metadata": {
+    "id": "fyralis/telegram",
+    "source": "telegram",
+    "displayName": "Telegram",
+    "version": "1.0.0",
+    "owner": "ingestion"
+  },
+  "spec": {
+    "contract": ">=1.0,<2.0",
+    "implementation": "services.ingest.connectors.fleet:build_telegram_connector",
+    "artifactModules": [
+      "services.ingest.connectors.native",
+      "services.ingest.connectors.profiles"
+    ],
+    "maturity": "stable",
+    "capabilities": [
+      {
+        "id": "installation.configure",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "installation.secret_rotation",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "health.probe",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "bot_token"
+        ]
+      },
+      {
+        "id": "lifecycle.cleanup",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "ingestion.historical_pull",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "bot_token"
+        ]
+      },
+      {
+        "id": "ingestion.reconciliation",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "ingestion.gateway_stream",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "bot_token"
+        ]
+      },
+      {
+        "id": "semantic.identity",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "semantic.normalization",
+        "version": 1,
+        "required": true
+      }
+    ],
+    "ingressKinds": [
+      "backfill",
+      "gateway"
+    ],
+    "permissions": {
+      "secretSlots": [
+        "bot_token"
+      ],
+      "outboundHosts": [
+        "api.telegram.org"
+      ],
+      "requestedScopes": []
+    },
+    "trust": {
+      "maximumTier": "attested_agent"
+    },
+    "runtime": {
+      "isolation": "in_process_trusted",
+      "resourceClass": "io_standard"
+    }
+  }
+}

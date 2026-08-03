@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -34,7 +34,7 @@ async def test_complete_behavior_fixture_produces_release_fingerprint() -> None:
         await assert_cursor_monotonicity(pages)
 
     async def stable_value():
-        return {"id": "stable", "at": datetime(2025, 1, 1, tzinfo=timezone.utc)}
+        return {"id": "stable", "at": datetime(2025, 1, 1, tzinfo=UTC)}
 
     async def yes() -> bool:
         return True
@@ -47,6 +47,9 @@ async def test_complete_behavior_fixture_produces_release_fingerprint() -> None:
 
     async def migration():
         return 1, 2, {"cursor": "x"}, {"cursor": "x"}
+
+    async def extended_behavior() -> None:
+        """The suite accepts connector-owned evidence operations for v1 additions."""
 
     fixture = BehavioralFixture(
         {
@@ -70,6 +73,12 @@ async def test_complete_behavior_fixture_produces_release_fingerprint() -> None:
             "cleanup": cleanup_idempotency_check(yes),
             "lifecycle": lifecycle_sequence_check(phases),
             "state_migration": state_migration_check(migration),
+            "configuration": extended_behavior,
+            "secret_rotation": extended_behavior,
+            "gateway_resume": extended_behavior,
+            "checkpoint_replay": extended_behavior,
+            "mixed_worker": extended_behavior,
+            "downgrade_policy": extended_behavior,
         }
     )
 

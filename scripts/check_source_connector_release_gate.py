@@ -7,24 +7,26 @@ import asyncio
 from uuid import UUID
 
 from services.ingest.connector_platform.catalog import CONNECTOR_CATALOG
+from services.ingest.connector_platform.fleet_validation import validate_native_fleet
 from services.ingest.connector_platform.pilots import (
-    build_runtime_candidates,
+    build_fleet_candidates,
     default_migrated_routing_policy,
     release_evidence_catalog,
 )
 from services.ingest.connector_runtime.artifacts import connector_artifact_sha256
 from services.ingest.connector_runtime.policy import ExecutionMode, RouteRequest
-from services.ingest.connectors.behavior import run_pilot_behavioral_conformance
+from services.ingest.connectors.behavior import run_fleet_behavioral_conformance
 
 
 def main() -> int:
-    candidates = build_runtime_candidates()
+    candidates = build_fleet_candidates()
     expected_ids = {entry.connector_id for entry in CONNECTOR_CATALOG}
     actual_ids = {candidate.manifest.connector_id for candidate in candidates}
     if actual_ids != expected_ids or len(candidates) != len(CONNECTOR_CATALOG):
         raise SystemExit("connector candidate catalog does not match source inventory")
     release_evidence_catalog().validate(candidates)
-    reports = asyncio.run(run_pilot_behavioral_conformance())
+    validate_native_fleet(candidates)
+    reports = asyncio.run(run_fleet_behavioral_conformance())
     for connector_id, report in reports.items():
         if not report.passed:
             raise SystemExit(f"behavioral conformance failed for {connector_id}")
@@ -48,13 +50,14 @@ def main() -> int:
                 capability=manifest.capability_refs[0].id,
             )
         )
-        if decision.mode is not ExecutionMode.LEGACY:
+        if decision.mode is not ExecutionMode.CONNECTOR:
             raise SystemExit(
-                f"{manifest.connector_id} is connector-authoritative by default"
+                f"{manifest.connector_id} is not connector-authoritative in stable v1"
             )
     print(
-        f"source connector release gate passed: {len(candidates)} candidates, "
-        "structural + behavioral evidence, measured modules, legacy-safe defaults"
+        f"source connector release gate passed: {len(candidates)} native stable-v1 "
+        "candidates, generated wiring, structural + behavioral evidence, measured "
+        "modules, native bootstrap routing, signed fail-closed admission"
     )
     return 0
 

@@ -118,6 +118,7 @@ PATTERN-ALIGNMENT MAPPING
   Rule 5 (no cross-workflow shared state):
     No module-level mutable state.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -147,7 +148,7 @@ from services.ingest.ingestion.workflows.state import (
     load_state,
     persist_state,
 )
-
+from services.ingest.source_contract.source_catalog import source_ids
 
 log = logging.getLogger(__name__)
 
@@ -171,7 +172,7 @@ BRIDGE_INBOX_ID = "bridge"
 DEFAULT_TICK_INTERVAL_SECONDS = 10.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
 
-VALID_SOURCES = ("slack", "github", "discord", "gmail", "notion", "google_calendar", "google_drive", "jira", "mercury", "quickbooks", "grafana", "telegram", "brex", "ramp", "gusto", "deel", "fireflies", "signal", "aws", "miro", "figma", "carta", "hibob", "ashby", "linkedin", "whatsapp")
+VALID_SOURCES = source_ids()
 
 # Coarse, NON-BINDING per-source estimate for the `tenant.onboarding.started`
 # event's `eta_minutes`. The event model documents this field as a
@@ -408,13 +409,15 @@ class TenantOnboardingConfig:
 # Named side-effect functions (Rule 1).
 # ---------------------------------------------------------------------
 async def _load_run_row(
-    conn: asyncpg.Connection, run_id: UUID,
+    conn: asyncpg.Connection,
+    run_id: UUID,
 ) -> asyncpg.Record | None:
     return await conn.fetchrow(_LOAD_RUN_SQL, run_id)
 
 
 async def _determine_applicable_sources(
-    conn: asyncpg.Connection, tenant_id: UUID,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
 ) -> list[str]:
     """Query provider_installations + gmail_installations at
     tick-time. Returns the list of sources that are CURRENTLY
@@ -433,15 +436,21 @@ async def _determine_applicable_sources(
 async def _insert_source_row(
     conn: asyncpg.Connection,
     *,
-    run_id: UUID, source: str, tenant_id: UUID,
+    run_id: UUID,
+    source: str,
+    tenant_id: UUID,
 ) -> None:
     await conn.execute(
-        _INSERT_SOURCE_ROW_SQL, run_id, source, tenant_id,
+        _INSERT_SOURCE_ROW_SQL,
+        run_id,
+        source,
+        tenant_id,
     )
 
 
 async def _enable_kafka_path(
-    conn: asyncpg.Connection, tenant_id: UUID,
+    conn: asyncpg.Connection,
+    tenant_id: UUID,
 ) -> None:
     """Set `ingestion.kafka_path_enabled=TRUE` for the tenant if unset.
 
@@ -455,7 +464,8 @@ async def _enable_kafka_path(
 async def _mark_source_completed(
     conn: asyncpg.Connection,
     *,
-    run_id: UUID, source: str,
+    run_id: UUID,
+    source: str,
 ) -> None:
     await conn.execute(_MARK_SOURCE_COMPLETED_SQL, run_id, source)
 
@@ -463,21 +473,28 @@ async def _mark_source_completed(
 async def _mark_source_failed(
     conn: asyncpg.Connection,
     *,
-    run_id: UUID, source: str, failure_reason: str,
+    run_id: UUID,
+    source: str,
+    failure_reason: str,
 ) -> None:
     await conn.execute(
-        _MARK_SOURCE_FAILED_SQL, run_id, source, failure_reason,
+        _MARK_SOURCE_FAILED_SQL,
+        run_id,
+        source,
+        failure_reason,
     )
 
 
 async def _count_unfinished_sources(
-    conn: asyncpg.Connection, run_id: UUID,
+    conn: asyncpg.Connection,
+    run_id: UUID,
 ) -> int:
     return int(await conn.fetchval(_COUNT_UNFINISHED_SOURCES_SQL, run_id))
 
 
 async def _any_source_failed(
-    conn: asyncpg.Connection, run_id: UUID,
+    conn: asyncpg.Connection,
+    run_id: UUID,
 ) -> bool:
     return int(await conn.fetchval(_ANY_SOURCE_FAILED_SQL, run_id)) > 0
 
@@ -537,7 +554,8 @@ class TenantOnboardingOrchestrator(LongRunningService):
         (rc=1), so NO `tenant_onboarding_completed` signal fired for ANY
         in-flight tenant under concurrent multi-source onboarding."""
         return await retry_signal_serialization_conflicts(
-            self._process_one_signal_once, label="tenant_onboarding",
+            self._process_one_signal_once,
+            label="tenant_onboarding",
         )
 
     async def _process_one_signal_once(self) -> bool:
@@ -564,36 +582,37 @@ class TenantOnboardingOrchestrator(LongRunningService):
         contract without risking a publish for an uncommitted transition.
         """
         events: list[ProgressEvent] = []
-        async with self._pool.acquire() as conn:
-            async with conn.transaction():
-                signals = await claim_signals(
-                    conn,
-                    workflow_kind=WORKFLOW_KIND,
-                    workflow_id=WORKFLOW_ID_INBOX,
-                    consumed_by=self._config.instance_name,
-                    batch_size=1,
+        async with self._pool.acquire() as conn, conn.transaction():
+            signals = await claim_signals(
+                conn,
+                workflow_kind=WORKFLOW_KIND,
+                workflow_id=WORKFLOW_ID_INBOX,
+                consumed_by=self._config.instance_name,
+                batch_size=1,
+            )
+            if not signals:
+                return False
+            sig = signals[0]
+            if sig.signal_kind == SIGNAL_KIND_RUN_CREATED:
+                events = await self._handle_run_created(conn, sig)
+            elif sig.signal_kind == SIGNAL_KIND_SOURCE_COMPLETED:
+                events = await self._handle_source_completed(conn, sig)
+            else:
+                log.warning(
+                    "orchestrator.unknown_signal_kind",
+                    extra={
+                        "signal_id": str(sig.id),
+                        "signal_kind": sig.signal_kind,
+                        "workflow_kind": sig.workflow_kind,
+                    },
                 )
-                if not signals:
-                    return False
-                sig = signals[0]
-                if sig.signal_kind == SIGNAL_KIND_RUN_CREATED:
-                    events = await self._handle_run_created(conn, sig)
-                elif sig.signal_kind == SIGNAL_KIND_SOURCE_COMPLETED:
-                    events = await self._handle_source_completed(conn, sig)
-                else:
-                    log.warning(
-                        "orchestrator.unknown_signal_kind",
-                        extra={
-                            "signal_id": str(sig.id),
-                            "signal_kind": sig.signal_kind,
-                            "workflow_kind": sig.workflow_kind,
-                        },
-                    )
         await publish_progress_events(self._kafka_producer, events)
         return True
 
     async def _handle_run_created(
-        self, conn: asyncpg.Connection, sig: WorkflowSignal,
+        self,
+        conn: asyncpg.Connection,
+        sig: WorkflowSignal,
     ) -> list[ProgressEvent]:
         """New-runs phase. Source-applicability determined by
         provider_installations + gmail_installations at tick-time
@@ -633,7 +652,10 @@ class TenantOnboardingOrchestrator(LongRunningService):
 
         for source in sources:
             await _insert_source_row(
-                conn, run_id=run_id, source=source, tenant_id=tenant_id,
+                conn,
+                run_id=run_id,
+                source=source,
+                tenant_id=tenant_id,
             )
             await emit_signal(
                 conn,
@@ -656,15 +678,19 @@ class TenantOnboardingOrchestrator(LongRunningService):
 
         await conn.execute(_MARK_RUN_RUNNING_SQL, run_id)
 
-        return [TenantOnboardingStarted(
-            tenant_id=tenant_id,
-            started_at=dt.datetime.now(tz=dt.timezone.utc),
-            sources=[s for s in sources if s in VALID_SOURCES],  # type: ignore[misc]
-            eta_minutes=ETA_MINUTES_PER_SOURCE * len(sources),
-        )]
+        return [
+            TenantOnboardingStarted(
+                tenant_id=tenant_id,
+                started_at=dt.datetime.now(tz=dt.UTC),
+                sources=[s for s in sources if s in VALID_SOURCES],  # type: ignore[misc]
+                eta_minutes=ETA_MINUTES_PER_SOURCE * len(sources),
+            )
+        ]
 
     async def _handle_source_completed(
-        self, conn: asyncpg.Connection, sig: WorkflowSignal,
+        self,
+        conn: asyncpg.Connection,
+        sig: WorkflowSignal,
     ) -> list[ProgressEvent]:
         """Completion phase. If failure_reason is present in
         signal_data, the source failed and the parent run fails too
@@ -682,7 +708,9 @@ class TenantOnboardingOrchestrator(LongRunningService):
 
         if failure_reason:
             await _mark_source_failed(
-                conn, run_id=run_id, source=source,
+                conn,
+                run_id=run_id,
+                source=source,
                 failure_reason=str(failure_reason),
             )
             await conn.execute(
@@ -709,7 +737,8 @@ class TenantOnboardingOrchestrator(LongRunningService):
         await conn.execute(_MARK_RUN_COMPLETE_SQL, run_id)
 
         tenant_id = await conn.fetchval(
-            "SELECT tenant_id FROM onboarding_runs WHERE id = $1", run_id,
+            "SELECT tenant_id FROM onboarding_runs WHERE id = $1",
+            run_id,
         )
         await emit_signal(
             conn,
@@ -730,39 +759,47 @@ class TenantOnboardingOrchestrator(LongRunningService):
         total_observations = int(
             await conn.fetchval(_COUNT_TENANT_OBSERVATIONS_SQL, tenant_id) or 0
         )
-        return [TenantOnboardingComplete(
-            tenant_id=tenant_id,
-            total_observations=total_observations,
-            completed_at=dt.datetime.now(tz=dt.timezone.utc),
-            sources=[
-                r["source"] for r in source_rows
-                if r["source"] in VALID_SOURCES
-            ],  # type: ignore[misc]
-        )]
+        return [
+            TenantOnboardingComplete(
+                tenant_id=tenant_id,
+                total_observations=total_observations,
+                completed_at=dt.datetime.now(tz=dt.UTC),
+                sources=[
+                    r["source"] for r in source_rows if r["source"] in VALID_SOURCES
+                ],  # type: ignore[misc]
+            )
+        ]
 
     async def _persist_scan_state(
-        self, *, signals_processed: int,
+        self,
+        *,
+        signals_processed: int,
     ) -> None:
         """Diagnostic state row. Not load-bearing for correctness;
         operator queries against workflow_states grep this for
         progress signals."""
         existing = await load_state(
-            self._pool, WORKFLOW_KIND, self._config.instance_name,
+            self._pool,
+            WORKFLOW_KIND,
+            self._config.instance_name,
         )
         state = WorkflowState(
             workflow_kind=WORKFLOW_KIND,
             workflow_id=self._config.instance_name,
             tenant_id=None,
             state_data={
-                "last_tick_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
+                "last_tick_at": dt.datetime.now(tz=dt.UTC).isoformat(),
                 "last_signals_processed": signals_processed,
                 "lifetime_signals_processed": (
-                    (existing.state_data.get("lifetime_signals_processed", 0)
-                     if existing else 0)
+                    (
+                        existing.state_data.get("lifetime_signals_processed", 0)
+                        if existing
+                        else 0
+                    )
                     + signals_processed
                 ),
             },
-            last_advanced_at=dt.datetime.now(tz=dt.timezone.utc),
+            last_advanced_at=dt.datetime.now(tz=dt.UTC),
         )
         await persist_state(self._pool, state)
 
@@ -796,12 +833,15 @@ async def _run_orchestrator() -> None:
     # Progress-event producer for `tenant.onboarding.started` / `…complete`
     # (LLD §6 Bridge contract). Same IdempotentProducer the shard_fetch /
     # feels_onboarded services use.
-    producer = IdempotentProducer(ProducerConfig(
-        bootstrap_servers=os.environ.get(
-            "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
-        ),
-        client_id="workflow-tenant_onboarding",
-    ))
+    producer = IdempotentProducer(
+        ProducerConfig(
+            bootstrap_servers=os.environ.get(
+                "KAFKA_BOOTSTRAP_SERVERS",
+                "localhost:9092",
+            ),
+            client_id="workflow-tenant_onboarding",
+        )
+    )
     await producer.start()
     config = TenantOnboardingConfig(
         tick_interval_seconds=float(
@@ -811,11 +851,14 @@ async def _run_orchestrator() -> None:
             os.environ.get("ORCHESTRATOR_BATCH", "50"),
         ),
         instance_name=os.environ.get(
-            "ORCHESTRATOR_INSTANCE", WORKFLOW_ID_DEFAULT,
+            "ORCHESTRATOR_INSTANCE",
+            WORKFLOW_ID_DEFAULT,
         ),
     )
     service = TenantOnboardingOrchestrator(
-        pool, kafka_producer=producer, config=config,
+        pool,
+        kafka_producer=producer,
+        config=config,
     )
 
     stop_event = asyncio.Event()
@@ -823,9 +866,12 @@ async def _run_orchestrator() -> None:
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop_event.set)
 
-    log.info("workflow.tenant_onboarding.started", extra={
-        "instance": config.instance_name,
-    })
+    log.info(
+        "workflow.tenant_onboarding.started",
+        extra={
+            "instance": config.instance_name,
+        },
+    )
     # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT).
     health_shutdown = start_workflow_health(stop_event)
     try:
@@ -841,6 +887,7 @@ async def _run_orchestrator() -> None:
 def main() -> None:
     import asyncio
     import os
+
     logging.basicConfig(
         level=os.environ.get("WORKFLOWS_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -863,10 +910,10 @@ __all__ = [
     "SIGNAL_KIND_TENANT_COMPLETED",
     "SOURCE_ONBOARDING_INBOX_ID",
     "SOURCE_ONBOARDING_INBOX_KIND",
-    "TenantOnboardingConfig",
-    "TenantOnboardingOrchestrator",
     "WORKFLOW_ID_DEFAULT",
     "WORKFLOW_ID_INBOX",
     "WORKFLOW_KIND",
+    "TenantOnboardingConfig",
+    "TenantOnboardingOrchestrator",
     "main",
 ]

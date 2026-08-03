@@ -15,7 +15,6 @@ from services.ingest.source_contract.capabilities import CAPABILITY_CATALOG
 from services.ingest.source_contract.connector import SourceConnector
 from services.ingest.source_contract.manifest import ConnectorManifest
 
-
 ConnectorFactory = Callable[[], SourceConnector]
 
 
@@ -47,7 +46,7 @@ def candidate_from_manifest(
 
     keys = tuple(
         CAPABILITY_CATALOG[ref]
-        for ref in manifest.capability_refs
+        for ref in manifest.available_capability_refs
         if ref in CAPABILITY_CATALOG
     )
 

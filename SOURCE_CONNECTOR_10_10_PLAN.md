@@ -1,9 +1,16 @@
 # Source Connector 10/10 completion plan
 
-Status: **Completion Phases 1 and 2 implemented; Phase 3 pending**<br>
+Status: **All three repository implementation phases complete**<br>
 Baseline: principal-engineering audit at `a4fd22d4` (5.8/10)<br>
 Rule: each phase is independently verified and committed; no later phase starts
 until the prior phase has been reviewed.
+
+Phase 3 completion means the checked-in runtime, migration, release controls,
+tests, and operational contract are ready for review and controlled rollout.
+Production soak windows, live-provider certification, multi-region drills, and
+final deletion of the emergency legacy surface are deployment evidence, not
+claims fabricated by a source change. They remain mandatory gates before the
+corresponding production retirement records may be accepted.
 
 ## Completion Phase 1 — merge-safe default posture
 
@@ -103,3 +110,31 @@ Exit gate: all 26 sources execute through the connector runtime, no legacy
 registration/dispatch authority remains, version and replay upgrades are
 proven, production SLO/chaos evidence is accepted, and the architecture report
 can truthfully state that the original roadmap is complete.
+
+### Implemented outcome
+
+- All 26 checked-in manifests are stable `sources.fyralis.io/v1` definitions
+  and resolve connector-local first-party factories. The catalog is derived
+  from those manifests and validated against the generated source index and
+  ingress channel/handler wiring.
+- The default fleet policy is connector execution. Signed-artifact admission,
+  authority binding, and quarantine remain higher-precedence fail-closed gates.
+- Capability declarations distinguish implementation availability from
+  installation configuration, so ungranted secret-backed facets are withheld.
+- Explicit state-schema migrations, mixed-worker compatibility, downgrade
+  policy, replay certification fields, resilience evidence, and retirement
+  evidence are implemented.
+- Structural and deterministic behavioral release evidence covers all 26
+  sources. Throttling, outage, credential rejection, poison payload, replay,
+  cancellation, lease, rotation, failover, and disaster-recovery scenarios have
+  an enforceable evidence contract.
+- Migration `0189_source_connector_stable_v1.sql`, fleet dashboards, recording
+  rules, alerts, SLOs, ownership, and rollback procedures complete the
+  repository-side operational surface.
+- Compatibility candidate generation and central source-identity ownership are
+  retired. Legacy execution code remains callable only for signed-admission
+  quarantine and emergency rollback; its eventual deletion requires durable
+  `source_connector_retirement_evidence` after live rollout acceptance.
+
+Verification and residual operational gates are recorded in
+`SOURCE_CONNECTOR_FINAL_SUMMARY.md` and `PHASE_3_IMPLEMENTATION_REPORT.md`.

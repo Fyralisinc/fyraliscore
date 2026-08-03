@@ -81,3 +81,38 @@ groups:
       # Worst consumer-group lag (kafka-exporter).
       - record: fyralis:kafka_worst_group_lag
         expr: max by (consumergroup) (kafka_consumergroup_lag_sum)
+
+  - name: fyralis-source-connectors
+    interval: 30s
+    rules:
+      - record: fyralis:source_connector_quarantined
+        expr: max(ingestion_source_connector_lifecycle_quarantined)
+
+      - record: fyralis:source_connector_control_failure_ratio:10m
+        expr: >
+          sum(rate(ingestion_source_connector_lifecycle_control_failures[10m]))
+          /
+          clamp_min(
+            sum(rate(ingestion_source_connector_lifecycle_control_refreshes[10m])),
+            1e-9
+          )
+
+      - alert: SourceConnectorArtifactQuarantined
+        expr: fyralis:source_connector_quarantined > 0
+        for: 5m
+        labels:
+          severity: critical
+          owner: ingestion
+        annotations:
+          summary: A source connector artifact is quarantined
+          runbook: docs/ingestion/source-connectors/operations-runbook.md
+
+      - alert: SourceConnectorControlPlaneDegraded
+        expr: fyralis:source_connector_control_failure_ratio:10m > 0.01
+        for: 10m
+        labels:
+          severity: warning
+          owner: ingestion
+        annotations:
+          summary: Source connector control-plane refreshes exceed the error budget
+          runbook: docs/ingestion/source-connectors/operations-runbook.md

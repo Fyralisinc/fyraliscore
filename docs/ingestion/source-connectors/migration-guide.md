@@ -5,16 +5,16 @@ execution without weakening ingestion guarantees.
 
 ## Current migration boundary
 
-The immutable catalog contains all 26 source families. Every source defaults to
-legacy execution. Slack, Notion, and WhatsApp have connector-local native roots,
-declarative manifests, structural and behavioral release evidence, and durable
-rollout controls. They require explicit audited cohort routing. The other 23
-catalog entries are conformed compatibility candidates.
+The manifest-derived immutable catalog contains all 26 source families. Every
+entry is a stable-v1 connector-local first-party candidate with structural and
+behavioral release evidence. Connector execution is the fleet default, subject
+to durable authority and signed-artifact admission. Compatibility candidate
+generation no longer exists.
 
-Catalog authority is not permission to delete legacy code. A source is native
-only when all of its planner, fetcher, poller, webhook/gateway, reconciler,
-normalizer, handler, installation, and lifecycle ownership has been accounted
-for.
+Native catalog authority is not permission to delete rollback code. Physical
+legacy removal remains source-scoped and evidence-gated even after every
+planner, fetcher, poller, webhook/gateway, reconciler, normalizer, handler,
+installation, and lifecycle owner resolves through the connector runtime.
 
 ## Migration sequence
 
@@ -24,8 +24,8 @@ for.
 2. Capture parity fixtures and operational baselines: output identities,
    pagination, checkpoints, retry classifications, p95 latency, error and DLQ
    rates, lifecycle failures, and reconciliation repairs.
-3. Add or verify the source in `CONNECTOR_CATALOG`. Its compatibility candidate
-   remains legacy-routed during implementation.
+3. Add or verify the source in `source-index.json` and its stable-v1 manifest.
+   The catalog is derived and must not be edited as a second registry.
 4. Implement a native connector root and native capabilities. Existing source
    clients may be reused behind capability facets; do not call mutable dispatch
    maps from a native candidate.
@@ -37,15 +37,16 @@ for.
 7. Integrate each ingress owner through registry resolution and the capability
    executor. Keep S3-first publication, Kafka ordering, acknowledgements, and
    checkpoints in the host.
-8. Pass static and behavioral conformance. Update the independently reviewed
-   release-evidence record. Sign the measured artifact and enable its
-   attestation. Startup and continuous quarantine must be clear.
+8. Pass fleet wiring, static conformance, and behavioral conformance. Update the
+   independently reviewed release-evidence record. Sign the measured artifact
+   and enable its attestation. Startup and continuous quarantine must be clear.
 9. Roll out in stages: shadow, canary tenants, bounded cohort, then full.
 10. Hold full routing while gathering production evidence across backfill,
     incremental/live ingress, reconciliation, lifecycle, and uninstall.
 11. Exercise configuration-only rollback and artifact quarantine.
-12. Remove the source's compatibility candidate and legacy dispatch entries
-    only after the retirement criteria below are satisfied.
+12. Record one `source_connector_retirement_evidence` row for every legacy
+    surface, then remove those dispatch entries only after the retirement
+    criteria below are satisfied.
 
 ## Invariants to compare
 
@@ -85,6 +86,10 @@ Retire a source path only when all are true:
 - production metrics meet thresholds for the agreed observation window;
 - rollback has been exercised without checkpoint or publication drift;
 - the owning team accepts removal of the source-specific dispatch entries.
+- resilience evidence is current for the exact connector version and target
+  region, including disaster-recovery replay and multi-region failover;
+- every retired surface has a durable evidence reference and named rollback
+  owner.
 
-Until then, compatibility code is intentional rollback infrastructure, not dead
-code.
+Until then, legacy code is intentional rollback infrastructure, not definition
+or registration authority and not dead code.

@@ -1,0 +1,96 @@
+{
+  "apiVersion": "sources.fyralis.io/v1",
+  "kind": "SourceConnector",
+  "metadata": {
+    "id": "fyralis/carta",
+    "source": "carta",
+    "displayName": "Carta",
+    "version": "1.0.0",
+    "owner": "ingestion"
+  },
+  "spec": {
+    "contract": ">=1.0,<2.0",
+    "implementation": "services.ingest.connectors.fleet:build_carta_connector",
+    "artifactModules": [
+      "services.ingest.connectors.native",
+      "services.ingest.connectors.profiles"
+    ],
+    "maturity": "stable",
+    "capabilities": [
+      {
+        "id": "installation.configure",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "installation.secret_rotation",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "health.probe",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "oauth_access_token"
+        ]
+      },
+      {
+        "id": "lifecycle.cleanup",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "ingestion.historical_pull",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "oauth_access_token"
+        ]
+      },
+      {
+        "id": "ingestion.reconciliation",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "ingestion.incremental_poll",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "oauth_access_token"
+        ]
+      },
+      {
+        "id": "semantic.identity",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "semantic.normalization",
+        "version": 1,
+        "required": true
+      }
+    ],
+    "ingressKinds": [
+      "backfill",
+      "poll"
+    ],
+    "permissions": {
+      "secretSlots": [
+        "oauth_access_token"
+      ],
+      "outboundHosts": [
+        "api.carta.com"
+      ],
+      "requestedScopes": []
+    },
+    "trust": {
+      "maximumTier": "authoritative"
+    },
+    "runtime": {
+      "isolation": "in_process_trusted",
+      "resourceClass": "io_standard"
+    }
+  }
+}

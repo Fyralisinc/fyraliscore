@@ -114,6 +114,7 @@ namespaces = true
 
 [tool.setuptools.package-data]
 "services.ingest.connectors" = ["manifests/*.json", "release-evidence.json"]
+"services.ingest.source_contract" = ["source-index.json"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

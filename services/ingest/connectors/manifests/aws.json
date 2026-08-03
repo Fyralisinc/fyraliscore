@@ -1,0 +1,96 @@
+{
+  "apiVersion": "sources.fyralis.io/v1",
+  "kind": "SourceConnector",
+  "metadata": {
+    "id": "fyralis/aws",
+    "source": "aws",
+    "displayName": "Aws",
+    "version": "1.0.0",
+    "owner": "ingestion"
+  },
+  "spec": {
+    "contract": ">=1.0,<2.0",
+    "implementation": "services.ingest.connectors.fleet:build_aws_connector",
+    "artifactModules": [
+      "services.ingest.connectors.native",
+      "services.ingest.connectors.profiles"
+    ],
+    "maturity": "stable",
+    "capabilities": [
+      {
+        "id": "installation.configure",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "installation.secret_rotation",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "health.probe",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "session_token"
+        ]
+      },
+      {
+        "id": "lifecycle.cleanup",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "ingestion.historical_pull",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "session_token"
+        ]
+      },
+      {
+        "id": "ingestion.reconciliation",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "ingestion.incremental_poll",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "session_token"
+        ]
+      },
+      {
+        "id": "semantic.identity",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "semantic.normalization",
+        "version": 1,
+        "required": true
+      }
+    ],
+    "ingressKinds": [
+      "backfill",
+      "poll"
+    ],
+    "permissions": {
+      "secretSlots": [
+        "session_token"
+      ],
+      "outboundHosts": [
+        "cloudtrail.amazonaws.com"
+      ],
+      "requestedScopes": []
+    },
+    "trust": {
+      "maximumTier": "authoritative"
+    },
+    "runtime": {
+      "isolation": "in_process_trusted",
+      "resourceClass": "io_standard"
+    }
+  }
+}

@@ -5,7 +5,7 @@
 Before enabling connector routing:
 
 1. Apply migrations through
-   `db/migrations/0188_byoc_control_panel_access_grants_rls.sql` on a fresh or
+   `db/migrations/0189_source_connector_stable_v1.sql` on a fresh or
    correctly versioned database.
 2. Confirm the process reports a 26-connector registry and the expected
    registry fingerprint.
@@ -46,6 +46,24 @@ if fleet rollout later applies a connector override.
 Stateless owners that cannot consume durable authority and artifact admission
 must remain legacy in signed-production mode. Do not disable signed-artifact
 requirements to promote them; provision an audited distribution path first.
+
+## Fleet service levels and ownership
+
+The fleet objective is at least 99.9% successful eligible executions per
+connector over 30 days, no acknowledged checkpoint before S3-first durable
+publication, p95 connector latency no worse than 1.25 times its accepted
+baseline, parity mismatch at most 0.1%, and DLQ-rate regression at most 0.1
+percentage points. Disaster-recovery objectives are RPO 0 for acknowledged raw
+objects and RTO 60 minutes for resumed ingestion. These are rollout gates, not
+claims about an environment that has not supplied metrics.
+
+The ingestion platform team owns the contract, registry, host services,
+release gate, lifecycle controller, and global rollback. Each manifest owner
+owns provider semantics, scopes, runbooks, capacity envelope, and first response
+to source-specific incidents. Security owns trusted signers and deployment
+policy. SRE owns alert delivery, capacity review, multi-region drills, and DR
+acceptance. A connector cannot be retired without named rollback ownership in
+`source_connector_retirement_evidence`.
 
 ## Common incidents
 
@@ -108,6 +126,8 @@ Operators should inspect these control-plane relations through approved admin
 tools: `source_connector_installations`, `source_connector_authority_grants`,
 `source_connector_credentials`, `source_connector_artifacts`,
 `source_connector_routing_revisions`, `source_connector_rollout_audit`, and
-`source_connector_rollout_events`. Tenant-scoped tables enforce fail-closed
+`source_connector_rollout_events`. Fleet certification additionally uses
+`source_connector_resilience_evidence` and
+`source_connector_retirement_evidence`. Tenant-scoped tables enforce fail-closed
 RLS; use the normal tenant context rather than bypassing it for routine
 diagnostics.

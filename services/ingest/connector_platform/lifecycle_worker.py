@@ -8,11 +8,11 @@ import os
 import httpx
 
 from lib.shared.secrets import build_secret_store
-from services.ingest.connector_platform.authority_store import (
-    PostgresAuthorityRepository,
-)
 from services.ingest.connector_platform.artifact_store import (
     PostgresArtifactRepository,
+)
+from services.ingest.connector_platform.authority_store import (
+    PostgresAuthorityRepository,
 )
 from services.ingest.connector_platform.deployment import (
     ArtifactAdmissionController,
@@ -23,8 +23,8 @@ from services.ingest.connector_platform.lifecycle_controller import (
     PostgresInstallationLifecycleRepository,
 )
 from services.ingest.connector_platform.pilots import (
-    build_pilot_composition,
-    build_runtime_candidates,
+    build_fleet_candidates,
+    build_fleet_composition,
 )
 from services.ingest.connector_platform.production_host_services import (
     ProductionHostBackends,
@@ -58,7 +58,7 @@ async def run_lifecycle_worker(stop_event: asyncio.Event | None = None) -> None:
     health = start_health_server(get_metrics=lambda: dict(metrics), heartbeat=heartbeat)
     try:
         secret_store = build_secret_store(pool)
-        composition = build_pilot_composition()
+        composition = build_fleet_composition()
         host_services = build_production_host_services_factory(
             ProductionHostBackends(
                 pool=pool,
@@ -70,7 +70,7 @@ async def run_lifecycle_worker(stop_event: asyncio.Event | None = None) -> None:
         artifact_controller = ArtifactAdmissionController(
             PostgresArtifactRepository(pool),
             composition.routing,
-            build_runtime_candidates(),
+            build_fleet_candidates(),
             ArtifactAdmissionSettings.from_env(),
         )
         artifact_admission = await artifact_controller.refresh()
@@ -116,12 +116,12 @@ async def run_lifecycle_worker(stop_event: asyncio.Event | None = None) -> None:
                     if prune_counter >= 720:
                         await evidence_sink.prune()
                         prune_counter = 0
-                except Exception:
+                except Exception:  # noqa: BLE001 - control loop must keep refreshing
                     metrics["source_connector_lifecycle.control_failures"] += 1
                 heartbeat.touch()
                 try:
                     await asyncio.wait_for(stop.wait(), timeout=interval)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     continue
 
         await asyncio.gather(

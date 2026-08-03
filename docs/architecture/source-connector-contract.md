@@ -1,27 +1,27 @@
 # Fyralis Source Connector Contract
 
-> Implementation status (completion Phases 1 and 2, 2026-08-03): the contract,
-> registry, declarative manifests, structural and behavioral release-evidence
-> gates, least-authority binding, measured artifact admission, native pilot
-> implementations, and closed-loop rollout form a legacy-safe platform slice.
-> All sources still default to legacy execution. Slack, Notion, and WhatsApp
-> are eligible only for an explicit audited cohort revision; the other 23
-> cataloged source families are compatibility candidates. See the
+> Implementation status (completion Phases 1–3, 2026-08-03): all 26 source
+> families have stable-v1 manifests and connector-local first-party candidates.
+> The manifest-derived catalog is the definition authority; connector execution
+> is the normal default and remains fenced by durable installation authority,
+> signed-artifact admission, and quarantine. Compatibility candidate generation
+> has been removed. The callable legacy path is retained only for emergency
+> rollback until production retirement evidence permits deletion. See the
 > [runtime architecture](../ingestion/source-connectors/runtime-architecture.md),
 > [development guide](../ingestion/source-connectors/development-guide.md), and
 > [migration guide](../ingestion/source-connectors/migration-guide.md). The
-> original roadmap is not complete; remaining work is tracked in
-> `SOURCE_CONNECTOR_10_10_PLAN.md`.
+> completion evidence in `SOURCE_CONNECTOR_FINAL_SUMMARY.md` and
+> `PHASE_3_IMPLEMENTATION_REPORT.md`.
 
-Status: **Completion Phases 1 and 2 implemented; target architecture remains in progress**<br>
+Status: **Stable v1 repository implementation complete; controlled rollout required**<br>
 Audience: ingestion, platform, security, and product engineers<br>
 Last reviewed: 2026-08-03
 
-This document defines the target architecture for making a data source a
-first-class Fyralis primitive. The implemented foundation exists alongside the
-legacy runtime and remains v1alpha1. Native independence, behavioral admission,
-closed-loop rollout, production proof, full source migration, and legacy
-retirement remain required work.
+This document defines the architecture for making a data source a first-class
+Fyralis primitive. The in-process first-party contract is stable v1. Runtime
+admission is behavioral, artifact-measured, signed, installation-scoped, and
+least-authority. Live-provider rollout and the eventual physical deletion of
+the rollback implementation remain operational acceptance steps.
 
 ## 1. Executive summary
 
@@ -710,13 +710,13 @@ The manifest is declarative and loadable without importing implementation code.
 It should contain at least:
 
 ```yaml
-apiVersion: sources.fyralis.io/v1alpha1
+apiVersion: sources.fyralis.io/v1
 kind: SourceConnector
 metadata:
   id: fyralis/slack
   source: slack
   displayName: Slack
-  version: 1.4.0
+  version: 1.0.0
   owner: ingestion
 spec:
   contract: ">=1.0,<2.0"
@@ -725,8 +725,10 @@ spec:
   capabilities:
     - id: installation.oauth2
       version: 1
+      available: true
     - id: ingestion.historical_pull
       version: 1
+      configuredBy: [bot_token]
     - id: ingestion.webhook
       version: 1
     - id: ingestion.reconciliation

@@ -19,7 +19,6 @@ from services.ingest.connector_conformance.models import (
     ConformanceStatus,
 )
 
-
 BEHAVIORAL_SUITE_VERSION = "source-connector-behavior/v1"
 REQUIRED_BEHAVIORS = (
     "pagination",
@@ -32,6 +31,12 @@ REQUIRED_BEHAVIORS = (
     "cleanup",
     "lifecycle",
     "state_migration",
+    "configuration",
+    "secret_rotation",
+    "gateway_resume",
+    "checkpoint_replay",
+    "mixed_worker",
+    "downgrade_policy",
 )
 
 

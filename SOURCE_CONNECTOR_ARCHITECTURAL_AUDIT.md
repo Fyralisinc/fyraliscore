@@ -5,15 +5,17 @@
 **Audited revision:** a4fd22d4<br>
 **Decision:** **Do not merge under the claim that the source-connector roadmap is complete.**
 
-> **Remediation status:** Completion Phases 1 and 2 address the truthful-scope,
-> legacy-safe default, executable manifest, independent structural and
-> behavioral evidence, least-authority, measured-artifact, native-pilot,
-> closed-loop rollout, deployment, migration, and production-like proof
-> blockers identified below. The remaining 23 migrations, stateless signed
-> control-plane distribution, legacy retirement, stable-v1 evolution, and
-> fleet hardening remain Phase 3 work. The audit evidence below intentionally
-> describes revision `a4fd22d4`; see `SOURCE_CONNECTOR_10_10_PLAN.md` and the
-> completion reports for the current remediation boundary.
+> **Remediation status:** The findings below are a historical audit of revision
+> `a4fd22d4`. Completion Phases 1–3 have since implemented the stable-v1 native
+> fleet, manifest-derived catalog validation, source-index ownership,
+> least-authority configuration semantics, closed-loop rollout, state evolution,
+> resilience evidence, observability, and migration `0189`. Compatibility
+> candidate generation is gone. The remaining legacy callable is deliberately
+> fenced behind signed-admission quarantine and emergency rollback and cannot be
+> deleted until live retirement evidence is accepted. See
+> `SOURCE_CONNECTOR_FINAL_SUMMARY.md` and `PHASE_3_IMPLEMENTATION_REPORT.md` for
+> the current review boundary; do not use this historical decision as the
+> present merge verdict.
 
 ## Executive Summary
 

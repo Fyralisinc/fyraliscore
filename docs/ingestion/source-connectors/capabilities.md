@@ -4,6 +4,15 @@ Capabilities are small, independently versioned facets. A manifest declaration
 is static support; binding determines configured support for one installation;
 health determines current operational availability.
 
+Every declaration has two independent signals. `available: false` reserves a
+known capability without registering a factory. `configuredBy` names the
+secret slots that must be present in the durable authority grant before the
+facet is constructed for an installation. Required capabilities cannot be
+unavailable, and configured slots must be a subset of manifest permissions.
+Discovery registers only available facets; binding exposes only configured
+facets. This prevents a catalog declaration from being mistaken for either
+permission or runnable installation state.
+
 | Capability | Interface responsibility | Host remains responsible for |
 | --- | --- | --- |
 | `installation.configure/v1` | Validate connector configuration | Persisting authorized configuration |
@@ -66,4 +75,3 @@ for a checkpoint merely because the provider request succeeded.
 Identity and normalization are intentionally separate from transport. Identity
 must be stable across backfill and live ingress. Normalization produces immutable
 observation drafts and must preserve source provenance and trust constraints.
-

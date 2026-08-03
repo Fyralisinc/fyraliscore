@@ -9,7 +9,7 @@ binding is required to invoke any connector declared here.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -70,7 +70,6 @@ from services.ingest.source_contract.models import (
     IdentityInput,
 )
 
-
 CapabilityFactory = Callable[[BindingContext], object]
 _MANIFEST_DIRECTORY = Path(__file__).resolve().parent / "manifests"
 
@@ -89,9 +88,16 @@ class NativeSourceConnector:
         return self._manifest
 
     def bind(self, context: BindingContext) -> StaticBoundConnector:
+        configured = set(
+            self._manifest.configured_capability_refs(context.authority.secret_slots)
+        )
         return StaticBoundConnector(
             context.installation,
-            {ref: factory(context) for ref, factory in self._factories.items()},
+            {
+                ref: factory(context)
+                for ref, factory in self._factories.items()
+                if ref in configured
+            },
         )
 
 
@@ -117,7 +123,7 @@ class CredentialHealthProbe:
             try:
                 value = await self._binding.services.secrets.resolve(SlotId(slot))
                 present = bool(value.reveal_bytes())
-            except Exception:
+            except Exception:  # noqa: BLE001 - health reports unavailable secrets
                 present = False
             healthy = healthy and present
             conditions.append(
@@ -125,7 +131,7 @@ class CredentialHealthProbe:
                     type="CredentialsValid",
                     status="true" if present else "false",
                     reason="CredentialPresent" if present else "CredentialUnavailable",
-                    observed_at=datetime.now(timezone.utc),
+                    observed_at=datetime.now(UTC),
                 )
             )
         return HealthReport(healthy=healthy, conditions=tuple(conditions))

@@ -22,14 +22,17 @@ circuit breaking, DLQ routing, metrics, leases, and process lifecycle.
 
 Using Stripe as an example:
 
-1. Add `stripe` to the canonical raw-envelope source literal and to
-   `CONNECTOR_CATALOG`, with its real ingress kinds (`webhook`, `backfill`, or
-   `poll`). Do not add a second source registry.
+1. Add `stripe` to the canonical
+   `services/ingest/source_contract/source-index.json`. Raw-envelope validation,
+   Kafka topics, raw S3 layout, and fleet validation consume this index; do not
+   add another source registry or edit the derived `CONNECTOR_CATALOG`.
 2. Add a JSON manifest under `services/ingest/connectors/manifests` with ID
    `fyralis/stripe`, semantic connector version,
    supported contract range, declared capabilities, secret slots, OAuth scopes,
    outbound hosts, trust ceiling, and isolation profile.
-3. Implement a root `SourceConnector`. Its `bind()` method must return facets
+3. Add Stripe's provider behavior as a dedicated connector or an immutable
+   connector-local wire profile. Implement a root `SourceConnector`. Its
+   `bind()` method must return facets
    created for the supplied installation and host services; it must not retain
    process-global tenant or credential state.
 4. Implement only the capabilities Stripe needs. A likely initial set is OAuth,
@@ -43,36 +46,43 @@ Using Stripe as an example:
    the connector.
 7. Define stable external identity and normalization behavior. Preserve the
    existing `RawEnvelope` and `NormalizedEnvelope` semantics.
-8. Run structural and behavioral conformance, review the result, and add its
+8. Add the declared ingress channel and handler wiring. The release gate checks
+   that every manifest ingress kind resolves; it does not permit an orphaned
+   webhook, poll, backfill, or gateway declaration.
+9. Run structural and behavioral conformance, review the result, and add its
    independently approved fingerprint to `release-evidence.json`. Registration
    fails if computed and approved evidence differ.
-9. Add signed artifact provenance and enable the artifact record only after its
+10. Add signed artifact provenance and enable the artifact record only after its
    measured implementation digest, manifest digest, conformance fingerprint,
    builder, and signature are valid.
-10. Keep the legacy Stripe path available while running shadow, canary, cohort,
-    and full rollout. Remove it only after every ingress surface has production
-    evidence and a rollback drill has passed.
+11. For a migrated source, keep its legacy path available while running shadow,
+    canary, cohort, and full rollout. Remove it only after every ingress surface
+    has production evidence, a rollback drill has passed, and durable retirement
+    evidence names the rollback owner. A brand-new source has no legacy path and
+    therefore remains quarantined if native admission fails.
 
 ## Manifest shape
 
 ```yaml
-apiVersion: sources.fyralis.io/v1alpha1
+apiVersion: sources.fyralis.io/v1
 kind: SourceConnector
 metadata:
   id: fyralis/stripe
   source: stripe
   displayName: Stripe
-  version: 0.1.0
+  version: 1.0.0
   owner: ingestion
 spec:
   contract: ">=1.0,<2.0"
   implementation: services.ingest.connectors.stripe:build_connector
-  maturity: preview
+  maturity: stable
   capabilities:
     - id: installation.oauth2
       version: 1
+      available: true
     - id: ingestion.webhook
       version: 1
+      configuredBy: [webhook_signing_secret]
     - id: semantic.identity
       version: 1
     - id: semantic.normalization
@@ -130,9 +140,10 @@ The minimum repository gate is:
   services/ingest/connector_platform/tests
 ```
 
-Also run `python scripts/check_source_connector_release_gate.py`; it verifies
-the complete inventory, factories, independent evidence, measurable artifacts,
-and legacy-safe bootstrap policy.
+Also run `.venv/bin/python scripts/check_source_connector_release_gate.py`; it
+verifies the complete inventory, factories, manifest-derived catalog and
+ingress wiring, independent evidence, measurable artifacts, native default,
+and fail-closed signed-admission policy.
 
 ## Review checklist
 
@@ -140,6 +151,7 @@ and legacy-safe bootstrap policy.
 - The manifest requests least authority.
 - No raw credentials appear in state, logs, metrics, or errors.
 - All declared capabilities are implemented and all providers are declared.
+- `available` and `configuredBy` reflect implementation and installation truth.
 - Conformance evidence is reproducible.
 - Raw durability and checkpoint ordering stay host-owned.
 - Tenant isolation is covered by binding and persistence tests.

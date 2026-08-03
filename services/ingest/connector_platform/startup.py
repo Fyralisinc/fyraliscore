@@ -7,11 +7,6 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
-from services.ingest.connector_platform.pilots import (
-    build_pilot_composition,
-    build_runtime_candidates,
-    default_migrated_routing_policy,
-)
 from services.ingest.connector_platform.artifact_store import (
     PostgresArtifactRepository,
 )
@@ -22,19 +17,23 @@ from services.ingest.connector_platform.deployment import (
 from services.ingest.connector_platform.operational_health import (
     PostgresConnectorHealthReader,
 )
-from services.ingest.connector_platform.routing_config import (
-    RoutingConfigurationController,
-    parse_routing_policy,
-)
-from services.ingest.connector_platform.rollout_store import (
-    PostgresRolloutRepository,
+from services.ingest.connector_platform.pilots import (
+    build_fleet_candidates,
+    build_fleet_composition,
+    default_migrated_routing_policy,
 )
 from services.ingest.connector_platform.rollout_evidence import (
     PostgresRolloutEvidenceSink,
 )
+from services.ingest.connector_platform.rollout_store import (
+    PostgresRolloutRepository,
+)
+from services.ingest.connector_platform.routing_config import (
+    RoutingConfigurationController,
+    parse_routing_policy,
+)
 from services.ingest.connector_runtime.composition import ConnectorRuntimeComposition
 from services.ingest.connector_runtime.rollout import FleetRoutingController
-
 
 ROUTING_CONFIG_ENV = "SOURCE_CONNECTOR_ROUTING_JSON"
 
@@ -67,7 +66,7 @@ class SourceConnectorRuntimeWiring:
             await self.refresh_artifact_admission()
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
     async def close(self) -> None:
@@ -92,7 +91,7 @@ def wire_source_connector_runtime(
         if raw_config
         else default_migrated_routing_policy()
     )
-    composition = build_pilot_composition(policy)
+    composition = build_fleet_composition(policy)
     controller = RoutingConfigurationController(composition.routing)
     rollout = None
     artifact_admission = None
@@ -113,7 +112,7 @@ def wire_source_connector_runtime(
         artifact_admission = ArtifactAdmissionController(
             PostgresArtifactRepository(pool),
             composition.routing,
-            build_runtime_candidates(),
+            build_fleet_candidates(),
             ArtifactAdmissionSettings.from_env(),
         )
     wiring = SourceConnectorRuntimeWiring(

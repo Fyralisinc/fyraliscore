@@ -11,7 +11,6 @@ import httpx
 from services.ingest.connector_platform.artifact_store import (
     PostgresArtifactRepository,
 )
-from services.ingest.connector_platform.execution import LegacyExecutionRouter
 from services.ingest.connector_platform.authority_store import (
     PostgresAuthorityRepository,
 )
@@ -19,30 +18,31 @@ from services.ingest.connector_platform.deployment import (
     ArtifactAdmissionController,
     ArtifactAdmissionSettings,
 )
+from services.ingest.connector_platform.execution import LegacyExecutionRouter
 from services.ingest.connector_platform.pilots import (
-    build_pilot_composition,
-    build_runtime_candidates,
+    build_fleet_candidates,
+    build_fleet_composition,
     default_migrated_routing_policy,
+)
+from services.ingest.connector_platform.production_host_services import (
+    ProductionHostBackends,
+    build_production_host_services_factory,
+)
+from services.ingest.connector_platform.rollout_evidence import (
+    PostgresRolloutEvidenceSink,
+)
+from services.ingest.connector_platform.rollout_store import (
+    PostgresRolloutRepository,
 )
 from services.ingest.connector_platform.routing_config import (
     RoutingConfigurationController,
     parse_routing_policy,
 )
 from services.ingest.connector_platform.startup import ROUTING_CONFIG_ENV
-from services.ingest.connector_platform.production_host_services import (
-    ProductionHostBackends,
-    build_production_host_services_factory,
-)
-from services.ingest.connector_platform.rollout_store import (
-    PostgresRolloutRepository,
-)
-from services.ingest.connector_platform.rollout_evidence import (
-    PostgresRolloutEvidenceSink,
-)
 from services.ingest.connector_runtime.composition import ConnectorRuntimeComposition
 from services.ingest.connector_runtime.host_services import HostServicesFactory
-from services.ingest.connector_runtime.shadow import ShadowReportSink
 from services.ingest.connector_runtime.rollout import FleetRoutingController
+from services.ingest.connector_runtime.shadow import ShadowReportSink
 
 
 @dataclass(frozen=True)
@@ -70,7 +70,7 @@ class WorkflowConnectorWiring:
                         os.environ.get("CONNECTOR_CONTROL_REFRESH_SECONDS", "5")
                     ),
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
     async def close(self) -> None:
@@ -96,7 +96,7 @@ def build_workflow_connector_wiring(
         if raw_config
         else default_migrated_routing_policy()
     )
-    composition = build_pilot_composition(policy)
+    composition = build_fleet_composition(policy)
     admission_settings = ArtifactAdmissionSettings.from_env()
     if pool is None and admission_settings.require_signed:
         composition.routing.replace_quarantine(
@@ -104,7 +104,7 @@ def build_workflow_connector_wiring(
                 candidate.manifest.connector_id: (
                     "durable artifact admission is unavailable in this process"
                 )
-                for candidate in build_runtime_candidates()
+                for candidate in build_fleet_candidates()
                 if candidate.origin.startswith("first-party-native:")
             }
         )
@@ -154,7 +154,7 @@ def build_workflow_connector_wiring(
         artifact_admission = ArtifactAdmissionController(
             PostgresArtifactRepository(pool),
             composition.routing,
-            build_runtime_candidates(),
+            build_fleet_candidates(),
             admission_settings,
         )
     return WorkflowConnectorWiring(

@@ -13,6 +13,7 @@ drops the consumer groups' committed offsets for them — no separate
 offset-reset needed) and clear the moto raw bucket. Pollution becomes
 structurally impossible rather than a thing to remember.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -27,7 +28,6 @@ from services.ingest.ingestion.kafka.topics import all_data_plane_topics
 from services.ingest.ingestion.progress.publisher import (
     TOPIC_ONBOARDING_PROGRESS,
 )
-
 
 log = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ _CONTROL_PLANE_TOPICS = (
 # per-source lane, so the reset MUST delete+recreate the full per-source
 # set (44 = 11 sources × 4 stages) or a run's observations never
 # materialize. The registry (`all_data_plane_topics()`) is the single
-# source of truth — add a source to `RawEnvelope.SourceLiteral` and its
+# source of truth — add a source to `source_contract/source-index.json` and its
 # four lanes appear here automatically. Recreated with the same shape the
 # dev broker provisions (4 partitions, zstd, 7-day retention). The
 # control-plane + progress topics are appended so the reset leaves a broker
@@ -112,7 +112,7 @@ async def _delete_and_recreate_topics(bootstrap_servers: str) -> list[str]:
                 await admin.create_topics(new_topics)
                 recreated = list(INGESTION_TOPICS)
                 break
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if asyncio.get_event_loop().time() >= deadline:
                     raise
                 log.debug("validation.cleanup.create retry: %r", exc)
@@ -123,7 +123,10 @@ async def _delete_and_recreate_topics(bootstrap_servers: str) -> list[str]:
 
 
 async def _clear_s3_bucket(
-    *, endpoint_url: str | None, bucket: str, region: str = "us-east-1",
+    *,
+    endpoint_url: str | None,
+    bucket: str,
+    region: str = "us-east-1",
 ) -> int:
     if not endpoint_url:
         return 0
@@ -160,10 +163,12 @@ async def reset_state(
     """
     recreated = await _delete_and_recreate_topics(bootstrap_servers)
     deleted = await _clear_s3_bucket(
-        endpoint_url=s3_endpoint_url, bucket=s3_bucket,
+        endpoint_url=s3_endpoint_url,
+        bucket=s3_bucket,
     )
     log.info(
         "validation.cleanup: recreated=%s s3_deleted=%d",
-        recreated, deleted,
+        recreated,
+        deleted,
     )
     return CleanupResult(topics_recreated=recreated, s3_objects_deleted=deleted)

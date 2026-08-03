@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import json
+from copy import deepcopy
 from typing import Any
 
 import pytest
@@ -46,6 +46,33 @@ def test_manifest_rejects_duplicate_capabilities(
     data = deepcopy(manifest_data)
     data["spec"]["capabilities"].append({"id": "semantic.identity", "version": 1})
     with pytest.raises(ValidationError, match="capability declarations must be unique"):
+        ConnectorManifest.model_validate(data)
+
+
+def test_stable_manifest_declares_available_and_configured_capabilities(
+    manifest_data: dict[str, Any],
+) -> None:
+    data = deepcopy(manifest_data)
+    data["apiVersion"] = "sources.fyralis.io/v1"
+    data["spec"]["permissions"]["secretSlots"] = ["access_token"]
+    data["spec"]["capabilities"][0]["configuredBy"] = ["access_token"]
+    manifest = ConnectorManifest.model_validate(data)
+
+    assert manifest.available_capability_refs == manifest.capability_refs
+    assert manifest.configured_capability_refs(frozenset()) == (
+        manifest.capability_refs[1],
+    )
+    assert manifest.configured_capability_refs(frozenset({"access_token"})) == (
+        manifest.capability_refs
+    )
+
+
+def test_configured_capability_cannot_reference_undeclared_slot(
+    manifest_data: dict[str, Any],
+) -> None:
+    data = deepcopy(manifest_data)
+    data["spec"]["capabilities"][0]["configuredBy"] = ["missing"]
+    with pytest.raises(ValidationError, match="undeclared secret slots"):
         ConnectorManifest.model_validate(data)
 
 

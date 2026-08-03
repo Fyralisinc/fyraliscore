@@ -21,35 +21,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from services.ingest.source_contract.source_catalog import source_ids
 
-SourceLiteral = Literal[
-    "slack",
-    "github",
-    "discord",
-    "gmail",
-    "notion",
-    "google_calendar",
-    "google_drive",
-    "jira",
-    "mercury",
-    "quickbooks",
-    "grafana",
-    "telegram",
-    "brex",
-    "ramp",
-    "gusto",
-    "deel",
-    "fireflies",
-    "signal",
-    "aws",
-    "miro",
-    "figma",
-    "carta",
-    "hibob",
-    "ashby",
-    "linkedin",
-    "whatsapp",
-]
+# Runtime-expanded compatibility alias. The values are owned by source-index.json,
+# while existing downstream envelope models retain Literal/Pydantic validation.
+SourceLiteral = Literal[*source_ids()]
 # "poll" is the Gmail live-via-Kafka cutover ingress: the push handler /
 # history poller fetches the message resource (a real Gmail message, NOT
 # the Pub/Sub notification) and publishes it here instead of ingesting

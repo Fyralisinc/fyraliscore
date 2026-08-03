@@ -17,8 +17,8 @@ from services.ingest.source_contract.identity import (
 )
 from services.ingest.source_contract.versioning import SemanticVersion, VersionRange
 
-
-MANIFEST_API_VERSION = "sources.fyralis.io/v1alpha1"
+MANIFEST_API_VERSION = "sources.fyralis.io/v1"
+LEGACY_MANIFEST_API_VERSION = "sources.fyralis.io/v1alpha1"
 MANIFEST_KIND = "SourceConnector"
 
 
@@ -62,16 +62,22 @@ class CapabilityDeclaration(ManifestModel):
     required: bool = True
     maturity: Maturity = Maturity.STABLE
     constraints: tuple[CapabilityConstraint, ...] = ()
+    available: bool = True
+    configured_by: tuple[SlotId, ...] = Field(default=(), alias="configuredBy")
 
     @property
     def ref(self) -> CapabilityRef:
         return CapabilityRef(id=self.id, version=self.version)
 
     @model_validator(mode="after")
-    def unique_constraints(self) -> "CapabilityDeclaration":
+    def unique_constraints(self) -> CapabilityDeclaration:
         names = [constraint.name for constraint in self.constraints]
         if len(names) != len(set(names)):
             raise ValueError("capability constraint names must be unique")
+        if len(self.configured_by) != len(set(self.configured_by)):
+            raise ValueError("capability configuredBy slots must be unique")
+        if self.required and not self.available:
+            raise ValueError("a required capability cannot be unavailable")
         return self
 
 
@@ -90,7 +96,7 @@ class ConnectorMetadata(ManifestModel):
         return value
 
     @model_validator(mode="after")
-    def unique_wire_values(self) -> "ConnectorMetadata":
+    def unique_wire_values(self) -> ConnectorMetadata:
         if len(self.aliases) != len(set(self.aliases)):
             raise ValueError("source aliases must be unique")
         if self.source in self.aliases:
@@ -124,7 +130,7 @@ class PermissionRequest(ManifestModel):
         return value
 
     @model_validator(mode="after")
-    def unique_values(self) -> "PermissionRequest":
+    def unique_values(self) -> PermissionRequest:
         if len(self.secret_slots) != len(set(self.secret_slots)):
             raise ValueError("secret slots must be unique")
         if len(self.requested_scopes) != len(set(self.requested_scopes)):
@@ -164,7 +170,7 @@ class ConnectorSpec(ManifestModel):
         return value
 
     @model_validator(mode="after")
-    def unique_declarations(self) -> "ConnectorSpec":
+    def unique_declarations(self) -> ConnectorSpec:
         refs = [declaration.ref for declaration in self.capabilities]
         if len(refs) != len(set(refs)):
             raise ValueError("capability declarations must be unique")
@@ -175,6 +181,14 @@ class ConnectorSpec(ManifestModel):
         for module in self.artifact_modules:
             if not module or any(not part.isidentifier() for part in module.split(".")):
                 raise ValueError(f"artifact module is invalid: {module!r}")
+        requested_slots = set(self.permissions.secret_slots)
+        for declaration in self.capabilities:
+            undeclared = set(declaration.configured_by) - requested_slots
+            if undeclared:
+                raise ValueError(
+                    f"capability {declaration.id} configuredBy contains undeclared "
+                    f"secret slots: {tuple(sorted(undeclared))}"
+                )
         return self
 
     @property
@@ -183,7 +197,9 @@ class ConnectorSpec(ManifestModel):
 
 
 class ConnectorManifest(ManifestModel):
-    api_version: Literal["sources.fyralis.io/v1alpha1"] = Field(alias="apiVersion")
+    api_version: Literal["sources.fyralis.io/v1alpha1", "sources.fyralis.io/v1"] = (
+        Field(alias="apiVersion")
+    )
     kind: Literal["SourceConnector"]
     metadata: ConnectorMetadata
     spec: ConnectorSpec
@@ -200,6 +216,24 @@ class ConnectorManifest(ManifestModel):
     def capability_refs(self) -> tuple[CapabilityRef, ...]:
         return tuple(declaration.ref for declaration in self.spec.capabilities)
 
+    @property
+    def available_capability_refs(self) -> tuple[CapabilityRef, ...]:
+        return tuple(
+            declaration.ref
+            for declaration in self.spec.capabilities
+            if declaration.available
+        )
+
+    def configured_capability_refs(
+        self, granted_slots: frozenset[str]
+    ) -> tuple[CapabilityRef, ...]:
+        return tuple(
+            declaration.ref
+            for declaration in self.spec.capabilities
+            if declaration.available
+            and set(declaration.configured_by).issubset(granted_slots)
+        )
+
 
 def load_connector_manifest(path: str | Path) -> ConnectorManifest:
     """Load one declarative JSON manifest without importing its implementation."""
@@ -212,7 +246,9 @@ def load_connector_manifest(path: str | Path) -> ConnectorManifest:
             f"connector manifest {manifest_path} is not valid JSON"
         ) from exc
     if not isinstance(payload, dict):
-        raise ValueError(f"connector manifest {manifest_path} must be an object")
+        raise ValueError(  # noqa: TRY004 - public loader uses ValueError for input
+            f"connector manifest {manifest_path} must be an object"
+        )
     return ConnectorManifest.model_validate(payload)
 
 
@@ -231,6 +267,9 @@ def load_connector_manifests(directory: str | Path) -> tuple[ConnectorManifest, 
 
 
 __all__ = [
+    "LEGACY_MANIFEST_API_VERSION",
+    "MANIFEST_API_VERSION",
+    "MANIFEST_KIND",
     "CapabilityConstraint",
     "CapabilityDeclaration",
     "CapabilityRef",
@@ -238,8 +277,6 @@ __all__ = [
     "ConnectorMetadata",
     "ConnectorSpec",
     "IsolationMode",
-    "MANIFEST_API_VERSION",
-    "MANIFEST_KIND",
     "ManifestModel",
     "Maturity",
     "PermissionRequest",

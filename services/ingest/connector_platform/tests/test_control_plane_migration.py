@@ -14,7 +14,6 @@ from services.ingest.connector_platform.rollout_store import (
 from services.ingest.connector_runtime.rollout import RolloutRevision, RolloutStage
 from services.ingest.connector_runtime.shadow import ShadowReport
 
-
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
 TENANT_TABLES = (
@@ -63,6 +62,67 @@ async def test_connector_control_plane_schema_is_fail_closed(db_pool) -> None:
         assert "secret_ref" in credential_columns
         assert "secret" not in credential_columns
         assert "secret_value" not in credential_columns
+
+
+async def test_stable_v1_state_and_operational_evidence_schema(db_pool) -> None:
+    tenant_id = uuid4()
+    installation_id = uuid4()
+    async with db_pool.acquire() as connection:
+        await connection.execute(
+            "INSERT INTO tenants (id, name) VALUES ($1, $2)",
+            tenant_id,
+            "connector-stable-v1-schema",
+        )
+        row = await connection.fetchrow(
+            """
+            INSERT INTO source_connector_installations (
+              id, tenant_id, connector_id, external_installation_id
+            ) VALUES ($1, $2, 'fyralis/slack', 'T-STABLE-V1')
+            RETURNING state_schema_version, accepted_state_schema_versions,
+                      last_replay_certified_at
+            """,
+            installation_id,
+            tenant_id,
+        )
+        assert row["state_schema_version"] == 1
+        assert row["accepted_state_schema_versions"] == [1]
+        assert row["last_replay_certified_at"] is None
+
+        await connection.execute(
+            """
+            INSERT INTO source_connector_resilience_evidence (
+              connector_id, connector_version, scenario, region,
+              passed, observed_at, evidence_ref
+            ) VALUES (
+              'fyralis/slack', '1.0.0', 'provider_throttle', 'test-region',
+              TRUE, now(), 'test://provider-throttle'
+            )
+            """
+        )
+        with pytest.raises(asyncpg.CheckViolationError):
+            await connection.execute(
+                """
+                INSERT INTO source_connector_resilience_evidence (
+                  connector_id, connector_version, scenario, region,
+                  passed, observed_at, evidence_ref
+                ) VALUES (
+                  'fyralis/slack', '1.0.0', 'invented_scenario', 'test-region',
+                  TRUE, now(), 'test://invalid'
+                )
+                """
+            )
+        with pytest.raises(asyncpg.CheckViolationError):
+            await connection.execute(
+                """
+                INSERT INTO source_connector_retirement_evidence (
+                  connector_id, connector_version, legacy_surface,
+                  parity_accepted_at, rollback_owner, evidence_ref
+                ) VALUES (
+                  'fyralis/slack', '1.0.0', 'legacy-test', now(), '',
+                  'test://invalid-owner'
+                )
+                """
+            )
 
 
 async def test_connector_installation_rls_isolates_tenants(

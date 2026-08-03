@@ -40,7 +40,6 @@ from services.ingest.ingestion.raw_tier.s3 import (
     compute_content_hash,
 )
 
-
 log = logging.getLogger(__name__)
 
 
@@ -100,10 +99,9 @@ def _bump(key: str, by: int = 1) -> None:
 async def shadow_write_raw(
     *,
     tenant_id: UUID,
-    # Canonical source set — typed as the envelope's `SourceLiteral` so this
-    # signature can never drift from the registry (a hand-copied list here
-    # previously omitted `google_drive`). Adding a source to `SourceLiteral`
-    # is the single point of change.
+    # Canonical source set — the envelope's `SourceLiteral` is expanded from
+    # source-index.json, so this signature cannot drift from the registry (a
+    # hand-copied list here previously omitted `google_drive`).
     source: SourceLiteral,
     ingress_kind: IngressKind,
     connector_installation_id: UUID | None = None,
@@ -148,7 +146,7 @@ async def shadow_write_raw(
                          come from S3_RAW_BUCKET / INGESTION_ENV env.
       now              — inject for testing; defaults to UTC now.
     """
-    now = now or dt.datetime.now(tz=dt.timezone.utc)
+    now = now or dt.datetime.now(tz=dt.UTC)
     content_hash = compute_content_hash(raw_body)
     s3_key = build_raw_s3_key(
         env=env,

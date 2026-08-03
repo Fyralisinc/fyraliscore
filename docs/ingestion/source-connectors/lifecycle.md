@@ -41,7 +41,11 @@ phases are `Draft`, `Authorizing`, `Validating`, `Initializing`, `Ready`,
 
 Each record carries a desired generation, observed generation, conditions, the
 bound connector version, enabled capabilities, provenance, and next reconcile
-time. Writes use the generation as an optimistic fence.
+time. It also records the active state-schema version, the schemas accepted by
+mixed workers, and the most recent replay certification. Writes use the
+generation as an optimistic fence. State upgrades are explicit one-schema-step
+transforms; downgrade is forbidden unless every crossed edge declares a
+reversible transform.
 
 ## Reconciliation loop
 
@@ -88,4 +92,3 @@ The worker entry point is
 `services.ingest.connector_platform.lifecycle_worker`. It requires
 `DATABASE_URL`; `CONNECTOR_LIFECYCLE_INTERVAL_SECONDS` controls the idle loop
 interval and `CONNECTOR_CALLBACK_BASE_URL` enables callback allocation.
-
