@@ -2,234 +2,41 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-import re
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
-from enum import StrEnum
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from types import MappingProxyType
-from typing import TypeAlias
 
+from services.ingest.connector_runtime.binding import RegisteredConnector
+from services.ingest.connector_runtime.definitions import (
+    DEFAULT_HOST_COMPATIBILITY,
+    ConnectorCandidate,
+    ConnectorDescription,
+    ConnectorFactory,
+    HostCompatibility,
+    ManifestValidator,
+)
 from services.ingest.connector_runtime.diagnostics import (
     DiagnosticSeverity,
     RegistryDiagnostic,
     has_errors,
 )
-from services.ingest.source_contract.capabilities import CAPABILITY_CATALOG
+from services.ingest.connector_runtime.health import (
+    RegistryHealth,
+    RegistryStatus,
+    registry_fingerprint,
+)
+from services.ingest.connector_runtime.validation import validate_candidates
 from services.ingest.source_contract.connector import (
     BindingContext,
-    BoundConnector,
-    CapabilityKey,
     SourceConnector,
     StaticBoundConnector,
-    validate_binding_identity,
 )
 from services.ingest.source_contract.errors import (
-    BindingError,
-    CapabilityMismatchError,
-    ConnectorError,
     ConnectorNotFoundError,
     RegistryBuildError,
 )
-from services.ingest.source_contract.manifest import (
-    CapabilityRef,
-    ConnectorManifest,
-    IsolationMode,
-)
-from services.ingest.source_contract.versioning import SemanticVersion
-
-
-ConnectorFactory: TypeAlias = Callable[[], SourceConnector]
-
-
-ManifestValidator: TypeAlias = Callable[
-    [ConnectorManifest], Sequence[RegistryDiagnostic]
-]
-
-
-def _validate_fingerprint(fingerprint: str) -> None:
-    if re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None:
-        raise ValueError("conformance fingerprint must be a lowercase SHA-256")
-
-
-@dataclass(frozen=True)
-class HostCompatibility:
-    contract_versions: tuple[SemanticVersion, ...]
-    capability_catalog: Mapping[CapabilityRef, CapabilityKey[object]] = field(
-        default_factory=lambda: CAPABILITY_CATALOG
-    )
-    isolation_modes: frozenset[IsolationMode] = frozenset(
-        {IsolationMode.IN_PROCESS_TRUSTED}
-    )
-    require_conformance_fingerprint: bool = False
-    approved_conformance_fingerprints: frozenset[str] = frozenset()
-
-    def __post_init__(self) -> None:
-        if not self.contract_versions:
-            raise ValueError("host compatibility requires a contract version")
-        if len(self.contract_versions) != len(set(self.contract_versions)):
-            raise ValueError("host contract versions must be unique")
-        object.__setattr__(
-            self,
-            "contract_versions",
-            tuple(sorted(self.contract_versions)),
-        )
-        object.__setattr__(
-            self,
-            "capability_catalog",
-            MappingProxyType(dict(self.capability_catalog)),
-        )
-        for ref, key in self.capability_catalog.items():
-            if ref != key.ref:
-                raise ValueError("host capability catalog key does not match value")
-        for fingerprint in self.approved_conformance_fingerprints:
-            _validate_fingerprint(fingerprint)
-
-
-DEFAULT_HOST_COMPATIBILITY = HostCompatibility(
-    contract_versions=(SemanticVersion.parse("1.0.0"),)
-)
-
-
-@dataclass(frozen=True)
-class ConnectorCandidate:
-    manifest: ConnectorManifest
-    factory: ConnectorFactory
-    capability_keys: tuple[CapabilityKey[object], ...]
-    origin: str = "explicit"
-    conformance_fingerprint: str | None = None
-
-    def __post_init__(self) -> None:
-        refs = [key.ref for key in self.capability_keys]
-        if len(refs) != len(set(refs)):
-            raise ValueError("candidate capability keys must be unique")
-        if self.conformance_fingerprint is not None:
-            _validate_fingerprint(self.conformance_fingerprint)
-        object.__setattr__(
-            self,
-            "capability_keys",
-            tuple(
-                sorted(
-                    self.capability_keys,
-                    key=lambda key: (key.ref.id, key.ref.version),
-                )
-            ),
-        )
-
-
-@dataclass(frozen=True)
-class ConnectorDescription:
-    connector_id: str
-    source: str
-    connector_version: str
-    negotiated_contract_version: str
-    capabilities: tuple[CapabilityRef, ...]
-    origin: str
-    conformance_fingerprint: str | None
-
-
-class RegistryStatus(StrEnum):
-    READY = "ready"
-    DEGRADED = "degraded"
-
-
-@dataclass(frozen=True)
-class RegistryHealth:
-    status: RegistryStatus
-    fingerprint: str
-    connector_count: int
-    connectors: tuple[ConnectorDescription, ...]
-    diagnostics: tuple[RegistryDiagnostic, ...]
-
-    @property
-    def healthy(self) -> bool:
-        return self.status is RegistryStatus.READY
-
-
-@dataclass(frozen=True)
-class RegisteredConnector:
-    manifest: ConnectorManifest
-    connector: SourceConnector
-    negotiated_contract: SemanticVersion
-    capability_keys: tuple[CapabilityKey[object], ...]
-    origin: str
-    conformance_fingerprint: str | None = None
-
-    @property
-    def connector_id(self) -> str:
-        return self.manifest.connector_id
-
-    @property
-    def source(self) -> str:
-        return self.manifest.source
-
-    def bind(self, context: BindingContext) -> StaticBoundConnector:
-        _validate_authority(self.manifest, context)
-        try:
-            raw_binding = self.connector.bind(context)
-        except ConnectorError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - normalize the boundary
-            raise BindingError(
-                f"connector {self.connector_id} failed while binding",
-                details={
-                    "connector_id": self.connector_id,
-                    "exception_type": type(exc).__name__,
-                },
-            ) from exc
-        validate_binding_identity(
-            manifest=self.manifest,
-            context=context,
-            binding=raw_binding,
-        )
-
-        capabilities: dict[CapabilityRef, object] = {}
-        for key in self.capability_keys:
-            try:
-                implementation = raw_binding.capability(key)
-            except CapabilityMismatchError as exc:
-                raise BindingError(
-                    f"connector {self.connector_id} returned an invalid "
-                    f"implementation for {key.ref.id}/v{key.ref.version}",
-                    details=exc.details,
-                ) from exc
-            except ConnectorError:
-                raise
-            except Exception as exc:  # noqa: BLE001 - normalize the boundary
-                raise BindingError(
-                    f"connector {self.connector_id} failed capability resolution",
-                    details={
-                        "connector_id": self.connector_id,
-                        "capability": key.ref.id,
-                        "version": key.ref.version,
-                        "exception_type": type(exc).__name__,
-                    },
-                ) from exc
-            if implementation is None:
-                raise BindingError(
-                    f"connector {self.connector_id} declared but did not bind "
-                    f"{key.ref.id}/v{key.ref.version}",
-                    details={
-                        "connector_id": self.connector_id,
-                        "capability": key.ref.id,
-                        "version": key.ref.version,
-                    },
-                )
-            capabilities[key.ref] = implementation
-        return StaticBoundConnector(context.installation, capabilities)
-
-    def describe(self) -> ConnectorDescription:
-        return ConnectorDescription(
-            connector_id=self.connector_id,
-            source=self.source,
-            connector_version=self.manifest.metadata.version,
-            negotiated_contract_version=str(self.negotiated_contract),
-            capabilities=tuple(key.ref for key in self.capability_keys),
-            origin=self.origin,
-            conformance_fingerprint=self.conformance_fingerprint,
-        )
+from services.ingest.source_contract.manifest import CapabilityRef
 
 
 class ConnectorRegistry:
@@ -261,7 +68,7 @@ class ConnectorRegistry:
             }
         )
         self._diagnostics = diagnostics
-        self._fingerprint = _registry_fingerprint(by_id)
+        self._fingerprint = registry_fingerprint(by_id)
 
     @property
     def diagnostics(self) -> tuple[RegistryDiagnostic, ...]:
@@ -384,7 +191,11 @@ class ConnectorRegistryBuilder:
                 ),
             )
         )
-        diagnostics, negotiated = self._validate_static(candidates)
+        diagnostics, negotiated = validate_candidates(
+            candidates,
+            self._host,
+            self._validators,
+        )
         if has_errors(tuple(diagnostics)):
             return RegistryBuildResult(None, tuple(diagnostics))
 
@@ -463,283 +274,6 @@ class ConnectorRegistryBuilder:
 
     def build(self) -> ConnectorRegistry:
         return self.build_result().require_registry()
-
-    def _validate_static(
-        self,
-        candidates: tuple[ConnectorCandidate, ...],
-    ) -> tuple[
-        list[RegistryDiagnostic],
-        dict[str, tuple[SemanticVersion, frozenset[CapabilityRef]]],
-    ]:
-        diagnostics: list[RegistryDiagnostic] = []
-        negotiated: dict[
-            str, tuple[SemanticVersion, frozenset[CapabilityRef]]
-        ] = {}
-
-        connector_ids: dict[str, list[ConnectorCandidate]] = defaultdict(list)
-        sources: dict[str, list[ConnectorCandidate]] = defaultdict(list)
-        for candidate in candidates:
-            connector_ids[candidate.manifest.connector_id].append(candidate)
-            sources[candidate.manifest.source].append(candidate)
-            for alias in candidate.manifest.metadata.aliases:
-                sources[alias].append(candidate)
-        _report_duplicates(diagnostics, connector_ids, "duplicate_connector_id")
-        _report_duplicates(diagnostics, sources, "duplicate_source")
-
-        for candidate in candidates:
-            manifest = candidate.manifest
-            connector_id = manifest.connector_id
-            contract = manifest.spec.contract_range.select_highest(
-                self._host.contract_versions
-            )
-            if contract is None:
-                diagnostics.append(
-                    RegistryDiagnostic(
-                        severity=DiagnosticSeverity.ERROR,
-                        code="contract_incompatible",
-                        message=(
-                            f"connector contract {manifest.spec.contract!r} has no "
-                            "version in common with the host"
-                        ),
-                        connector_id=connector_id,
-                        origin=candidate.origin,
-                    )
-                )
-
-            if manifest.spec.runtime.isolation not in self._host.isolation_modes:
-                diagnostics.append(
-                    RegistryDiagnostic(
-                        severity=DiagnosticSeverity.ERROR,
-                        code="isolation_unsupported",
-                        message=(
-                            f"host does not support isolation mode "
-                            f"{manifest.spec.runtime.isolation.value}"
-                        ),
-                        connector_id=connector_id,
-                        origin=candidate.origin,
-                    )
-                )
-
-            fingerprint = candidate.conformance_fingerprint
-            if (
-                self._host.require_conformance_fingerprint
-                and fingerprint is None
-            ):
-                diagnostics.append(
-                    RegistryDiagnostic(
-                        severity=DiagnosticSeverity.ERROR,
-                        code="conformance_evidence_missing",
-                        message="connector has no conformance fingerprint",
-                        connector_id=connector_id,
-                        origin=candidate.origin,
-                    )
-                )
-            elif (
-                fingerprint is not None
-                and self._host.approved_conformance_fingerprints
-                and fingerprint
-                not in self._host.approved_conformance_fingerprints
-            ):
-                diagnostics.append(
-                    RegistryDiagnostic(
-                        severity=DiagnosticSeverity.ERROR,
-                        code="conformance_fingerprint_unapproved",
-                        message=(
-                            "connector conformance fingerprint is not approved "
-                            "by the host"
-                        ),
-                        connector_id=connector_id,
-                        origin=candidate.origin,
-                    )
-                )
-
-            candidate_keys = {key.ref: key for key in candidate.capability_keys}
-            manifest_refs = set(manifest.capability_refs)
-            missing_implementations = manifest_refs - set(candidate_keys)
-            undeclared_implementations = set(candidate_keys) - manifest_refs
-            for ref in sorted(
-                missing_implementations, key=lambda item: (item.id, item.version)
-            ):
-                diagnostics.append(
-                    RegistryDiagnostic(
-                        severity=DiagnosticSeverity.ERROR,
-                        code="declared_capability_missing",
-                        message="manifest capability has no candidate implementation",
-                        connector_id=connector_id,
-                        capability=ref,
-                        origin=candidate.origin,
-                    )
-                )
-            for ref in sorted(
-                undeclared_implementations, key=lambda item: (item.id, item.version)
-            ):
-                diagnostics.append(
-                    RegistryDiagnostic(
-                        severity=DiagnosticSeverity.ERROR,
-                        code="undeclared_capability",
-                        message=(
-                            "candidate exposes a capability absent from its manifest"
-                        ),
-                        connector_id=connector_id,
-                        capability=ref,
-                        origin=candidate.origin,
-                    )
-                )
-
-            supported: set[CapabilityRef] = set()
-            declarations = {
-                declaration.ref: declaration
-                for declaration in manifest.spec.capabilities
-            }
-            for ref in manifest.capability_refs:
-                host_key = self._host.capability_catalog.get(ref)
-                if host_key is None:
-                    declaration = declarations[ref]
-                    severity = (
-                        DiagnosticSeverity.ERROR
-                        if declaration.required
-                        else DiagnosticSeverity.WARNING
-                    )
-                    diagnostics.append(
-                        RegistryDiagnostic(
-                            severity=severity,
-                            code=(
-                                "required_capability_unsupported"
-                                if declaration.required
-                                else "optional_capability_omitted"
-                            ),
-                            message="host does not support this capability version",
-                            connector_id=connector_id,
-                            capability=ref,
-                            origin=candidate.origin,
-                        )
-                    )
-                    continue
-                candidate_key = candidate_keys.get(ref)
-                if (
-                    candidate_key is not None
-                    and candidate_key.interface is not host_key.interface
-                ):
-                    diagnostics.append(
-                        RegistryDiagnostic(
-                            severity=DiagnosticSeverity.ERROR,
-                            code="capability_interface_mismatch",
-                            message=(
-                                "candidate and host associate different interfaces "
-                                "with the same capability"
-                            ),
-                            connector_id=connector_id,
-                            capability=ref,
-                            origin=candidate.origin,
-                        )
-                    )
-                    continue
-                supported.add(ref)
-
-            for validator in self._validators:
-                try:
-                    diagnostics.extend(validator(manifest))
-                except Exception as exc:  # noqa: BLE001 - diagnostic boundary
-                    diagnostics.append(
-                        RegistryDiagnostic(
-                            severity=DiagnosticSeverity.ERROR,
-                            code="manifest_validator_failed",
-                            message=(
-                                "manifest policy validator raised "
-                                f"{type(exc).__name__}"
-                            ),
-                            connector_id=connector_id,
-                            origin=candidate.origin,
-                        )
-                    )
-
-            if contract is not None:
-                negotiated[connector_id] = (contract, frozenset(supported))
-
-        return diagnostics, negotiated
-
-
-def _report_duplicates(
-    diagnostics: list[RegistryDiagnostic],
-    values: Mapping[str, list[ConnectorCandidate]],
-    code: str,
-) -> None:
-    for value, candidates in sorted(values.items()):
-        if len(candidates) < 2:
-            continue
-        for candidate in candidates:
-            diagnostics.append(
-                RegistryDiagnostic(
-                    severity=DiagnosticSeverity.ERROR,
-                    code=code,
-                    message=f"registry value {value!r} is declared more than once",
-                    connector_id=candidate.manifest.connector_id,
-                    origin=candidate.origin,
-                )
-            )
-
-
-def _validate_authority(
-    manifest: ConnectorManifest,
-    context: BindingContext,
-) -> None:
-    if context.installation.connector_id != manifest.connector_id:
-        raise BindingError(
-            "installation connector ID does not match registry definition",
-            details={
-                "installation_connector_id": context.installation.connector_id,
-                "registry_connector_id": manifest.connector_id,
-            },
-        )
-    requested = manifest.spec.permissions
-    missing_secrets = set(requested.secret_slots) - set(
-        context.authority.secret_slots
-    )
-    missing_hosts = set(requested.outbound_hosts) - set(
-        context.authority.outbound_hosts
-    )
-    missing_scopes = set(requested.requested_scopes) - set(
-        context.authority.scopes
-    )
-    if missing_secrets or missing_hosts or missing_scopes:
-        raise BindingError(
-            "binding authority does not satisfy connector manifest permissions",
-            details={
-                "connector_id": manifest.connector_id,
-                "missing_secret_slots": tuple(sorted(missing_secrets)),
-                "missing_outbound_hosts": tuple(sorted(missing_hosts)),
-                "missing_scopes": tuple(sorted(missing_scopes)),
-            },
-        )
-
-
-def _registry_fingerprint(
-    registrations: Mapping[str, RegisteredConnector],
-) -> str:
-    snapshot = [
-        {
-            "connector_id": registration.connector_id,
-            "source": registration.source,
-            "aliases": list(registration.manifest.metadata.aliases),
-            "connector_version": registration.manifest.metadata.version,
-            "contract_version": str(registration.negotiated_contract),
-            "capabilities": [
-                {"id": key.ref.id, "version": key.ref.version}
-                for key in registration.capability_keys
-            ],
-            "origin": registration.origin,
-            "conformance_fingerprint": registration.conformance_fingerprint,
-        }
-        for registration in (
-            registrations[key] for key in sorted(registrations)
-        )
-    ]
-    encoded = json.dumps(
-        snapshot,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
 
 
 __all__ = [
