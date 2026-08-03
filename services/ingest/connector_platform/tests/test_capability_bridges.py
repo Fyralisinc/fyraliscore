@@ -10,6 +10,8 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from services.ingest.connector_platform import pilots
+
 from services.ingest.connector_conformance.fakes import FakeHostEnvironment
 from services.ingest.connector_platform.execution import LegacyExecutionRouter
 from services.ingest.connector_platform.legacy_capabilities import LegacyGatewayStream
@@ -146,6 +148,7 @@ async def test_identity_normalization_and_poll_have_shadow_parity(
         )
 
     monkeypatch.setitem(FETCHER_DISPATCH, "notion", fetcher)
+    monkeypatch.setattr(pilots, "fetch_page_notion", fetcher)
     async with httpx.AsyncClient() as client:
         router = LegacyExecutionRouter(
             build_pilot_composition(

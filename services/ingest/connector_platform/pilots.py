@@ -1,26 +1,33 @@
-"""Explicit Slack and Notion compatibility pilot catalog."""
+"""Explicit first-party Slack and Notion connector catalog."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from services.ingest.connector_platform.legacy_capabilities import (
-    LegacyHistoricalPull,
-    LegacyIdentity,
-    LegacyIncrementalPoll,
-    LegacyNormalization,
-    LegacyReconciliation,
-    LegacySlackWebhook,
+from services.ingest.connectors.native import (
+    DirectHistoricalPull,
+    DirectIncrementalPoll,
+    DirectNormalization,
+    DirectReconciliation,
+    NativeIdentity,
+    NativeSlackWebhook,
+    NativeSourceConnector,
 )
-from services.ingest.connector_platform.legacy_context import require_legacy_binding
 from services.ingest.connector_runtime.composition import (
     ConnectorRuntimeComposition,
     build_runtime_composition,
 )
-from services.ingest.connector_runtime.legacy import LegacyConnectorAdapter
 from services.ingest.connector_runtime.policy import RoutingPolicy
 from services.ingest.connector_runtime.registry import ConnectorCandidate
 from services.ingest.ingestion import idempotency
+from services.ingest.ingestion.fetchers.notion import fetch_page_notion
+from services.ingest.ingestion.fetchers.slack import fetch_page_slack
+from services.ingest.ingestion.handlers.notion import handle_notion_object
+from services.ingest.ingestion.handlers.slack import handle_slack_message
+from services.ingest.ingestion.planners.notion import plan_shards_notion
+from services.ingest.ingestion.planners.slack import plan_shards_slack
+from services.ingest.ingestion.reconcilers.notion import reconcile_notion
+from services.ingest.ingestion.reconcilers.slack import reconcile_slack
 from services.ingest.source_contract.capabilities import (
     HISTORICAL_PULL_V1,
     IDENTITY_V1,
@@ -56,13 +63,13 @@ def _manifest(
                 "id": connector_id,
                 "source": source,
                 "displayName": display_name,
-                "version": "0.1.0",
+                "version": "1.0.0",
                 "owner": "ingestion",
             },
             "spec": {
                 "contract": ">=1.0,<2.0",
                 "implementation": (
-                    "services.ingest.connector_platform.pilots:"
+                    "services.ingest.connectors.native:"
                     f"build_{source}_candidate"
                 ),
                 "maturity": "preview",
@@ -86,7 +93,7 @@ def _manifest(
 SLACK_MANIFEST = _manifest(
     connector_id=SLACK_CONNECTOR_ID,
     source="slack",
-    display_name="Slack (compatibility pilot)",
+    display_name="Slack",
     capabilities=(
         (HISTORICAL_PULL_V1.ref.id, 1),
         (WEBHOOK_V1.ref.id, 1),
@@ -103,7 +110,7 @@ SLACK_MANIFEST = _manifest(
 NOTION_MANIFEST = _manifest(
     connector_id=NOTION_CONNECTOR_ID,
     source="notion",
-    display_name="Notion (compatibility pilot)",
+    display_name="Notion",
     capabilities=(
         (HISTORICAL_PULL_V1.ref.id, 1),
         (INCREMENTAL_POLL_V1.ref.id, 1),
@@ -144,23 +151,23 @@ def _notion_identity(input: IdentityInput) -> str:
 
 
 def build_slack_candidate() -> ConnectorCandidate:
-    adapter = LegacyConnectorAdapter(
+    connector = NativeSourceConnector(
         SLACK_MANIFEST,
         {
-            HISTORICAL_PULL_V1.ref: lambda _context: LegacyHistoricalPull(
-                "slack", require_legacy_binding()
+            HISTORICAL_PULL_V1.ref: lambda _context: DirectHistoricalPull(
+                plan_shards_slack, fetch_page_slack
             ),
-            WEBHOOK_V1.ref: lambda _context: LegacySlackWebhook(
-                require_legacy_binding()
+            WEBHOOK_V1.ref: lambda context: NativeSlackWebhook(context),
+            RECONCILIATION_V1.ref: lambda _context: DirectReconciliation(
+                reconcile_slack
             ),
-            RECONCILIATION_V1.ref: lambda _context: LegacyReconciliation(
-                "slack", require_legacy_binding()
+            IDENTITY_V1.ref: lambda _context: NativeIdentity(_slack_identity),
+            NORMALIZATION_V1.ref: lambda _context: DirectNormalization(
+                handle_slack_message
             ),
-            IDENTITY_V1.ref: lambda _context: LegacyIdentity(_slack_identity),
-            NORMALIZATION_V1.ref: lambda _context: LegacyNormalization("slack"),
         },
     )
-    return adapter.candidate(
+    return connector.candidate(
         (
             HISTORICAL_PULL_V1,
             WEBHOOK_V1,
@@ -168,28 +175,29 @@ def build_slack_candidate() -> ConnectorCandidate:
             IDENTITY_V1,
             NORMALIZATION_V1,
         ),
-        origin="compatibility-pilot:slack",
     )
 
 
 def build_notion_candidate() -> ConnectorCandidate:
-    adapter = LegacyConnectorAdapter(
+    connector = NativeSourceConnector(
         NOTION_MANIFEST,
         {
-            HISTORICAL_PULL_V1.ref: lambda _context: LegacyHistoricalPull(
-                "notion", require_legacy_binding()
+            HISTORICAL_PULL_V1.ref: lambda _context: DirectHistoricalPull(
+                plan_shards_notion, fetch_page_notion
             ),
-            INCREMENTAL_POLL_V1.ref: lambda _context: LegacyIncrementalPoll(
-                "notion", require_legacy_binding()
+            INCREMENTAL_POLL_V1.ref: lambda _context: DirectIncrementalPoll(
+                fetch_page_notion
             ),
-            RECONCILIATION_V1.ref: lambda _context: LegacyReconciliation(
-                "notion", require_legacy_binding()
+            RECONCILIATION_V1.ref: lambda _context: DirectReconciliation(
+                reconcile_notion
             ),
-            IDENTITY_V1.ref: lambda _context: LegacyIdentity(_notion_identity),
-            NORMALIZATION_V1.ref: lambda _context: LegacyNormalization("notion"),
+            IDENTITY_V1.ref: lambda _context: NativeIdentity(_notion_identity),
+            NORMALIZATION_V1.ref: lambda _context: DirectNormalization(
+                handle_notion_object
+            ),
         },
     )
-    return adapter.candidate(
+    return connector.candidate(
         (
             HISTORICAL_PULL_V1,
             INCREMENTAL_POLL_V1,
@@ -197,7 +205,6 @@ def build_notion_candidate() -> ConnectorCandidate:
             IDENTITY_V1,
             NORMALIZATION_V1,
         ),
-        origin="compatibility-pilot:notion",
     )
 
 
@@ -208,7 +215,7 @@ def build_pilot_candidates() -> tuple[ConnectorCandidate, ...]:
 def build_pilot_composition(
     policy: RoutingPolicy | None = None,
 ) -> ConnectorRuntimeComposition:
-    """Freeze both pilot definitions; legacy remains the routing default."""
+    """Freeze both native definitions with the supplied routing policy."""
 
     return build_runtime_composition(build_pilot_candidates(), policy=policy)
 

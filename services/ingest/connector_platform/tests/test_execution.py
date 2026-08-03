@@ -6,6 +6,8 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from services.ingest.connector_platform import pilots
+
 from services.ingest.connector_platform.execution import LegacyExecutionRouter
 from services.ingest.connector_platform.pilots import build_pilot_composition
 from services.ingest.connector_runtime.host_services import HostServicesFactory
@@ -66,6 +68,8 @@ async def test_planner_and_fetcher_execute_end_to_end_through_registry(
 
     monkeypatch.setitem(PLANNER_DISPATCH, "slack", planner)
     monkeypatch.setitem(FETCHER_DISPATCH, "slack", fetcher)
+    monkeypatch.setattr(pilots, "plan_shards_slack", planner)
+    monkeypatch.setattr(pilots, "fetch_page_slack", fetcher)
     policy = RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)
     composition = build_pilot_composition(policy)
     metrics: list[tuple[str, tuple]] = []
@@ -120,6 +124,7 @@ async def test_shadow_fetch_compares_cursor_and_publication_without_cutover(
         )
 
     monkeypatch.setitem(FETCHER_DISPATCH, "notion", fetcher)
+    monkeypatch.setattr(pilots, "fetch_page_notion", fetcher)
     composition = build_pilot_composition(
         RoutingPolicy(global_mode=ExecutionMode.SHADOW)
     )
@@ -158,6 +163,7 @@ async def test_pilot_binding_rejects_install_without_credential_grant(
         return []
 
     monkeypatch.setitem(PLANNER_DISPATCH, "slack", planner)
+    monkeypatch.setattr(pilots, "plan_shards_slack", planner)
     async with httpx.AsyncClient() as client:
         router = LegacyExecutionRouter(
             build_pilot_composition(
@@ -202,6 +208,7 @@ async def test_router_uses_durable_authority_instead_of_install_inference(
         return []
 
     monkeypatch.setitem(PLANNER_DISPATCH, "slack", planner)
+    monkeypatch.setattr(pilots, "plan_shards_slack", planner)
     async with httpx.AsyncClient() as client:
         router = LegacyExecutionRouter(
             build_pilot_composition(
