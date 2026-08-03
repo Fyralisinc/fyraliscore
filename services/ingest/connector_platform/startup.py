@@ -10,11 +10,18 @@ from services.ingest.connector_platform.pilots import (
     build_pilot_composition,
     default_migrated_routing_policy,
 )
+from services.ingest.connector_platform.operational_health import (
+    PostgresConnectorHealthReader,
+)
 from services.ingest.connector_platform.routing_config import (
     RoutingConfigurationController,
     parse_routing_policy,
 )
+from services.ingest.connector_platform.rollout_store import (
+    PostgresRolloutRepository,
+)
 from services.ingest.connector_runtime.composition import ConnectorRuntimeComposition
+from services.ingest.connector_runtime.rollout import FleetRoutingController
 
 
 ROUTING_CONFIG_ENV = "SOURCE_CONNECTOR_ROUTING_JSON"
@@ -24,12 +31,19 @@ ROUTING_CONFIG_ENV = "SOURCE_CONNECTOR_ROUTING_JSON"
 class SourceConnectorRuntimeWiring:
     composition: ConnectorRuntimeComposition
     configuration: RoutingConfigurationController
+    rollout: FleetRoutingController | None = None
+
+    async def refresh_routing(self) -> None:
+        if self.rollout is not None:
+            await self.rollout.evaluate_once()
 
 
 def wire_source_connector_runtime(
     state: Any,
     *,
     routing_config: str | None = None,
+    pool: object | None = None,
+    actor: str = "gateway",
 ) -> SourceConnectorRuntimeWiring:
     """Construct and publish one immutable snapshot alongside legacy state."""
 
@@ -45,10 +59,24 @@ def wire_source_connector_runtime(
     )
     composition = build_pilot_composition(policy)
     controller = RoutingConfigurationController(composition.routing)
-    wiring = SourceConnectorRuntimeWiring(composition, controller)
+    rollout = None
+    if pool is not None and hasattr(pool, "fetchrow"):
+        repository = PostgresRolloutRepository(pool)
+        rollout = FleetRoutingController(
+            repository,
+            controller,
+            actor=actor,
+            metric_reader=repository.read_metrics,
+        )
+    wiring = SourceConnectorRuntimeWiring(composition, controller, rollout)
     state.source_connector_runtime = composition
     state.source_connector_registry = composition.registry
     state.source_connector_routing = controller
+    if pool is not None and hasattr(pool, "fetch"):
+        state.source_connector_health_reader = PostgresConnectorHealthReader(
+            pool,
+            composition,
+        )
     return wiring
 
 

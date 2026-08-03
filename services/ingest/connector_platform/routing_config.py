@@ -102,6 +102,9 @@ class RoutingConfigurationController:
     def __init__(self, routing: AtomicRoutingPolicy) -> None:
         self._routing = routing
 
+    def snapshot(self) -> RoutingPolicy:
+        return self._routing.snapshot()
+
     def apply(self, value: str | Mapping[str, Any]) -> RoutingPolicy:
         next_revision = self._routing.snapshot().revision + 1
         policy = parse_routing_policy(value, fallback_revision=next_revision)

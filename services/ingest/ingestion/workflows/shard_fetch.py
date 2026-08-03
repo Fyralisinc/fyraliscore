@@ -1561,6 +1561,7 @@ async def _run_service() -> None:
         s3_raw_client=s3_client,
         kafka_producer=producer,
     )
+    await connector_wiring.refresh_routing()
 
     config = ShardFetchConfig(
         tick_interval_seconds=float(
@@ -1614,6 +1615,7 @@ async def _run_service() -> None:
     )
 
     stop_event = asyncio.Event()
+    rollout_task = asyncio.create_task(connector_wiring.watch_routing(stop_event))
     loop = asyncio.get_event_loop()
     for s in (sig_module.SIGTERM, sig_module.SIGINT):
         loop.add_signal_handler(s, stop_event.set)
@@ -1639,6 +1641,8 @@ async def _run_service() -> None:
         await service.run(stop_event=stop_event)
     finally:
         log.info("workflow.shard_fetch.shutting_down")
+        rollout_task.cancel()
+        await asyncio.gather(rollout_task, return_exceptions=True)
         ticker.cancel()
         await asyncio.gather(ticker, return_exceptions=True)
         if health is not None:

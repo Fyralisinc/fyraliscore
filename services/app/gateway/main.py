@@ -69,6 +69,15 @@ log = get_logger("gateway")
 _T = TypeVar("_T")
 
 
+async def _stop_background_task(
+    task: asyncio.Task[None],
+    stop_event: asyncio.Event,
+) -> None:
+    stop_event.set()
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
 @dataclass(frozen=True, slots=True)
 class _CompletedGatewayDeps:
     actor_repo: ActorRepo
@@ -813,7 +822,23 @@ def build_app(
                 rate_limiter=rate_limiter,
             )
 
-            connector_wiring = wire_source_connector_runtime(app_.state)
+            connector_wiring = wire_source_connector_runtime(
+                app_.state,
+                pool=runtime.pool,
+                actor="gateway",
+            )
+            await connector_wiring.refresh_routing()
+            if connector_wiring.rollout is not None:
+                connector_rollout_stop = asyncio.Event()
+                connector_rollout_task = asyncio.create_task(
+                    connector_wiring.rollout.run(connector_rollout_stop),
+                    name="source-connector-rollout",
+                )
+                stack.push_async_callback(
+                    _stop_background_task,
+                    connector_rollout_task,
+                    connector_rollout_stop,
+                )
             startup_status.ok(
                 "source_connector_runtime",
                 required=False,

@@ -15,15 +15,22 @@ from services.ingest.connector_platform.pilots import (
     build_pilot_composition,
     default_migrated_routing_policy,
 )
-from services.ingest.connector_platform.routing_config import parse_routing_policy
+from services.ingest.connector_platform.routing_config import (
+    RoutingConfigurationController,
+    parse_routing_policy,
+)
 from services.ingest.connector_platform.startup import ROUTING_CONFIG_ENV
 from services.ingest.connector_platform.production_host_services import (
     ProductionHostBackends,
     build_production_host_services_factory,
 )
+from services.ingest.connector_platform.rollout_store import (
+    PostgresRolloutRepository,
+)
 from services.ingest.connector_runtime.composition import ConnectorRuntimeComposition
 from services.ingest.connector_runtime.host_services import HostServicesFactory
 from services.ingest.connector_runtime.shadow import ShadowReportSink
+from services.ingest.connector_runtime.rollout import FleetRoutingController
 
 
 @dataclass(frozen=True)
@@ -31,6 +38,15 @@ class WorkflowConnectorWiring:
     composition: ConnectorRuntimeComposition
     router: LegacyExecutionRouter
     http_client: httpx.AsyncClient
+    rollout: FleetRoutingController | None = None
+
+    async def refresh_routing(self) -> None:
+        if self.rollout is not None:
+            await self.rollout.refresh_once()
+
+    async def watch_routing(self, stop_event: object) -> None:
+        if self.rollout is not None:
+            await self.rollout.run(stop_event)  # type: ignore[arg-type]
 
     async def close(self) -> None:
         await self.http_client.aclose()
@@ -82,7 +98,15 @@ def build_workflow_connector_wiring(
         authority_repository=authority_repository,
         require_durable_authority=authority_repository is not None,
     )
-    return WorkflowConnectorWiring(composition, router, client)
+    rollout = None
+    if pool is not None:
+        rollout_repository = PostgresRolloutRepository(pool)
+        rollout = FleetRoutingController(
+            rollout_repository,
+            RoutingConfigurationController(composition.routing),
+            actor=f"workflow:{os.getpid()}",
+        )
+    return WorkflowConnectorWiring(composition, router, client, rollout)
 
 
 __all__ = ["WorkflowConnectorWiring", "build_workflow_connector_wiring"]

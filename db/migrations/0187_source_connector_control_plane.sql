@@ -156,6 +156,22 @@ CREATE TABLE IF NOT EXISTS source_connector_rollout_audit (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS source_connector_rollout_metric_windows (
+  revision              BIGINT NOT NULL
+                            REFERENCES source_connector_routing_revisions(revision),
+  window_started_at     TIMESTAMPTZ NOT NULL,
+  executions            BIGINT NOT NULL DEFAULT 0,
+  failures              BIGINT NOT NULL DEFAULT 0,
+  parity_samples        BIGINT NOT NULL DEFAULT 0,
+  parity_mismatches     BIGINT NOT NULL DEFAULT 0,
+  connector_p95_ms      DOUBLE PRECISION NOT NULL DEFAULT 0,
+  legacy_p95_ms         DOUBLE PRECISION NOT NULL DEFAULT 0,
+  lifecycle_failures    BIGINT NOT NULL DEFAULT 0,
+  connector_dlq_rate    DOUBLE PRECISION NOT NULL DEFAULT 0,
+  baseline_dlq_rate     DOUBLE PRECISION NOT NULL DEFAULT 0,
+  PRIMARY KEY (revision, window_started_at)
+);
+
 -- Seed the approved Phase 2 pilots from their existing installation rows. The
 -- runtime can therefore require durable grants immediately after this
 -- migration without fabricating authority in process memory.

@@ -1476,6 +1476,7 @@ async def _run_service() -> None:
     ))
     await producer.start()
     connector_wiring = build_workflow_connector_wiring(pool=pool)
+    await connector_wiring.refresh_routing()
     config = SourceOnboardingConfig(
         tick_interval_seconds=float(
             os.environ.get("SOURCE_ONBOARDING_TICK_SEC", "5.0"),
@@ -1495,6 +1496,7 @@ async def _run_service() -> None:
     )
 
     stop_event = asyncio.Event()
+    rollout_task = asyncio.create_task(connector_wiring.watch_routing(stop_event))
     loop = asyncio.get_event_loop()
     for s in (sig_module.SIGTERM, sig_module.SIGINT):
         loop.add_signal_handler(s, stop_event.set)
@@ -1508,6 +1510,8 @@ async def _run_service() -> None:
         await service.run(stop_event=stop_event)
     finally:
         log.info("workflow.source_onboarding.shutting_down")
+        rollout_task.cancel()
+        await asyncio.gather(rollout_task, return_exceptions=True)
         await health_shutdown()
         await connector_wiring.close()
         await producer.stop()

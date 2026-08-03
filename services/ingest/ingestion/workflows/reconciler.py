@@ -787,6 +787,7 @@ async def _run_service() -> None:
     ))
     await producer.start()
     connector_wiring = build_workflow_connector_wiring(pool=pool)
+    await connector_wiring.refresh_routing()
     # M6.3: per-source reconcilers may need pool access for auxiliary reads
     # (e.g., Gmail reads workflow_states for each shard's final_history_id).
     # Register the pool with every per-source module via the shared helper —
@@ -817,6 +818,7 @@ async def _run_service() -> None:
     )
 
     stop_event = asyncio.Event()
+    rollout_task = asyncio.create_task(connector_wiring.watch_routing(stop_event))
     loop = asyncio.get_event_loop()
     for s in (sig_module.SIGTERM, sig_module.SIGINT):
         loop.add_signal_handler(s, stop_event.set)
@@ -830,6 +832,8 @@ async def _run_service() -> None:
         await service.run(stop_event=stop_event)
     finally:
         log.info("workflow.reconciler.shutting_down")
+        rollout_task.cancel()
+        await asyncio.gather(rollout_task, return_exceptions=True)
         await health_shutdown()
         await connector_wiring.close()
         await producer.stop()
