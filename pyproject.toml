@@ -324,3 +324,27 @@ type = "forbidden"
 # services.platform.extensions / services.platform.access_control by design.
 source_modules = ["lib.extensions"]
 forbidden_modules = ["services"]
+
+[[tool.importlinter.contracts]]
+name = "source connector contract is independent of runtime and source code"
+id = "source-contract-boundary"
+type = "forbidden"
+source_modules = ["services.ingest.source_contract"]
+forbidden_modules = [
+    "services.ingest.connector_runtime",
+    "services.ingest.connector_conformance",
+    "services.ingest.ingestion",
+    "services.ingest.integrations",
+    "services.app",
+]
+
+[[tool.importlinter.contracts]]
+name = "connector runtime does not import source implementations or app routes"
+id = "connector-runtime-boundary"
+type = "forbidden"
+source_modules = ["services.ingest.connector_runtime"]
+forbidden_modules = [
+    "services.ingest.ingestion",
+    "services.ingest.integrations",
+    "services.app",
+]
