@@ -95,6 +95,14 @@ nav:
       - Shared Libraries (lib): architecture/lib.md
       - Runtime & Data Plane: architecture/data-plane.md
       - Source Connector Contract: architecture/source-connector-contract.md
+      - Source Connector Runtime:
+          - Runtime architecture: ingestion/source-connectors/runtime-architecture.md
+          - Development guide: ingestion/source-connectors/development-guide.md
+          - Migration guide: ingestion/source-connectors/migration-guide.md
+          - Capabilities: ingestion/source-connectors/capabilities.md
+          - Installation lifecycle: ingestion/source-connectors/lifecycle.md
+          - Operations runbook: ingestion/source-connectors/operations-runbook.md
+          - Rollout playbook: ingestion/source-connectors/rollout-playbook.md
       - BYOC Production Blueprint: architecture/byoc-production-blueprint.md
       - Interfaces & Extensions: architecture/interfaces.md
       - Interface platform roadmap: architecture/interface-platform-roadmap.md

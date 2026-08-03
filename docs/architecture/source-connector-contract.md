@@ -1,5 +1,14 @@
 # Fyralis Source Connector Contract
 
+> Implementation status (Phase 3, 2026-08-03): this contract is implemented as
+> the authoritative connector control-plane architecture. Slack, Notion, and
+> WhatsApp use native connector execution; the other 23 cataloged source
+> families remain intentionally legacy-routed through conformed compatibility
+> candidates pending source-by-source production evidence. See the
+> [runtime architecture](../ingestion/source-connectors/runtime-architecture.md),
+> [development guide](../ingestion/source-connectors/development-guide.md), and
+> [migration guide](../ingestion/source-connectors/migration-guide.md).
+
 Status: **Phase 1 foundation implemented; awaiting architectural review**<br>
 Audience: ingestion, platform, security, and product engineers<br>
 Last reviewed: 2026-08-03
