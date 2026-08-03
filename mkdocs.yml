@@ -94,6 +94,7 @@ nav:
       - Workers — Background Jobs: architecture/workers.md
       - Shared Libraries (lib): architecture/lib.md
       - Runtime & Data Plane: architecture/data-plane.md
+      - Source Connector Contract: architecture/source-connector-contract.md
       - BYOC Production Blueprint: architecture/byoc-production-blueprint.md
       - Interfaces & Extensions: architecture/interfaces.md
       - Interface platform roadmap: architecture/interface-platform-roadmap.md
