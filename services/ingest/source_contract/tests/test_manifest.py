@@ -70,4 +70,21 @@ def test_manifest_rejects_invalid_contract_range(
 
 def test_manifest_is_frozen(manifest: ConnectorManifest) -> None:
     with pytest.raises(ValidationError, match="Instance is frozen"):
-        manifest.kind = "Other"  # type: ignore[misc]
+        manifest.kind = "Other"  # type: ignore[assignment]
+
+
+def test_source_aliases_are_unique_and_distinct(
+    manifest_data: dict[str, Any],
+) -> None:
+    data = deepcopy(manifest_data)
+    data["metadata"]["aliases"] = ["example_legacy"]
+    manifest = ConnectorManifest.model_validate(data)
+    assert manifest.metadata.aliases == ("example_legacy",)
+
+    data["metadata"]["aliases"] = ["example", "example"]
+    with pytest.raises(ValidationError, match="source aliases must be unique"):
+        ConnectorManifest.model_validate(data)
+
+    data["metadata"]["aliases"] = ["example"]
+    with pytest.raises(ValidationError, match="canonical source"):
+        ConnectorManifest.model_validate(data)

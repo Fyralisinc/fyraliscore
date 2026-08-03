@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from types import MappingProxyType
-from typing import Generic, Mapping, Protocol, TypeVar, runtime_checkable
+from typing import Any, Generic, Mapping, Protocol, TypeVar, runtime_checkable
 from uuid import UUID
 
 from services.ingest.source_contract.errors import (
@@ -24,7 +24,10 @@ T_co = TypeVar("T_co", covariant=True)
 @dataclass(frozen=True)
 class CapabilityKey(Generic[T_co]):
     ref: CapabilityRef
-    interface: type[T_co]
+    # The generic parameter provides the resolver's return type. ``interface``
+    # is runtime metadata and may itself be a Protocol, which type[T] models as
+    # an abstract class that cannot be passed as a value.
+    interface: type[Any]
 
 
 @dataclass(frozen=True)

@@ -76,6 +76,7 @@ class CapabilityDeclaration(ManifestModel):
 class ConnectorMetadata(ManifestModel):
     id: ConnectorId
     source: SourceId
+    aliases: tuple[SourceId, ...] = ()
     display_name: str = Field(alias="displayName", min_length=1, max_length=120)
     version: str
     owner: str = Field(min_length=1, max_length=120)
@@ -85,6 +86,14 @@ class ConnectorMetadata(ManifestModel):
     def valid_semantic_version(cls, value: str) -> str:
         SemanticVersion.parse(value)
         return value
+
+    @model_validator(mode="after")
+    def unique_wire_values(self) -> "ConnectorMetadata":
+        if len(self.aliases) != len(set(self.aliases)):
+            raise ValueError("source aliases must be unique")
+        if self.source in self.aliases:
+            raise ValueError("canonical source cannot also be an alias")
+        return self
 
     @property
     def semantic_version(self) -> SemanticVersion:

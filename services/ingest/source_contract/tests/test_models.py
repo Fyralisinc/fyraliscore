@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
@@ -38,7 +39,7 @@ def test_terminal_page_cannot_advance_cursor() -> None:
 def test_clean_reconciliation_cannot_create_repair_work() -> None:
     repair = RepairShard(
         shard=ShardPlan(kind="events", identifier={}),
-        parent_shard_id="00000000-0000-0000-0000-000000000001",
+        parent_shard_id=UUID("00000000-0000-0000-0000-000000000001"),
     )
     with pytest.raises(ValidationError, match="clean reconciliation"):
         ReconciliationDecision(has_gaps=False, new_shards=(repair,))

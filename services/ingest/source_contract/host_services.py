@@ -85,6 +85,13 @@ class InstallationDataPatch:
     values: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class CallbackAllocation:
+    callback_url: str
+    endpoint_id: str
+    verification_nonce: SecretValue
+
+
 @runtime_checkable
 class SecretsPort(Protocol):
     async def resolve(self, slot: SlotId) -> SecretValue: ...
@@ -121,6 +128,13 @@ class RawEmissionPort(Protocol):
     """Host-owned durable emission used only by active/gateway connectors."""
 
     async def emit(self, record: "SourceRecord") -> "PublicationReceipt": ...
+
+
+@runtime_checkable
+class SubscriptionCallbackPort(Protocol):
+    """Allocate a host-owned, installation-bound push endpoint."""
+
+    async def allocate(self, purpose: str) -> CallbackAllocation: ...
 
 
 @runtime_checkable
@@ -180,6 +194,7 @@ class HostServices:
     state: StateViewPort
     installation_store: InstallationStorePort
     raw_emission: RawEmissionPort
+    subscription_callbacks: SubscriptionCallbackPort
     clock: ClockPort
     cancellation: CancellationPort
     metrics: MetricsPort
@@ -189,6 +204,7 @@ class HostServices:
 
 __all__ = [
     "CancellationPort",
+    "CallbackAllocation",
     "ClockPort",
     "GovernedHttpRequest",
     "GovernedHttpResponse",
@@ -206,4 +222,5 @@ __all__ = [
     "SecretsPort",
     "StateProposal",
     "StateViewPort",
+    "SubscriptionCallbackPort",
 ]
