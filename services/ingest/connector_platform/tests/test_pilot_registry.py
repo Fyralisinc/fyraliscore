@@ -14,7 +14,7 @@ from services.ingest.source_contract.capabilities import (
 from uuid import uuid4
 
 
-def test_pilot_composition_is_immutable_side_by_side_and_legacy_default() -> None:
+def test_pilot_composition_is_immutable_and_native_pilots_are_authoritative() -> None:
     composition = build_pilot_composition()
 
     assert composition.registry.connector_ids() == (
@@ -34,4 +34,4 @@ def test_pilot_composition_is_immutable_side_by_side_and_legacy_default() -> Non
             source="slack",
             capability=HISTORICAL_PULL_V1.ref.id,
         )
-    ).mode is ExecutionMode.LEGACY
+    ).mode is ExecutionMode.CONNECTOR

@@ -44,6 +44,28 @@ class OAuthResult(ContractModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class OAuthRefreshRequest(ContractModel):
+    operation_id: str = Field(min_length=1)
+    requested_scopes: tuple[str, ...] = ()
+
+
+class OAuthRefreshResult(ContractModel):
+    granted_scopes: tuple[str, ...] = ()
+    rotated: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class OAuthRevokeRequest(ContractModel):
+    operation_id: str = Field(min_length=1)
+    revoke_remote: bool = True
+
+
+class OAuthRevocation(ContractModel):
+    complete: bool
+    remote_revoked: bool = False
+    reason_code: str = "complete"
+
+
 class SecretRotationRequest(ContractModel):
     slot: str
     candidate_handle: str
@@ -80,6 +102,23 @@ class OAuth2Capability(Protocol):
 
 
 @runtime_checkable
+class OAuth2LifecycleCapability(Protocol):
+    """Additive OAuth lifecycle facet; OAuth2 v1 remains unchanged."""
+
+    async def refresh(
+        self,
+        request: OAuthRefreshRequest,
+        context: OperationContext,
+    ) -> tuple[OAuthRefreshResult, tuple[SecretCandidate, ...]]: ...
+
+    async def revoke(
+        self,
+        request: OAuthRevokeRequest,
+        context: OperationContext,
+    ) -> OAuthRevocation: ...
+
+
+@runtime_checkable
 class SecretRotationCapability(Protocol):
     async def verify_candidate(
         self,
@@ -94,9 +133,14 @@ __all__ = [
     "ConfigurationIssue",
     "ConfigurationValidation",
     "OAuth2Capability",
+    "OAuth2LifecycleCapability",
     "OAuthBeginRequest",
     "OAuthCompleteRequest",
     "OAuthResult",
+    "OAuthRefreshRequest",
+    "OAuthRefreshResult",
+    "OAuthRevokeRequest",
+    "OAuthRevocation",
     "SecretRotationCapability",
     "SecretRotationRequest",
     "SecretRotationVerification",

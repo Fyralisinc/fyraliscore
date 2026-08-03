@@ -16,6 +16,7 @@ from services.ingest.source_contract.capabilities.ingestion import (
 from services.ingest.source_contract.capabilities.installation import (
     ConfigurationCapability,
     OAuth2Capability,
+    OAuth2LifecycleCapability,
     SecretRotationCapability,
 )
 from services.ingest.source_contract.capabilities.lifecycle import (
@@ -36,6 +37,10 @@ CONFIGURATION_V1: CapabilityKey[ConfigurationCapability] = CapabilityKey(
 )
 OAUTH2_V1: CapabilityKey[OAuth2Capability] = CapabilityKey(
     CapabilityRef(id="installation.oauth2", version=1), OAuth2Capability
+)
+OAUTH2_LIFECYCLE_V1: CapabilityKey[OAuth2LifecycleCapability] = CapabilityKey(
+    CapabilityRef(id="installation.oauth2_lifecycle", version=1),
+    OAuth2LifecycleCapability,
 )
 SECRET_ROTATION_V1: CapabilityKey[SecretRotationCapability] = CapabilityKey(
     CapabilityRef(id="installation.secret_rotation", version=1),
@@ -89,6 +94,7 @@ CAPABILITY_CATALOG = MappingProxyType(
         for key in (
             CONFIGURATION_V1,
             OAUTH2_V1,
+            OAUTH2_LIFECYCLE_V1,
             SECRET_ROTATION_V1,
             RESOURCE_DISCOVERY_V1,
             HISTORICAL_PULL_V1,
@@ -117,6 +123,7 @@ __all__ = [
     "INCREMENTAL_POLL_V1",
     "NORMALIZATION_V1",
     "OAUTH2_V1",
+    "OAUTH2_LIFECYCLE_V1",
     "PUSH_SUBSCRIPTION_V1",
     "RECONCILIATION_V1",
     "RESOURCE_DISCOVERY_V1",

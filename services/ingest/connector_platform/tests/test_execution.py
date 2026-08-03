@@ -193,8 +193,20 @@ async def test_router_uses_durable_authority_instead_of_install_inference(
                 connector_id="fyralis/slack",
                 generation=1,
                 credential_owner="oauth_callback",
-                secret_slots=frozenset({"webhook_signing_secret"}),
+                secret_slots=frozenset(
+                    {"oauth_access_token", "webhook_signing_secret"}
+                ),
                 outbound_hosts=frozenset({"slack.com"}),
+                scopes=frozenset(
+                    {
+                        "channels:read",
+                        "channels:history",
+                        "groups:read",
+                        "groups:history",
+                        "users:read",
+                        "team:read",
+                    }
+                ),
                 maximum_trust_tier="attested_agent",
             )
 

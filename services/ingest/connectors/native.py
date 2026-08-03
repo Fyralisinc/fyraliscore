@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
+from datetime import datetime, timezone
 
 from services.ingest.connector_platform.legacy_context import require_legacy_binding
 from services.ingest.connector_runtime.definitions import ConnectorCandidate
@@ -29,12 +30,22 @@ from services.ingest.source_contract.connector import (
     StaticBoundConnector,
 )
 from services.ingest.source_contract.identity import SlotId
+from services.ingest.source_contract.capabilities.installation import (
+    OAuthRevokeRequest,
+)
+from services.ingest.source_contract.capabilities.lifecycle import (
+    CleanupRequest,
+    CleanupResult,
+    HealthProbeRequest,
+)
 from services.ingest.source_contract.manifest import CapabilityRef, ConnectorManifest
 from services.ingest.source_contract.models import (
     BoundedWebhookRequest,
     CursorState,
     FetchRequest,
     FetchedPage,
+    HealthCondition,
+    HealthReport,
     IdentityInput,
     NormalizationInput,
     ObservationDraft,
@@ -286,12 +297,63 @@ class NativeSlackWebhook:
         )
 
 
+class CredentialHealthProbe:
+    def __init__(self, binding: BindingContext, slots: tuple[str, ...]) -> None:
+        self._binding = binding
+        self._slots = slots
+
+    async def probe(
+        self, request: HealthProbeRequest, context: OperationContext
+    ) -> HealthReport:
+        conditions: list[HealthCondition] = []
+        healthy = True
+        for slot in self._slots:
+            try:
+                value = await self._binding.services.secrets.resolve(SlotId(slot))
+                present = bool(value.reveal_bytes())
+            except Exception:
+                present = False
+            healthy = healthy and present
+            conditions.append(
+                HealthCondition(
+                    type="CredentialsValid",
+                    status="true" if present else "false",
+                    reason="CredentialPresent" if present else "CredentialUnavailable",
+                    observed_at=datetime.now(timezone.utc),
+                )
+            )
+        return HealthReport(healthy=healthy, conditions=tuple(conditions))
+
+
+class OAuthCleanup:
+    def __init__(self, oauth_lifecycle: Any) -> None:
+        self._oauth_lifecycle = oauth_lifecycle
+
+    async def cleanup(
+        self, request: CleanupRequest, context: OperationContext
+    ) -> CleanupResult:
+        result = await self._oauth_lifecycle.revoke(
+            OAuthRevokeRequest(
+                operation_id=request.operation_id,
+                revoke_remote=request.revoke_remote,
+            ),
+            context,
+        )
+        return CleanupResult(
+            complete=result.complete or request.force,
+            remote_revoked=result.remote_revoked,
+            reason_code=result.reason_code,
+        )
+
+
 __all__ = [
     "DirectHistoricalPull",
     "DirectIncrementalPoll",
     "DirectNormalization",
     "DirectReconciliation",
+    "CredentialHealthProbe",
     "NativeIdentity",
     "NativeSlackWebhook",
     "NativeSourceConnector",
+    "OAuthCleanup",
 ]

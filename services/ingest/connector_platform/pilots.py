@@ -9,15 +9,22 @@ from services.ingest.connectors.native import (
     DirectIncrementalPoll,
     DirectNormalization,
     DirectReconciliation,
+    CredentialHealthProbe,
     NativeIdentity,
     NativeSlackWebhook,
     NativeSourceConnector,
+    OAuthCleanup,
+)
+from services.ingest.connectors.oauth import (
+    NotionOAuthCapability,
+    SLACK_BOT_SCOPES,
+    SlackOAuthCapability,
 )
 from services.ingest.connector_runtime.composition import (
     ConnectorRuntimeComposition,
     build_runtime_composition,
 )
-from services.ingest.connector_runtime.policy import RoutingPolicy
+from services.ingest.connector_runtime.policy import ExecutionMode, RoutingPolicy
 from services.ingest.connector_runtime.registry import ConnectorCandidate
 from services.ingest.ingestion import idempotency
 from services.ingest.ingestion.fetchers.notion import fetch_page_notion
@@ -30,9 +37,13 @@ from services.ingest.ingestion.reconcilers.notion import reconcile_notion
 from services.ingest.ingestion.reconcilers.slack import reconcile_slack
 from services.ingest.source_contract.capabilities import (
     HISTORICAL_PULL_V1,
+    HEALTH_PROBE_V1,
     IDENTITY_V1,
     INCREMENTAL_POLL_V1,
     NORMALIZATION_V1,
+    OAUTH2_LIFECYCLE_V1,
+    OAUTH2_V1,
+    CLEANUP_V1,
     RECONCILIATION_V1,
     WEBHOOK_V1,
 )
@@ -95,6 +106,10 @@ SLACK_MANIFEST = _manifest(
     source="slack",
     display_name="Slack",
     capabilities=(
+        (OAUTH2_V1.ref.id, 1),
+        (OAUTH2_LIFECYCLE_V1.ref.id, 1),
+        (HEALTH_PROBE_V1.ref.id, 1),
+        (CLEANUP_V1.ref.id, 1),
         (HISTORICAL_PULL_V1.ref.id, 1),
         (WEBHOOK_V1.ref.id, 1),
         (RECONCILIATION_V1.ref.id, 1),
@@ -102,8 +117,12 @@ SLACK_MANIFEST = _manifest(
         (NORMALIZATION_V1.ref.id, 1),
     ),
     ingress_kinds=("webhook", "backfill"),
-    secret_slots=("webhook_signing_secret",),
+    secret_slots=(
+        "oauth_access_token",
+        "webhook_signing_secret",
+    ),
     outbound_hosts=("slack.com",),
+    scopes=SLACK_BOT_SCOPES,
 )
 
 
@@ -112,6 +131,10 @@ NOTION_MANIFEST = _manifest(
     source="notion",
     display_name="Notion",
     capabilities=(
+        (OAUTH2_V1.ref.id, 1),
+        (OAUTH2_LIFECYCLE_V1.ref.id, 1),
+        (HEALTH_PROBE_V1.ref.id, 1),
+        (CLEANUP_V1.ref.id, 1),
         (HISTORICAL_PULL_V1.ref.id, 1),
         (INCREMENTAL_POLL_V1.ref.id, 1),
         (RECONCILIATION_V1.ref.id, 1),
@@ -154,6 +177,14 @@ def build_slack_candidate() -> ConnectorCandidate:
     connector = NativeSourceConnector(
         SLACK_MANIFEST,
         {
+            OAUTH2_V1.ref: lambda context: SlackOAuthCapability(context),
+            OAUTH2_LIFECYCLE_V1.ref: lambda context: SlackOAuthCapability(context),
+            HEALTH_PROBE_V1.ref: lambda context: CredentialHealthProbe(
+                context, ("oauth_access_token", "webhook_signing_secret")
+            ),
+            CLEANUP_V1.ref: lambda context: OAuthCleanup(
+                SlackOAuthCapability(context)
+            ),
             HISTORICAL_PULL_V1.ref: lambda _context: DirectHistoricalPull(
                 plan_shards_slack, fetch_page_slack
             ),
@@ -169,6 +200,10 @@ def build_slack_candidate() -> ConnectorCandidate:
     )
     return connector.candidate(
         (
+            OAUTH2_V1,
+            OAUTH2_LIFECYCLE_V1,
+            HEALTH_PROBE_V1,
+            CLEANUP_V1,
             HISTORICAL_PULL_V1,
             WEBHOOK_V1,
             RECONCILIATION_V1,
@@ -182,6 +217,14 @@ def build_notion_candidate() -> ConnectorCandidate:
     connector = NativeSourceConnector(
         NOTION_MANIFEST,
         {
+            OAUTH2_V1.ref: lambda context: NotionOAuthCapability(context),
+            OAUTH2_LIFECYCLE_V1.ref: lambda context: NotionOAuthCapability(context),
+            HEALTH_PROBE_V1.ref: lambda context: CredentialHealthProbe(
+                context, ("oauth_access_token",)
+            ),
+            CLEANUP_V1.ref: lambda context: OAuthCleanup(
+                NotionOAuthCapability(context)
+            ),
             HISTORICAL_PULL_V1.ref: lambda _context: DirectHistoricalPull(
                 plan_shards_notion, fetch_page_notion
             ),
@@ -199,6 +242,10 @@ def build_notion_candidate() -> ConnectorCandidate:
     )
     return connector.candidate(
         (
+            OAUTH2_V1,
+            OAUTH2_LIFECYCLE_V1,
+            HEALTH_PROBE_V1,
+            CLEANUP_V1,
             HISTORICAL_PULL_V1,
             INCREMENTAL_POLL_V1,
             RECONCILIATION_V1,
@@ -217,7 +264,22 @@ def build_pilot_composition(
 ) -> ConnectorRuntimeComposition:
     """Freeze both native definitions with the supplied routing policy."""
 
-    return build_runtime_composition(build_pilot_candidates(), policy=policy)
+    return build_runtime_composition(
+        build_pilot_candidates(), policy=policy or default_migrated_routing_policy()
+    )
+
+
+def default_migrated_routing_policy(*, revision: int = 1) -> RoutingPolicy:
+    """Native pilots are authoritative; the global fallback stays legacy."""
+
+    return RoutingPolicy(
+        revision=revision,
+        global_mode=ExecutionMode.LEGACY,
+        connector_modes={
+            SLACK_CONNECTOR_ID: ExecutionMode.CONNECTOR,
+            NOTION_CONNECTOR_ID: ExecutionMode.CONNECTOR,
+        },
+    )
 
 
 __all__ = [
@@ -228,5 +290,6 @@ __all__ = [
     "build_notion_candidate",
     "build_pilot_candidates",
     "build_pilot_composition",
+    "default_migrated_routing_policy",
     "build_slack_candidate",
 ]
