@@ -131,11 +131,19 @@ class LegacyExecutionRouter:
             generation=1,
         )
 
-    def _authority(self, source: str) -> GrantedAuthority:
+    def _authority(self, source: str, install: Any) -> GrantedAuthority:
         manifest = self._composition.registry.for_source(source).manifest
         permissions = manifest.spec.permissions
+        # Existing provider_installations proves an installation-scoped
+        # credential grant through secret_ref. Do not infer a secret grant
+        # merely because the manifest requested one.
+        secret_slots = (
+            frozenset(permissions.secret_slots)
+            if _value(install, "secret_ref")
+            else frozenset()
+        )
         return GrantedAuthority(
-            secret_slots=frozenset(permissions.secret_slots),
+            secret_slots=secret_slots,
             outbound_hosts=frozenset(permissions.outbound_hosts),
             scopes=frozenset(permissions.requested_scopes),
             maximum_trust_tier=manifest.spec.trust.maximum_tier,
@@ -165,7 +173,7 @@ class LegacyExecutionRouter:
         install: Any,
     ) -> tuple[InstallationRef, GrantedAuthority, Any, InstallationLifecycle]:
         installation = self._installation(source, install)
-        authority = self._authority(source)
+        authority = self._authority(source, install)
         services = self._host_services.build(
             installation.id,
             authority,

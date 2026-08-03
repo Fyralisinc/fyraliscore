@@ -55,6 +55,7 @@ def _install(source: str) -> dict:
         "id": uuid4(),
         "tenant_id": uuid4(),
         "installation_id": f"{source}-workspace",
+        "secret_ref": str(uuid4()),
         "enabled": True,
     }
 

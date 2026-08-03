@@ -97,12 +97,6 @@ SLACK_MANIFEST = _manifest(
     ingress_kinds=("webhook", "backfill"),
     secret_slots=("webhook_signing_secret",),
     outbound_hosts=("slack.com",),
-    scopes=(
-        "channels:read",
-        "channels:history",
-        "groups:read",
-        "groups:history",
-    ),
 )
 
 

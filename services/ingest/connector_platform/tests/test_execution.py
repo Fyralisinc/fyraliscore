@@ -9,6 +9,7 @@ import pytest
 from services.ingest.connector_platform.execution import LegacyExecutionRouter
 from services.ingest.connector_platform.pilots import build_pilot_composition
 from services.ingest.connector_runtime.host_services import HostServicesFactory
+from services.ingest.connector_runtime.failures import RuntimeConnectorFailure
 from services.ingest.connector_runtime.policy import ExecutionMode, RoutingPolicy
 from services.ingest.connector_runtime.shadow import InMemoryShadowReportSink
 from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
@@ -20,6 +21,7 @@ def _install(source: str) -> dict:
         "id": uuid4(),
         "tenant_id": uuid4(),
         "installation_id": f"{source}-workspace",
+        "secret_ref": str(uuid4()),
         "enabled": True,
     }
 
@@ -138,3 +140,31 @@ async def test_shadow_fetch_compares_cursor_and_publication_without_cutover(
     assert calls == 2
     assert result.records == [{"object": "page", "id": "page-1"}]
     assert sink.reports[0].matches
+
+
+@pytest.mark.asyncio
+async def test_pilot_binding_rejects_install_without_credential_grant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install = _install("slack")
+    install["secret_ref"] = None
+    planner_context = SimpleNamespace(install=install)
+    calls = 0
+
+    async def planner(_context):
+        nonlocal calls
+        calls += 1
+        return []
+
+    monkeypatch.setitem(PLANNER_DISPATCH, "slack", planner)
+    async with httpx.AsyncClient() as client:
+        router = LegacyExecutionRouter(
+            build_pilot_composition(
+                RoutingPolicy(global_mode=ExecutionMode.CONNECTOR)
+            ),
+            HostServicesFactory(http_client=client),
+        )
+        with pytest.raises(RuntimeConnectorFailure):
+            await router.plan("slack", planner_context)
+
+    assert calls == 0
