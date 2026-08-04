@@ -148,6 +148,7 @@ async def test_add_identity_mapping_happy_path(
     )
     mapping = await repo.add_identity_mapping(
         actor_id=alice.id,
+        tenant_id=tenant,
         source_channel="slack",
         source_actor_ref="U01ALICE",
     )
@@ -173,7 +174,10 @@ async def test_one_actor_many_channels(
         ("email", "alice@example.com"),
     ]:
         await repo.add_identity_mapping(
-            actor_id=alice.id, source_channel=channel, source_actor_ref=ref
+            actor_id=alice.id,
+            tenant_id=tenant,
+            source_channel=channel,
+            source_actor_ref=ref,
         )
 
     for channel, ref in [
@@ -181,14 +185,16 @@ async def test_one_actor_many_channels(
         ("github", "alice-gh"),
         ("email", "alice@example.com"),
     ]:
-        resolved = await repo.resolve_by_source_actor_ref(f"{channel}:{ref}")
+        resolved = await repo.resolve_by_source_actor_ref(
+            f"{channel}:{ref}", tenant
+        )
         assert resolved == alice.id
 
 
 async def test_duplicate_identity_mapping_rejected(
     repo: ActorRepo, tenant: uuid.UUID
 ) -> None:
-    """(source_channel, source_actor_ref) PK must reject duplicates cleanly."""
+    """A duplicate within one tenant/installation must be rejected cleanly."""
     alice = await repo.create_actor(
         email="alice@example.com",
         display_name="Alice",
@@ -202,14 +208,163 @@ async def test_duplicate_identity_mapping_rejected(
         tenant_id=tenant,
     )
     await repo.add_identity_mapping(
-        actor_id=alice.id, source_channel="slack", source_actor_ref="U01ALICE"
+        actor_id=alice.id,
+        tenant_id=tenant,
+        source_channel="slack",
+        source_actor_ref="U01ALICE",
     )
     with pytest.raises(ValidationError) as exc:
         # Same pair, different actor — must reject.
         await repo.add_identity_mapping(
-            actor_id=bob.id, source_channel="slack", source_actor_ref="U01ALICE"
+            actor_id=bob.id,
+            tenant_id=tenant,
+            source_channel="slack",
+            source_actor_ref="U01ALICE",
         )
     assert "already exists" in exc.value.message
+
+
+async def test_same_native_identity_is_isolated_by_tenant(
+    repo: ActorRepo, tenant: uuid.UUID, other_tenant: uuid.UUID
+) -> None:
+    alice = await repo.create_actor(
+        email="alice@one.example",
+        display_name="Alice One",
+        type="human_internal",
+        tenant_id=tenant,
+    )
+    other_alice = await repo.create_actor(
+        email="alice@two.example",
+        display_name="Alice Two",
+        type="human_internal",
+        tenant_id=other_tenant,
+    )
+    await repo.add_identity_mapping(
+        actor_id=alice.id,
+        tenant_id=tenant,
+        source_channel="slack",
+        source_actor_ref="U_SHARED",
+    )
+    await repo.add_identity_mapping(
+        actor_id=other_alice.id,
+        tenant_id=other_tenant,
+        source_channel="slack",
+        source_actor_ref="U_SHARED",
+    )
+
+    assert (
+        await repo.resolve_by_source_actor_ref("slack:U_SHARED", tenant)
+        == alice.id
+    )
+    assert (
+        await repo.resolve_by_source_actor_ref("slack:U_SHARED", other_tenant)
+        == other_alice.id
+    )
+
+
+async def test_same_native_identity_is_isolated_by_installation(
+    repo: ActorRepo, fresh_db: asyncpg.Pool, tenant: uuid.UUID
+) -> None:
+    first = await repo.create_actor(
+        email="first@example.com",
+        display_name="First Workspace Actor",
+        type="human_internal",
+        tenant_id=tenant,
+    )
+    second = await repo.create_actor(
+        email="second@example.com",
+        display_name="Second Workspace Actor",
+        type="human_internal",
+        tenant_id=tenant,
+    )
+    installation_one, installation_two = uuid7(), uuid7()
+    async with fresh_db.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO source_connector_installations (
+              id, tenant_id, connector_id, external_installation_id
+            ) VALUES ($1, $2, 'slack', $3)
+            """,
+            [
+                (installation_one, tenant, "workspace-one"),
+                (installation_two, tenant, "workspace-two"),
+            ],
+        )
+    await repo.add_identity_mapping(
+        actor_id=first.id,
+        tenant_id=tenant,
+        connector_installation_id=installation_one,
+        source_channel="slack",
+        source_actor_ref="U_SHARED",
+    )
+    await repo.add_identity_mapping(
+        actor_id=second.id,
+        tenant_id=tenant,
+        connector_installation_id=installation_two,
+        source_channel="slack",
+        source_actor_ref="U_SHARED",
+    )
+
+    assert await repo.resolve_by_source_actor_ref(
+        "slack:U_SHARED", tenant, installation_one
+    ) == first.id
+    assert await repo.resolve_by_source_actor_ref(
+        "slack:U_SHARED", tenant, installation_two
+    ) == second.id
+
+
+async def test_mapping_write_records_identity_assertion(
+    repo: ActorRepo, fresh_db: asyncpg.Pool, tenant: uuid.UUID
+) -> None:
+    actor = await repo.create_actor(
+        email="asserted@example.com",
+        display_name="Asserted",
+        type="human_internal",
+        tenant_id=tenant,
+    )
+    await repo.add_identity_mapping(
+        actor_id=actor.id,
+        tenant_id=tenant,
+        source_channel="slack",
+        source_actor_ref="U_ASSERTED",
+        confidence=0.91,
+    )
+    async with fresh_db.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT status, confidence, candidate_entity_ref
+              FROM identity_assertions
+             WHERE tenant_id = $1
+               AND source_identity_key = 'actor:stateless:slack:slack:U_ASSERTED'
+            """,
+            tenant,
+        )
+        await conn.execute(
+            """
+            UPDATE actor_identity_mappings SET confidence = 0.97
+             WHERE tenant_id = $1 AND installation_scope = 'stateless:slack'
+               AND source_channel = 'slack' AND source_actor_ref = 'U_ASSERTED'
+            """,
+            tenant,
+        )
+        history = await conn.fetch(
+            """
+            SELECT status, confidence, version FROM identity_assertions
+             WHERE tenant_id = $1
+               AND source_identity_key = 'actor:stateless:slack:slack:U_ASSERTED'
+             ORDER BY version
+            """,
+            tenant,
+        )
+    assert row is not None
+    assert row["status"] == "accepted"
+    assert row["confidence"] == pytest.approx(0.91)
+    assert str(actor.id) in str(row["candidate_entity_ref"])
+    assert [(item["status"], item["version"]) for item in history] == [
+        ("superseded", 1),
+        ("accepted", 2),
+    ]
+    assert history[-1]["confidence"] == pytest.approx(0.97)
 
 
 async def test_identity_mapping_rejects_unknown_actor(
@@ -219,7 +374,10 @@ async def test_identity_mapping_rejects_unknown_actor(
     ghost = uuid7()
     with pytest.raises(ValidationError):
         await repo.add_identity_mapping(
-            actor_id=ghost, source_channel="slack", source_actor_ref="U_ghost"
+            actor_id=ghost,
+            tenant_id=uuid7(),
+            source_channel="slack",
+            source_actor_ref="U_ghost",
         )
 
 
@@ -231,13 +389,13 @@ async def test_identity_mapping_rejects_unknown_actor(
 async def test_resolve_unknown_returns_none(
     repo: ActorRepo,
 ) -> None:
-    assert await repo.resolve_by_source_actor_ref("slack:U_NOBODY") is None
+    assert await repo.resolve_by_source_actor_ref("slack:U_NOBODY", uuid7()) is None
 
 
 async def test_resolve_rejects_malformed_ref(repo: ActorRepo) -> None:
     for bad in ["", "slackonly", ":no-channel", "no-ref:"]:
         with pytest.raises(ValidationError):
-            await repo.resolve_by_source_actor_ref(bad)
+            await repo.resolve_by_source_actor_ref(bad, uuid7())
 
 
 async def test_resolve_tolerates_colon_in_ref(
@@ -252,11 +410,14 @@ async def test_resolve_tolerates_colon_in_ref(
     )
     await repo.add_identity_mapping(
         actor_id=alice.id,
+        tenant_id=tenant,
         source_channel="github",
         source_actor_ref="MDQ6VXNlcjE6MjM=",  # realistic base64-with-colons
     )
     assert (
-        await repo.resolve_by_source_actor_ref("github:MDQ6VXNlcjE6MjM=")
+        await repo.resolve_by_source_actor_ref(
+            "github:MDQ6VXNlcjE6MjM=", tenant
+        )
         == alice.id
     )
 
@@ -505,6 +666,7 @@ async def test_concurrent_identity_mapping_exactly_one_wins(
         try:
             await repo.add_identity_mapping(
                 actor_id=alice.id,
+                tenant_id=tenant,
                 source_channel="slack",
                 source_actor_ref="U01RACE",
             )
@@ -524,5 +686,5 @@ async def test_concurrent_identity_mapping_exactly_one_wins(
 
     # Mapping is resolvable.
     assert (
-        await repo.resolve_by_source_actor_ref("slack:U01RACE") == alice.id
+        await repo.resolve_by_source_actor_ref("slack:U01RACE", tenant) == alice.id
     )

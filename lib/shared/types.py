@@ -297,6 +297,9 @@ class SourceEvidenceRow(_Strict):
     normalizer_version: str
     raw_retention_state: RawRetentionState
     raw_expired_at: datetime | None = None
+    access_policy: dict[str, Any] = Field(default_factory=dict)
+    access_policy_hash: str | None = None
+    access_captured_at: datetime | None = None
     first_seen_at: datetime
     last_seen_at: datetime
 
@@ -331,6 +334,9 @@ class SourceEvidenceCreate(_Strict):
     parser_version: str = "unknown"
     normalizer_version: str = "unknown"
     raw_retention_state: RawRetentionState = "available"
+    access_policy: dict[str, Any] = Field(default_factory=dict)
+    access_policy_hash: str | None = None
+    access_captured_at: datetime | None = None
 
 
 # =====================================================================
@@ -594,6 +600,9 @@ class ActorRow(_Strict):
 
 class ActorIdentityMappingRow(_Strict):
     actor_id: UUID
+    tenant_id: UUID
+    connector_installation_id: UUID | None = None
+    installation_scope: str
     source_channel: str
     source_actor_ref: str
     confidence: float = 1.0

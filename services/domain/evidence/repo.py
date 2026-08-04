@@ -23,6 +23,7 @@ _COLUMNS = (
     "ingress_kind", "ingress_metadata", "idem_hints", "contract_version",
     "connector_version", "parser_version", "normalizer_version",
     "raw_retention_state", "raw_expired_at", "first_seen_at", "last_seen_at",
+    "access_policy", "access_policy_hash", "access_captured_at",
 )
 _SELECT = ", ".join(_COLUMNS)
 
@@ -35,7 +36,10 @@ def _json_object(value: Any) -> Any:
 
 def _hydrate(row: asyncpg.Record) -> SourceEvidenceRow:
     value = dict(row)
-    for key in ("parent_ref", "container_ref", "ingress_metadata", "idem_hints"):
+    for key in (
+        "parent_ref", "container_ref", "ingress_metadata", "idem_hints",
+        "access_policy",
+    ):
         value[key] = _json_object(value.get(key))
     return SourceEvidenceRow.model_validate(value)
 
@@ -120,12 +124,13 @@ class SourceEvidenceRepository:
                 raw_object_key, content_hash, raw_ingested_at, normalized_at,
                 ingress_kind, ingress_metadata, idem_hints, contract_version,
                 connector_version, parser_version, normalizer_version,
-                raw_retention_state
+                raw_retention_state, access_policy, access_policy_hash,
+                access_captured_at
             ) VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                 $11, $12, $13, $14, $15::jsonb, $16::jsonb, $17,
                 $18, $19, $20, $21, $22, $23::jsonb, $24::jsonb, $25,
-                $26, $27, $28, $29
+                $26, $27, $28, $29, $30::jsonb, $31, $32
             )
             ON CONFLICT (
                 tenant_id, source, installation_scope, source_object_type,
@@ -162,6 +167,9 @@ class SourceEvidenceRepository:
             value.parser_version,
             value.normalizer_version,
             value.raw_retention_state,
+            json.dumps(value.access_policy),
+            value.access_policy_hash,
+            value.access_captured_at,
         )
         assert row is not None
         persisted = _hydrate(row)

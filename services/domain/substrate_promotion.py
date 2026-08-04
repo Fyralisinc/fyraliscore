@@ -594,10 +594,13 @@ async def promote_actor_candidate(
         await conn.execute(
             """
             INSERT INTO actor_identity_mappings (
-                actor_id, source_channel, source_actor_ref,
+                actor_id, tenant_id, installation_scope,
+                source_channel, source_actor_ref,
                 confidence, created_at
-            ) VALUES ($1, $2, $3, $4, now())
-            ON CONFLICT (source_channel, source_actor_ref) DO UPDATE SET
+            ) VALUES ($1, $2, 'stateless:' || $3, $3, $4, $5, now())
+            ON CONFLICT (
+                tenant_id, installation_scope, source_channel, source_actor_ref
+            ) DO UPDATE SET
                 actor_id = EXCLUDED.actor_id,
                 confidence = greatest(
                     actor_identity_mappings.confidence,
@@ -605,6 +608,7 @@ async def promote_actor_candidate(
                 )
             """,
             actor_id,
+            candidate.tenant_id,
             str(mapping["source_channel"]),
             str(mapping["source_actor_ref"]),
             float(mapping.get("confidence", candidate.confidence)),

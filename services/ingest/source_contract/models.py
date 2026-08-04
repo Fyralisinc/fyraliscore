@@ -60,6 +60,16 @@ class CursorState(ContractModel):
     payload: dict[str, Any]
 
 
+class EvidenceAccessPolicy(ContractModel):
+    """Source-object visibility captured with one evidence revision."""
+
+    visibility: Literal["public", "tenant", "restricted", "unknown"]
+    audience: tuple[dict[str, str], ...] = ()
+    source_acl_version: str = Field(min_length=1)
+    resource_ref: dict[str, str] | None = None
+    captured_at: datetime | None = None
+
+
 class SourceObjectRef(ContractModel):
     """Stable object identity plus one immutable source revision.
 
@@ -82,6 +92,7 @@ class SourceObjectRef(ContractModel):
     container_object_type: str | None = None
     container_object_id: str | None = None
     thread_id: str | None = None
+    access_policy: EvidenceAccessPolicy | None = None
 
     @model_validator(mode="after")
     def validate_valid_window(self) -> "SourceObjectRef":
@@ -259,6 +270,7 @@ __all__ = [
     "BoundedWebhookRequest",
     "ContractModel",
     "CursorState",
+    "EvidenceAccessPolicy",
     "FetchRequest",
     "FetchedPage",
     "HealthCondition",

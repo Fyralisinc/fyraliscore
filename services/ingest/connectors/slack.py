@@ -27,6 +27,7 @@ from services.ingest.source_contract.identity import SlotId
 from services.ingest.source_contract.models import (
     BoundedWebhookRequest,
     CursorState,
+    EvidenceAccessPolicy,
     FetchRequest,
     FetchedPage,
     IdentityInput,
@@ -165,6 +166,13 @@ class SlackNormalization:
                         container_object_type="channel",
                         container_object_id=channel,
                         thread_id=previous.get("thread_ts"),
+                        access_policy=EvidenceAccessPolicy(
+                            visibility="unknown",
+                            audience=(),
+                            source_acl_version="not-captured",
+                            resource_ref={"type": "slack_channel", "id": channel},
+                            captured_at=_parse_timestamp(event_ts),
+                        ),
                     ),
                 ),
             )
@@ -228,7 +236,18 @@ class SlackNormalization:
                     supersedes_revision_id=previous_revision,
                     container_object_type="channel",
                     container_object_id=channel,
-                    thread_id=message.get("thread_ts") if original_timestamp else event.get("thread_ts"),
+                    thread_id=(
+                        message.get("thread_ts")
+                        if original_timestamp
+                        else event.get("thread_ts")
+                    ),
+                    access_policy=EvidenceAccessPolicy(
+                        visibility="unknown",
+                        audience=(),
+                        source_acl_version="not-captured",
+                        resource_ref={"type": "slack_channel", "id": channel},
+                        captured_at=_parse_timestamp(timestamp),
+                    ),
                 ),
             ),
         )

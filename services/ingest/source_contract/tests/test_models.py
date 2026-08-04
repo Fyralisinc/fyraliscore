@@ -8,10 +8,12 @@ from pydantic import ValidationError
 
 from services.ingest.source_contract.models import (
     CursorState,
+    EvidenceAccessPolicy,
     FetchedPage,
     ReconciliationDecision,
     RepairShard,
     ShardPlan,
+    SourceObjectRef,
 )
 
 
@@ -49,3 +51,22 @@ def test_contract_models_are_frozen() -> None:
     cursor = CursorState(schema_version=1, payload={})
     with pytest.raises(ValidationError, match="Instance is frozen"):
         cursor.schema_version = 2  # type: ignore[misc]
+
+
+def test_source_revision_carries_immutable_access_snapshot() -> None:
+    source = SourceObjectRef(
+        object_type="message",
+        object_id="C1:100.01",
+        revision_id="100.02",
+        access_policy=EvidenceAccessPolicy(
+            visibility="restricted",
+            audience=({"type": "actor", "id": "U1"},),
+            source_acl_version="slack-membership:42",
+            resource_ref={"type": "slack_channel", "id": "C1"},
+            captured_at=NOW,
+        ),
+    )
+
+    assert source.access_policy is not None
+    assert source.access_policy.visibility == "restricted"
+    assert source.access_policy.captured_at == NOW

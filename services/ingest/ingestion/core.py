@@ -391,7 +391,12 @@ async def ingest_from_draft(
 
     # ---- step 2: pre-assign UUID v7 ----------------------------------
     obs_id = uuid7()
-    actor = await _resolve_actor(draft, actor_repo)
+    actor = await _resolve_actor(
+        draft,
+        actor_repo,
+        tenant_id,
+        (evidence_context or {}).get("connector_installation_id"),
+    )
     entities = await _resolve_entities(draft, alias_repo, tenant_id)
     embedding = (
         _EmbeddingResult(embedding=None, pending=True)
@@ -448,6 +453,8 @@ async def ingest_from_draft(
 async def _resolve_actor(
     draft: ObservationDraft,
     actor_repo: ActorRepo | None,
+    tenant_id: UUID,
+    connector_installation_id: UUID | None = None,
 ) -> _ActorResolution:
     if not draft.source_actor_ref or actor_repo is None:
         return _ActorResolution(actor_id=None, unresolved_actor_ref=None)
@@ -455,7 +462,11 @@ async def _resolve_actor(
     if ":" not in ref:
         ref = f"{draft.source_channel}:{ref}"
     try:
-        resolved_actor_id = await actor_repo.resolve_by_source_actor_ref(ref)
+        resolved_actor_id = await actor_repo.resolve_by_source_actor_ref(
+            ref,
+            tenant_id,
+            connector_installation_id,
+        )
     except ValidationError:
         resolved_actor_id = None
     return _ActorResolution(
@@ -584,6 +595,7 @@ def _build_source_evidence_create(
         parent_ref = None
         container_ref = None
         thread_id = None
+        access_policy = None
     else:
         object_type = source_object.object_type
         object_id = source_object.object_id
@@ -610,6 +622,23 @@ def _build_source_evidence_create(
             else None
         )
         thread_id = source_object.thread_id
+        access_policy = source_object.access_policy
+    if access_policy is None:
+        visibility = "unknown" if source in INGESTION_SOURCES else "tenant"
+        policy_value: dict[str, Any] = {
+            "visibility": visibility,
+            "audience": [],
+            "source_acl_version": "unavailable",
+            "resource_ref": None,
+        }
+        access_captured_at = now
+    else:
+        policy_value = access_policy.model_dump(mode="json")
+        access_captured_at = access_policy.captured_at or now
+    policy_encoded = json.dumps(
+        policy_value, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")
+    access_policy_hash = hashlib.sha256(policy_encoded).hexdigest()
     raw_ingested_at = context.get("raw_ingested_at") or now
     normalized_at = context.get("normalized_at") or now
     return SourceEvidenceCreate(
@@ -641,6 +670,9 @@ def _build_source_evidence_create(
         parser_version=str(context.get("parser_version") or "unknown"),
         normalizer_version=str(context.get("normalizer_version") or "inline-v1"),
         raw_retention_state="available" if raw_s3_key else "not_stored",
+        access_policy=policy_value,
+        access_policy_hash=access_policy_hash,
+        access_captured_at=access_captured_at,
     )
 
 

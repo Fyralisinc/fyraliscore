@@ -41,6 +41,7 @@ from uuid import UUID
 import asyncpg
 
 from lib.shared.errors import CompanyOSError, ValidationError
+from services.domain.evidence.access import can_actor_read_evidence_set
 
 from .hierarchy import is_hr_channel, is_in_manager_chain, is_shared_channel
 from .roles import has_role
@@ -140,6 +141,18 @@ async def can_read(
     if actor_tenant != tenant_id:
         return AccessDecision(False, "actor_tenant_mismatch")
 
+    # A source object's ACL is an upper bound. Check it before Fyralis roles
+    # so leadership/admin cannot accidentally widen source visibility.
+    if kind == "observation" and entity.get("evidence_id") is not None:
+        evidence_access = await can_actor_read_evidence_set(
+            actor_id,
+            tenant_id=tenant_id,
+            evidence_ids=[UUID(str(entity["evidence_id"]))],
+            conn=conn,
+        )
+        if not evidence_access.allowed:
+            return AccessDecision(False, evidence_access.reason)
+
     # Admin / leadership overrides come after Layer 1 but before per-
     # kind rules — the spec's "Admin can override" rule is a single
     # check. HR-channel observations explicitly skip admin override.
@@ -208,7 +221,7 @@ async def _load_entity(
         row = await conn.fetchrow(
             """
             SELECT id, tenant_id, actor_id, source_channel,
-                   entities_mentioned, source_actor_ref
+                   entities_mentioned, source_actor_ref, evidence_id
             FROM observations
             WHERE id = $1 AND tenant_id = $2
             """,
@@ -321,14 +334,38 @@ async def _check_observation(
 
     # Also match by source_actor_ref → identity mapping → actor_id.
     if source_actor_ref:
+        raw_actor_ref = str(source_actor_ref)
+        if ":" in raw_actor_ref:
+            identity_channel, _, external_actor_ref = raw_actor_ref.partition(":")
+        else:
+            identity_channel = source_channel.split(":", 1)[0]
+            external_actor_ref = raw_actor_ref
+        installation_scope = None
+        evidence_id = entity.get("evidence_id")
+        if evidence_id is not None:
+            installation_scope = await conn.fetchval(
+                """
+                SELECT installation_scope FROM source_evidence
+                 WHERE id = $1 AND tenant_id = $2
+                """,
+                UUID(str(evidence_id)),
+                tenant_id,
+            )
+        installation_scope = installation_scope or f"stateless:{identity_channel}"
         mapped = await conn.fetchval(
             """
             SELECT actor_id FROM actor_identity_mappings
-            WHERE source_actor_ref = $1
-              AND actor_id IN (SELECT id FROM actors WHERE tenant_id = $2)
+            WHERE tenant_id = $1
+              AND source_channel = $2
+              AND source_actor_ref = $3
+              AND installation_scope IN ($4, 'legacy:' || $2)
+            ORDER BY CASE WHEN installation_scope = $4 THEN 0 ELSE 1 END
             LIMIT 1
             """,
-            source_actor_ref, tenant_id,
+            tenant_id,
+            identity_channel,
+            external_actor_ref,
+            installation_scope,
         )
         if mapped == actor_id:
             return AccessDecision(True, "observation_source_actor_ref")

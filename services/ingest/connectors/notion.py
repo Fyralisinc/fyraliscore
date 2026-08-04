@@ -24,6 +24,7 @@ from services.ingest.source_contract.identity import SlotId
 from services.ingest.source_contract.models import (
     BoundedWebhookRequest,
     CursorState,
+    EvidenceAccessPolicy,
     FetchRequest,
     FetchedPage,
     IdentityInput,
@@ -223,6 +224,13 @@ class NotionNormalization:
                     if database_id is not None
                     else str(value.get("_fyralis_workspace_id") or "workspace")
                 ),
+                access_policy=EvidenceAccessPolicy(
+                    visibility="unknown",
+                    audience=(),
+                    source_acl_version="not-captured",
+                    resource_ref={"type": "notion_page", "id": identifier},
+                    captured_at=recorded_at,
+                ),
             ),
         )
 
@@ -286,6 +294,13 @@ class NotionNormalization:
                     if parent.get("type") and parent.get(parent.get("type"))
                     else None
                 ),
+                access_policy=EvidenceAccessPolicy(
+                    visibility="unknown",
+                    audience=(),
+                    source_acl_version="not-captured",
+                    resource_ref={"type": "notion_block", "id": identifier},
+                    captured_at=recorded_at,
+                ),
             ),
         )
 
@@ -341,6 +356,13 @@ class NotionNormalization:
                     str(parent.get("type")) if isinstance(parent, dict) else None
                 ),
                 parent_object_id=str(parent_id) if parent_id is not None else None,
+                access_policy=EvidenceAccessPolicy(
+                    visibility="unknown",
+                    audience=(),
+                    source_acl_version="not-captured",
+                    resource_ref={"type": "notion_comment", "id": identifier},
+                    captured_at=recorded_at,
+                ),
             ),
         )
 
