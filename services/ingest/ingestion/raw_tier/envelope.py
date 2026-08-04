@@ -63,6 +63,8 @@ class RawEnvelope(BaseModel):
     ingested_at: datetime
     ingress_kind: IngressKindLiteral
     connector_installation_id: UUID | None = None
+    connector_version: str = Field(default="unknown", min_length=1)
+    parser_version: str = Field(default="connector-normalization-v1", min_length=1)
     ingress_metadata: dict[str, Any] = Field(default_factory=dict)
     idem_hints: dict[str, str] = Field(default_factory=dict)
 

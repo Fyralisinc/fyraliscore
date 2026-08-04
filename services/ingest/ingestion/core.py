@@ -12,8 +12,8 @@ BUILD-PLAN §3 Prompt 2.A steps 1-7:
        entities_mentioned. Unresolved phrases → queue.
     5. Compute embedding via OllamaClient.embed(content_text). On Ollama
        error (post retries) → embedding_pending=True.
-    6. Inside a tx: ObservationRepository.insert(ObservationCreate(...)).
-       Dedup + post-commit NOTIFY handled by the repo.
+    6. Inside a tx: persist immutable source evidence, then insert the
+       observation linked to that evidence. Exact-revision replay dedups.
     7. Enqueue T1 trigger for Think in think_trigger_queue.
 
 ARCHITECTURE §14 — trust assignment is lifted from CHANNEL_TRUST_MAP
@@ -40,6 +40,7 @@ import json
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
 
@@ -53,10 +54,15 @@ from lib.embeddings.ollama import (
 )
 from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
-from lib.shared.types import ObservationCreate, ObservationRow
+from lib.shared.types import (
+    ObservationCreate,
+    ObservationRow,
+    SourceEvidenceCreate,
+)
 from services.domain.actors.repo import ActorRepo
 from services.domain.clarifications import open_clarification_request
 from services.domain.entity_aliases.repo import EntityAliasRepo, normalize_phrase
+from services.domain.evidence.repo import SourceEvidenceRepository
 from services.domain.triggers import enqueue_trigger as enqueue_think_trigger
 from services.ingest.ingestion.handlers import (
     ObservationDraft,
@@ -241,8 +247,9 @@ async def ingest(
       fails at the Gateway layer (signature check happens BEFORE this
       function is called — core assumes the payload is pre-verified).
 
-    Idempotent: two calls with the same (source_channel, external_id)
-    return the same observation row, `deduped=True` on the second call.
+    Idempotent: two calls representing the same immutable source revision
+    return the same observation row. A later revision of the same source
+    object creates a new row.
 
     M3.2: when `embedding_producer` is provided AND the inline
     embedding step left the row at `embedding_pending=TRUE`, publishes
@@ -332,6 +339,7 @@ async def ingest_from_draft(
     summarization_producer: Any | None = None,
     raw_s3_key: str | None = None,
     ingress_kind: str | None = None,
+    evidence_context: dict[str, Any] | None = None,
 ) -> IngestResult:
     """Steps 2-7 of the UniformIngestPath, given an already-built draft.
 
@@ -397,6 +405,13 @@ async def ingest_from_draft(
         actor=actor,
         entities=entities,
     )
+    evidence_create = _build_source_evidence_create(
+        tenant_id=tenant_id,
+        draft=draft,
+        raw_s3_key=raw_s3_key,
+        ingress_kind=ingress_kind,
+        context=evidence_context,
+    )
 
     result = await _insert_observation_and_maybe_enqueue_trigger(
         pool=pool,
@@ -406,6 +421,7 @@ async def ingest_from_draft(
         enqueue_trigger=enqueue_trigger and not summary_pending,
         obs_id=obs_id,
         tenant_id=tenant_id,
+        evidence_create=evidence_create,
     )
     await _publish_embedding_request_if_needed(
         producer=embedding_producer,
@@ -529,27 +545,123 @@ def _build_observation_create(
     )
 
 
+def _canonical_content_hash(draft: ObservationDraft) -> str:
+    payload = draft.raw_payload if draft.raw_payload is not None else draft.content
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        default=str,
+    ).encode("utf-8")
+    return hashlib.blake2b(encoded, digest_size=20).hexdigest()
+
+
+def _build_source_evidence_create(
+    *,
+    tenant_id: UUID,
+    draft: ObservationDraft,
+    raw_s3_key: str | None,
+    ingress_kind: str | None,
+    context: dict[str, Any] | None,
+) -> SourceEvidenceCreate:
+    context = dict(context or {})
+    now = datetime.now(tz=timezone.utc)
+    content_hash = str(context.get("content_hash") or _canonical_content_hash(draft))
+    source = str(context.get("source") or draft.source_channel.split(":", 1)[0])
+    installation_id = context.get("connector_installation_id")
+    installation_scope = str(installation_id) if installation_id else f"stateless:{source}"
+    source_object = draft.source_object
+    if source_object is None:
+        object_type = draft.source_channel.split(":", 1)[-1]
+        object_id = draft.external_id or content_hash
+        revision_id = content_hash
+        operation = "snapshot"
+        source_recorded_at = draft.occurred_at
+        valid_from = draft.occurred_at
+        valid_to = None
+        supersedes_revision_id = None
+        parent_ref = None
+        container_ref = None
+        thread_id = None
+    else:
+        object_type = source_object.object_type
+        object_id = source_object.object_id
+        revision_id = source_object.revision_id or content_hash
+        operation = source_object.operation
+        source_recorded_at = source_object.source_recorded_at or draft.occurred_at
+        valid_from = source_object.valid_from
+        valid_to = source_object.valid_to
+        supersedes_revision_id = source_object.supersedes_revision_id
+        parent_ref = (
+            {
+                "type": source_object.parent_object_type,
+                "id": source_object.parent_object_id,
+            }
+            if source_object.parent_object_id is not None
+            else None
+        )
+        container_ref = (
+            {
+                "type": source_object.container_object_type,
+                "id": source_object.container_object_id,
+            }
+            if source_object.container_object_id is not None
+            else None
+        )
+        thread_id = source_object.thread_id
+    raw_ingested_at = context.get("raw_ingested_at") or now
+    normalized_at = context.get("normalized_at") or now
+    return SourceEvidenceCreate(
+        tenant_id=tenant_id,
+        source=source,
+        connector_installation_id=installation_id,
+        installation_scope=installation_scope,
+        source_channel=draft.source_channel,
+        source_object_type=object_type,
+        source_object_id=object_id,
+        source_revision_id=revision_id,
+        operation=operation,
+        source_recorded_at=source_recorded_at,
+        valid_from=valid_from,
+        valid_to=valid_to,
+        supersedes_revision_id=supersedes_revision_id,
+        parent_ref=parent_ref,
+        container_ref=container_ref,
+        thread_id=thread_id,
+        raw_object_key=raw_s3_key,
+        content_hash=content_hash,
+        raw_ingested_at=raw_ingested_at,
+        normalized_at=normalized_at,
+        ingress_kind=str(ingress_kind or "inline"),
+        ingress_metadata=dict(context.get("ingress_metadata") or {}),
+        idem_hints=dict(context.get("idem_hints") or {}),
+        contract_version=int(context.get("contract_version") or 1),
+        connector_version=str(context.get("connector_version") or "unknown"),
+        parser_version=str(context.get("parser_version") or "unknown"),
+        normalizer_version=str(context.get("normalizer_version") or "inline-v1"),
+        raw_retention_state="available" if raw_s3_key else "not_stored",
+    )
+
+
 async def _lock_and_find_existing_observation(
     conn: asyncpg.Connection,
     *,
     tenant_id: UUID,
-    draft: ObservationDraft,
+    evidence_id: UUID,
 ) -> asyncpg.Record | None:
-    if draft.external_id is None:
-        return None
     await conn.execute(
         "SELECT pg_advisory_xact_lock($1)",
-        _dedup_lock_key(tenant_id, draft.source_channel, draft.external_id),
+        _dedup_lock_key(tenant_id, "source_evidence", str(evidence_id)),
     )
     return await conn.fetchrow(
         """
         SELECT id FROM observations
-        WHERE tenant_id = $1 AND source_channel = $2 AND external_id = $3
+        WHERE tenant_id = $1 AND evidence_id = $2
         LIMIT 1
         """,
         tenant_id,
-        draft.source_channel,
-        draft.external_id,
+        evidence_id,
     )
 
 
@@ -586,6 +698,7 @@ async def _insert_observation_and_maybe_enqueue_trigger(
     enqueue_trigger: bool,
     obs_id: UUID,
     tenant_id: UUID,
+    evidence_create: SourceEvidenceCreate,
 ) -> IngestResult:
     repo = ObservationRepository(
         pool,
@@ -596,20 +709,32 @@ async def _insert_observation_and_maybe_enqueue_trigger(
     with notify_scope() as scope:
         async with pool.acquire() as conn:
             async with conn.transaction():
+                evidence_result = await SourceEvidenceRepository().insert(
+                    evidence_create,
+                    conn=conn,
+                )
                 existing = await _lock_and_find_existing_observation(
                     conn,
                     tenant_id=tenant_id,
-                    draft=draft,
+                    evidence_id=evidence_result.evidence.id,
                 )
                 if existing is not None:
-                    deduped_row = await repo.insert(obs_create, conn=conn)
+                    deduped_row = await repo.get_by_id(
+                        existing["id"],
+                        tenant_id,
+                        conn=conn,
+                    )
+                    assert deduped_row is not None
                     return IngestResult(
                         observation=deduped_row,
                         deduped=True,
                         trigger_queue_id=None,
                     )
-                row = await repo.insert(obs_create, conn=conn)
-                if draft.external_id is not None and row.id != obs_id:
+                obs_with_evidence = obs_create.model_copy(
+                    update={"evidence_id": evidence_result.evidence.id}
+                )
+                row = await repo.insert(obs_with_evidence, conn=conn)
+                if row.id != obs_id:
                     return IngestResult(
                         observation=row,
                         deduped=True,

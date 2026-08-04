@@ -41,6 +41,7 @@ from services.ingest.source_contract.models import (
     ReconciliationRequest,
     ShardPlan,
     ShardSummary,
+    SourceRecord,
 )
 
 
@@ -146,6 +147,71 @@ async def test_slack_native_pull_normalization_and_reconciliation_need_no_ambien
 
 
 @pytest.mark.asyncio
+async def test_slack_edits_and_deletions_preserve_one_object_history() -> None:
+    environment = FakeHostEnvironment()
+    binding = _bind(build_slack_connector, environment)
+    normalizer = binding.require(NORMALIZATION_V1)
+    edit = (
+        await normalizer.normalize(
+            NormalizationInput(
+                record=SourceRecord(
+                    native_type="event_callback",
+                    payload={
+                        "event": {
+                            "type": "message",
+                            "subtype": "message_changed",
+                            "channel": "C1",
+                            "event_ts": "1735689700.000001",
+                            "message": {
+                                "ts": "1735689600.000001",
+                                "edited": {"ts": "1735689700.000001"},
+                                "user": "U1",
+                                "text": "audit is complete",
+                            },
+                        }
+                    },
+                ),
+                ingress_kind="webhook",
+            ),
+            _operation(environment),
+        )
+    )[0]
+    deletion = (
+        await normalizer.normalize(
+            NormalizationInput(
+                record=SourceRecord(
+                    native_type="event_callback",
+                    payload={
+                        "event": {
+                            "type": "message",
+                            "subtype": "message_deleted",
+                            "channel": "C1",
+                            "deleted_ts": "1735689600.000001",
+                            "event_ts": "1735689800.000001",
+                            "previous_message": {
+                                "ts": "1735689600.000001",
+                                "edited": {"ts": "1735689700.000001"},
+                                "user": "U1",
+                                "text": "audit is complete",
+                            },
+                        }
+                    },
+                ),
+                ingress_kind="webhook",
+            ),
+            _operation(environment),
+        )
+    )[0]
+
+    assert edit.external_id == deletion.external_id == "C1:1735689600.000001"
+    assert edit.source_object is not None
+    assert edit.source_object.operation == "update"
+    assert deletion.source_object is not None
+    assert deletion.source_object.operation == "delete"
+    assert deletion.kind == "state_change"
+
+
+@pytest.mark.asyncio
 async def test_notion_native_plan_poll_and_normalization_need_no_ambient_binding() -> (
     None
 ):
@@ -203,6 +269,10 @@ async def test_notion_native_plan_poll_and_normalization_need_no_ambient_binding
         )
     )[0]
     assert draft.external_id == "notion:page:page-1"
+    assert draft.source_object is not None
+    assert draft.source_object.object_id == "page-1"
+    assert draft.source_object.revision_id == "2025-01-01T00:00:00Z"
+    assert draft.source_object.operation == "create"
 
 
 @pytest.mark.asyncio

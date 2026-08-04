@@ -39,6 +39,7 @@ from services.ingest.source_contract.models import (
     RepairShard,
     ShardPlan,
     SourceRecord,
+    SourceObjectRef,
     VerifiedWebhookEvent,
     VerifiedWebhookResult,
 )
@@ -63,7 +64,13 @@ def _event(payload: dict[str, Any]) -> dict[str, Any]:
 def slack_external_id(input: IdentityInput) -> str:
     event = _event(_payload(input.record))
     channel = event.get("channel") or event.get("channel_id")
-    timestamp = event.get("ts") or event.get("event_ts")
+    subtype = event.get("subtype")
+    if subtype == "message_changed" and isinstance(event.get("message"), dict):
+        timestamp = event["message"].get("ts")
+    elif subtype == "message_deleted":
+        timestamp = event.get("deleted_ts")
+    else:
+        timestamp = event.get("ts") or event.get("event_ts")
     if not isinstance(channel, str) or not isinstance(timestamp, str):
         raise PayloadRejectedError("Slack identity requires channel and timestamp")
     return f"{channel}:{timestamp}"
@@ -106,8 +113,61 @@ class SlackNormalization:
         payload = _payload(request.record)
         event = _event(payload)
         subtype = event.get("subtype")
+
         if subtype == "message_deleted":
-            raise PayloadRejectedError("Slack message deletion has no content")
+            channel = event.get("channel") or event.get("channel_id")
+            deleted_ts = event.get("deleted_ts")
+            event_ts = event.get("event_ts") or event.get("ts") or deleted_ts
+            previous = (
+                event.get("previous_message")
+                if isinstance(event.get("previous_message"), dict)
+                else {}
+            )
+            if not isinstance(channel, str) or not isinstance(deleted_ts, str):
+                raise PayloadRejectedError(
+                    "Slack message deletion requires channel and deleted_ts"
+                )
+            if not isinstance(event_ts, str):
+                raise PayloadRejectedError("Slack deletion requires an event timestamp")
+            actor = previous.get("user") or previous.get("user_id")
+            previous_revision = (
+                (previous.get("edited") or {}).get("ts")
+                if isinstance(previous.get("edited"), dict)
+                else None
+            ) or previous.get("edited_ts") or deleted_ts
+            content = {
+                "channel": channel,
+                "deleted_ts": deleted_ts,
+                "event_ts": event_ts,
+                "previous_message": previous,
+                "event_type": event.get("type"),
+                "subtype": subtype,
+                "team": event.get("team") or payload.get("team_id"),
+            }
+            return (
+                ObservationDraft(
+                    source_channel="slack:message",
+                    content_text=f"Slack message {channel}:{deleted_ts} was deleted",
+                    content=content,
+                    occurred_at=_parse_timestamp(event_ts),
+                    trust_tier="attested_agent",
+                    kind="state_change",
+                    source_actor_ref=f"slack:{actor}" if actor else None,
+                    external_id=f"{channel}:{deleted_ts}",
+                    raw_payload=payload,
+                    source_object=SourceObjectRef(
+                        object_type="message",
+                        object_id=f"{channel}:{deleted_ts}",
+                        revision_id=f"deleted:{event_ts}",
+                        operation="delete",
+                        source_recorded_at=_parse_timestamp(event_ts),
+                        supersedes_revision_id=str(previous_revision),
+                        container_object_type="channel",
+                        container_object_id=channel,
+                        thread_id=previous.get("thread_ts"),
+                    ),
+                ),
+            )
 
         original_timestamp: str | None = None
         if subtype == "message_changed" and isinstance(event.get("message"), dict):
@@ -143,6 +203,9 @@ class SlackNormalization:
         }
         if original_timestamp is not None:
             content["original_ts"] = original_timestamp
+        stable_timestamp = original_timestamp or timestamp
+        operation = "update" if original_timestamp is not None else "create"
+        previous_revision = original_timestamp if original_timestamp is not None else None
         return (
             ObservationDraft(
                 source_channel="slack:message",
@@ -152,9 +215,21 @@ class SlackNormalization:
                 trust_tier="attested_agent",
                 kind="signal",
                 source_actor_ref=f"slack:{actor}" if actor else None,
-                external_id=f"{channel}:{timestamp}",
+                external_id=f"{channel}:{stable_timestamp}",
                 entities_hint=_entities(text),
                 raw_payload=payload,
+                source_object=SourceObjectRef(
+                    object_type="message",
+                    object_id=f"{channel}:{stable_timestamp}",
+                    revision_id=timestamp,
+                    operation=operation,
+                    source_recorded_at=_parse_timestamp(timestamp),
+                    valid_from=_parse_timestamp(stable_timestamp),
+                    supersedes_revision_id=previous_revision,
+                    container_object_type="channel",
+                    container_object_id=channel,
+                    thread_id=message.get("thread_ts") if original_timestamp else event.get("thread_ts"),
+                ),
             ),
         )
 

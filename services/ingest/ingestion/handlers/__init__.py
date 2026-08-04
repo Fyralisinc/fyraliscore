@@ -33,6 +33,7 @@ from typing import Any, Awaitable, Callable
 
 from lib.shared.errors import CompanyOSError
 from lib.shared.types import ObservationKind, TrustTierValue
+from services.ingest.source_contract.models import SourceObjectRef
 
 
 # External data sources are normalized by Source Connector capabilities and
@@ -88,6 +89,7 @@ class ObservationDraft:
     entities_hint: list[dict[str, Any]] = field(default_factory=list)
     unresolved_phrases: list[str] = field(default_factory=list)
     raw_payload: dict[str, Any] | None = None
+    source_object: SourceObjectRef | None = None
 
 
 HandlerFn = Callable[[dict[str, Any], dict[str, str]], Awaitable[ObservationDraft]]

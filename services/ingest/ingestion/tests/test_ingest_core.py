@@ -16,9 +16,14 @@ from services.ingest.ingestion.core import (
     MAX_PAYLOAD_BYTES,
     PayloadTooLarge,
     _dedup_lock_key,
+    _build_source_evidence_create,
     candidate_phrases,
     ingest,
+    ingest_from_draft,
 )
+from services.ingest.ingestion.handlers import ObservationDraft
+from services.ingest.source_contract.models import SourceObjectRef
+from datetime import datetime, timezone
 from services.ingest.ingestion.handlers import (
     HandlerNotFound,
     get_handler,
@@ -61,6 +66,111 @@ def test_direct_registry_excludes_external_source_channels() -> None:
     assert "github:webhook" not in channels
     with pytest.raises(HandlerNotFound):
         get_handler("slack:message")
+
+
+def test_evidence_contract_separates_object_and_revision_identity() -> None:
+    now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+    draft = ObservationDraft(
+        source_channel="notion:object",
+        content_text="Audit status is in progress",
+        content={"status": "in_progress"},
+        occurred_at=now,
+        trust_tier="attested_agent",
+        external_id="notion:page:audit",
+        source_object=SourceObjectRef(
+            object_type="page",
+            object_id="audit",
+            revision_id="2026-08-04T00:00:00Z",
+            operation="update",
+            source_recorded_at=now,
+            supersedes_revision_id="2026-08-03T00:00:00Z",
+        ),
+    )
+
+    evidence = _build_source_evidence_create(
+        tenant_id=uuid7(),
+        draft=draft,
+        raw_s3_key="prod/notion/raw.json",
+        ingress_kind="poll",
+        context={
+            "source": "notion",
+            "content_hash": "a" * 40,
+            "raw_ingested_at": now,
+            "normalized_at": now,
+        },
+    )
+
+    assert evidence.source_object_id == "audit"
+    assert evidence.source_revision_id == "2026-08-04T00:00:00Z"
+    assert evidence.supersedes_revision_id == "2026-08-03T00:00:00Z"
+    assert evidence.raw_retention_state == "available"
+
+
+@pytest.mark.asyncio
+async def test_object_updates_and_deletion_persist_as_distinct_evidence_revisions(
+    gateway_pool,
+    tenant_id,
+) -> None:
+    now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+
+    def revision(revision_id: str, operation: str, text: str) -> ObservationDraft:
+        return ObservationDraft(
+            source_channel="notion:object",
+            content_text=text,
+            content={"text": text},
+            occurred_at=now,
+            trust_tier="attested_agent",
+            external_id="notion:page:audit",
+            source_object=SourceObjectRef(
+                object_type="page",
+                object_id="audit",
+                revision_id=revision_id,
+                operation=operation,
+                source_recorded_at=now,
+            ),
+        )
+
+    first = await ingest_from_draft(
+        channel="notion:object",
+        draft=revision("r1", "create", "audit opened"),
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+        enqueue_trigger=False,
+    )
+    second = await ingest_from_draft(
+        channel="notion:object",
+        draft=revision("r2", "update", "audit complete"),
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+        enqueue_trigger=False,
+    )
+    replay = await ingest_from_draft(
+        channel="notion:object",
+        draft=revision("r2", "update", "audit complete"),
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+        enqueue_trigger=False,
+    )
+    deleted = await ingest_from_draft(
+        channel="notion:object",
+        draft=revision("r3", "delete", "audit page deleted"),
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+        enqueue_trigger=False,
+    )
+
+    assert len({first.observation.id, second.observation.id, deleted.observation.id}) == 3
+    assert replay.deduped
+    assert replay.observation.id == second.observation.id
+    operations = await gateway_pool.fetch(
+        """
+        SELECT operation FROM source_evidence
+         WHERE tenant_id = $1 AND source_object_id = 'audit'
+         ORDER BY source_revision_id
+        """,
+        tenant_id,
+    )
+    assert [row["operation"] for row in operations] == ["create", "update", "delete"]
 
 
 @pytest.mark.asyncio

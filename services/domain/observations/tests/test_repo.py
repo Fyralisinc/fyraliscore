@@ -2,14 +2,14 @@
 
 Coverage (per BUILD-PLAN §2 Prompt 1.A test list):
 - Happy path: insert, fetch by id, semantic search over 50 rows.
-- Dedup on (source_channel, external_id).
+- Exact source-revision dedup through evidence_id.
 - Embedding fallback: Ollama down → embedding_pending=True; retrieval
   filters pending rows out.
 - Partitioning: current-month inserts land in the right partition.
 - GIN on entities_mentioned: containment queries return matches.
 - Three-hop cascade_trace.
 - Seven valid trust tiers accepted; invalid rejected.
-- 10-concurrent-insert dedup: exactly one wins.
+- 10-concurrent exact-revision inserts: exactly one wins.
 - 100KB content embeds and stores.
 - NULL external_id allowed for system channels.
 - state_change kind: emit and fetch by cause_id chain.
@@ -38,7 +38,8 @@ from pydantic import ValidationError
 
 from lib.embeddings.ollama import EMBEDDING_DIM, OllamaError
 from lib.shared.ids import uuid7
-from lib.shared.types import ObservationCreate
+from lib.shared.types import ObservationCreate, SourceEvidenceCreate
+from services.domain.evidence.repo import SourceEvidenceRepository
 from services.domain.observations import partitions
 from services.domain.observations.events import (
     OBSERVATIONS_CHANNEL,
@@ -76,6 +77,7 @@ def _mk_obs(
     cause_id: UUID | None = None,
     occurred_at: datetime | None = None,
     entities_mentioned: list[dict[str, Any]] | None = None,
+    evidence_id: UUID | None = None,
 ) -> ObservationCreate:
     return ObservationCreate(
         tenant_id=tenant_id,
@@ -89,7 +91,35 @@ def _mk_obs(
         external_id=external_id,
         cause_id=cause_id,
         entities_mentioned=entities_mentioned or [],
+        evidence_id=evidence_id,
     )
+
+
+async def _insert_evidence(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    revision: str,
+) -> UUID:
+    now = _now()
+    value = SourceEvidenceCreate(
+        tenant_id=tenant_id,
+        source="slack",
+        installation_scope="stateless:slack",
+        source_channel="slack:message",
+        source_object_type="message",
+        source_object_id="C1:1.0",
+        source_revision_id=revision,
+        operation="update",
+        source_recorded_at=now,
+        raw_object_key=f"prod/slack/{revision}.json",
+        content_hash=(revision.encode().hex() + "0" * 40)[:40],
+        raw_ingested_at=now,
+        normalized_at=now,
+        ingress_kind="webhook",
+    )
+    async with pool.acquire() as conn:
+        result = await SourceEvidenceRepository().insert(value, conn=conn)
+    return result.evidence.id
 
 
 # =====================================================================
@@ -172,18 +202,23 @@ async def test_semantic_search_finds_relevant(
 
 
 # =====================================================================
-# 3. Dedup on (source_channel, external_id)
+# 3. Dedup on immutable evidence revision
 # =====================================================================
 
-async def test_insert_twice_same_external_id_returns_first_row(
+async def test_insert_twice_same_evidence_returns_first_row(
     repo: ObservationRepository,
     tenant_id: UUID,
+    fresh_db: asyncpg.Pool,
 ):
-    first = await repo.insert(_mk_obs(tenant_id, external_id="dup1"))
+    evidence_id = await _insert_evidence(fresh_db, tenant_id, "revision-1")
+    first = await repo.insert(
+        _mk_obs(tenant_id, external_id="dup1", evidence_id=evidence_id)
+    )
     second = await repo.insert(_mk_obs(
         tenant_id,
         external_id="dup1",
         content_text="a different body",
+        evidence_id=evidence_id,
     ))
     assert first.id == second.id
     # Returned row reflects the first insert's content_text, not the
@@ -191,26 +226,33 @@ async def test_insert_twice_same_external_id_returns_first_row(
     assert second.content_text == "hello world"
 
 
-async def test_same_external_id_is_deduped_per_tenant(
+async def test_same_external_id_does_not_collapse_distinct_revisions(
     repo: ObservationRepository,
     tenant_id: UUID,
+    fresh_db: asyncpg.Pool,
 ):
-    other_tenant = uuid7()
     occurred = _now()
+    first_evidence = await _insert_evidence(fresh_db, tenant_id, "revision-a")
+    second_evidence = await _insert_evidence(fresh_db, tenant_id, "revision-b")
     first = await repo.insert(
-        _mk_obs(tenant_id, external_id="shared", occurred_at=occurred)
+        _mk_obs(
+            tenant_id,
+            external_id="shared",
+            occurred_at=occurred,
+            evidence_id=first_evidence,
+        )
     )
     second = await repo.insert(
         _mk_obs(
-            other_tenant,
+            tenant_id,
             external_id="shared",
             occurred_at=occurred,
-            content_text="other tenant body",
+            content_text="later revision body",
+            evidence_id=second_evidence,
         )
     )
     assert first.id != second.id
-    assert second.tenant_id == other_tenant
-    assert second.content_text == "other tenant body"
+    assert second.content_text == "later revision body"
 
 
 async def test_null_external_id_is_not_dedup_keyed(
@@ -459,15 +501,15 @@ async def test_invalid_trust_tier_rejected_at_repo_layer(
 
 
 # =====================================================================
-# 9. Concurrency — 10 simultaneous inserts with same external_id
+# 9. Concurrency — 10 simultaneous inserts with the same evidence revision
 # =====================================================================
 
 async def test_ten_concurrent_inserts_dedup_to_one_row(
     fresh_db: asyncpg.Pool, tenant_id: UUID, embedder,
 ):
     """
-    Ten concurrent callers submitting the same external signal
-    (source_channel + external_id + occurred_at) converge on the
+    Ten concurrent callers submitting the same immutable source revision
+    converge on the
     same observation row. Ingestion retries and duplicate webhook
     deliveries are the real-world scenario; this test asserts the
     dedup guarantee at concurrency.
@@ -481,10 +523,10 @@ async def test_ten_concurrent_inserts_dedup_to_one_row(
     repo = ObservationRepository(fresh_db, embedder=embedder)
     await partitions.ensure_partitions(fresh_db, months_ahead=3)
 
-    # The dedup key per SCHEMA-LOCK S1.1 Wave-0 note is
-    # (source_channel, external_id, occurred_at). All 10 callers
-    # submit identical values — that's how retried webhooks look.
+    # All callers carry the same evidence_id: this is how an exact source
+    # revision replay is represented after the evidence-lineage migration.
     fixed_occurred = _now()
+    evidence_id = await _insert_evidence(fresh_db, tenant_id, "race-revision")
 
     async def _ins(i: int):
         return await repo.insert(_mk_obs(
@@ -493,6 +535,7 @@ async def test_ten_concurrent_inserts_dedup_to_one_row(
             external_id="race",
             content_text=f"insert #{i}",
             occurred_at=fixed_occurred,
+            evidence_id=evidence_id,
         ))
 
     results = await asyncio.gather(*[_ins(i) for i in range(10)], return_exceptions=True)
@@ -512,7 +555,7 @@ async def test_ten_concurrent_inserts_dedup_to_one_row(
             tenant_id, "slack:message", "race",
         )
     assert total <= 1, (
-        f"Dedup violated: {total} rows exist for same (channel, external_id)"
+        f"Dedup violated: {total} rows exist for the same evidence revision"
     )
 
 

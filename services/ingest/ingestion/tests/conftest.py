@@ -93,7 +93,18 @@ class _DeterministicEmbedder:
 
 async def _run_migrations(conn: asyncpg.Connection) -> None:
     from lib.shared.migrations import apply_migrations_dir
-    await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+    # This fixture targets a long-lived developer database and has no
+    # schema_migrations ledger.  Replaying retired intermediate migrations
+    # after later cutover migrations (for example 0190 dropping legacy
+    # onboarding columns used by 0068) is expected to fail.  Match the root
+    # harness: isolate each file, warn, and continue until the final schema is
+    # re-established. Production still applies each migration exactly once via
+    # the ledger-backed migration script.
+    await apply_migrations_dir(
+        conn,
+        REPO_ROOT / "db" / "migrations",
+        on_error="warn",
+    )
 
 
 async def _truncate_all(conn: asyncpg.Connection) -> None:

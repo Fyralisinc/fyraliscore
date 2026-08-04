@@ -37,6 +37,7 @@ from services.ingest.source_contract.models import (
     RepairShard,
     ShardPlan,
     SourceRecord,
+    SourceObjectRef,
     VerifiedWebhookEvent,
     VerifiedWebhookResult,
 )
@@ -148,6 +149,14 @@ class NotionNormalization:
         in_database = isinstance(parent, dict) and parent.get("type") == "database_id"
         database_id = parent.get("database_id") if in_database else None
         title = _title(properties)
+        created_at = _parse_time(value.get("created_time"), now)
+        recorded_at = _parse_time(
+            value.get("last_edited_time") or value.get("created_time"), now
+        )
+        deleted = bool(value.get("archived") or value.get("in_trash"))
+        operation = "delete" if deleted else (
+            "update" if recorded_at != created_at else "create"
+        )
         has_status = isinstance(properties, dict) and any(
             isinstance(item, dict) and item.get("type") in {"status", "select"}
             for item in properties.values()
@@ -182,15 +191,39 @@ class NotionNormalization:
                 "properties": properties,
                 "workspace_id": value.get("_fyralis_workspace_id"),
             },
-            occurred_at=_parse_time(
-                value.get("last_edited_time") or value.get("created_time"), now
-            ),
+            occurred_at=recorded_at,
             trust_tier="attested_agent",
             kind="state_change" if in_database and has_status else "signal",
             source_actor_ref=_actor(value, "last_edited_by"),
             external_id=f"notion:page:{identifier}",
             entities_hint=tuple(entities),
             raw_payload=value,
+            source_object=SourceObjectRef(
+                object_type="page",
+                object_id=identifier,
+                revision_id=str(
+                    value.get("last_edited_time")
+                    or value.get("created_time")
+                    or recorded_at.isoformat()
+                ),
+                operation=operation,
+                source_recorded_at=recorded_at,
+                valid_from=created_at,
+                parent_object_type=(
+                    str(parent.get("type")) if isinstance(parent, dict) else None
+                ),
+                parent_object_id=(
+                    str(parent.get(parent.get("type")))
+                    if isinstance(parent, dict) and parent.get(parent.get("type"))
+                    else None
+                ),
+                container_object_type="database" if in_database else "workspace",
+                container_object_id=(
+                    str(database_id)
+                    if database_id is not None
+                    else str(value.get("_fyralis_workspace_id") or "workspace")
+                ),
+            ),
         )
 
     @staticmethod
@@ -201,6 +234,15 @@ class NotionNormalization:
         block_type = value.get("type") or "unknown"
         body = value.get(block_type) if isinstance(value.get(block_type), dict) else {}
         text = _plain_text(body.get("rich_text"))
+        parent = value.get("parent") if isinstance(value.get("parent"), dict) else {}
+        created_at = _parse_time(value.get("created_time"), now)
+        recorded_at = _parse_time(
+            value.get("last_edited_time") or value.get("created_time"), now
+        )
+        deleted = bool(value.get("archived") or value.get("in_trash"))
+        operation = "delete" if deleted else (
+            "update" if recorded_at != created_at else "create"
+        )
         content: dict[str, Any] = {
             "object_type": "block",
             "block_id": identifier,
@@ -218,15 +260,33 @@ class NotionNormalization:
                 else f"Notion {block_type} block"
             ),
             content=content,
-            occurred_at=_parse_time(
-                value.get("last_edited_time") or value.get("created_time"), now
-            ),
+            occurred_at=recorded_at,
             trust_tier="attested_agent",
             kind="signal",
             source_actor_ref=_actor(value, "last_edited_by"),
             external_id=f"notion:block:{identifier}",
             entities_hint=_mentions(body.get("rich_text")),
             raw_payload=value,
+            source_object=SourceObjectRef(
+                object_type="block",
+                object_id=identifier,
+                revision_id=str(
+                    value.get("last_edited_time")
+                    or value.get("created_time")
+                    or recorded_at.isoformat()
+                ),
+                operation=operation,
+                source_recorded_at=recorded_at,
+                valid_from=created_at,
+                parent_object_type=(
+                    str(parent.get("type")) if parent.get("type") else None
+                ),
+                parent_object_id=(
+                    str(parent.get(parent.get("type")))
+                    if parent.get("type") and parent.get(parent.get("type"))
+                    else None
+                ),
+            ),
         )
 
     @staticmethod
@@ -240,6 +300,10 @@ class NotionNormalization:
             parent.get("page_id") or parent.get("block_id")
             if isinstance(parent, dict)
             else None
+        )
+        created_at = _parse_time(value.get("created_time"), now)
+        recorded_at = _parse_time(
+            value.get("last_edited_time") or value.get("created_time"), now
         )
         entities = list(_mentions(value.get("rich_text")))
         if isinstance(parent_id, str):
@@ -255,13 +319,29 @@ class NotionNormalization:
                 "discussion_id": value.get("discussion_id"),
                 "workspace_id": value.get("_fyralis_workspace_id"),
             },
-            occurred_at=_parse_time(value.get("created_time"), now),
+            occurred_at=recorded_at,
             trust_tier="attested_agent",
             kind="signal",
             source_actor_ref=_actor(value, "created_by"),
             external_id=f"notion:comment:{identifier}",
             entities_hint=tuple(entities),
             raw_payload=value,
+            source_object=SourceObjectRef(
+                object_type="comment",
+                object_id=identifier,
+                revision_id=str(
+                    value.get("last_edited_time")
+                    or value.get("created_time")
+                    or recorded_at.isoformat()
+                ),
+                operation="update" if recorded_at != created_at else "create",
+                source_recorded_at=recorded_at,
+                valid_from=created_at,
+                parent_object_type=(
+                    str(parent.get("type")) if isinstance(parent, dict) else None
+                ),
+                parent_object_id=str(parent_id) if parent_id is not None else None,
+            ),
         )
 
 

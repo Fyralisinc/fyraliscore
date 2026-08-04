@@ -15,6 +15,7 @@ import asyncpg
 from pydantic import BaseModel, ConfigDict, Field
 
 from lib.shared.types import ObservationKind, TrustTierValue
+from services.ingest.source_contract.models import SourceObjectRef
 
 
 @dataclass(frozen=True)
@@ -69,6 +70,7 @@ class ObservationDraft:
     entities_hint: list[dict[str, Any]] = field(default_factory=list)
     unresolved_phrases: list[str] = field(default_factory=list)
     raw_payload: dict[str, Any] | None = None
+    source_object: SourceObjectRef | None = None
 
 
 __all__ = [

@@ -176,6 +176,7 @@ def _draft_from_envelope(env: NormalizedEnvelope) -> ObservationDraft:
         entities_hint=list(env.entities_hint),
         unresolved_phrases=[],
         raw_payload=None,
+        source_object=env.source_object,
     )
 
 
@@ -208,6 +209,19 @@ async def _full_mode_write(
         summarization_producer=summarization_producer,
         raw_s3_key=env.raw_s3_key,
         ingress_kind=env.ingress_kind,
+        evidence_context={
+            "source": env.source,
+            "connector_installation_id": env.connector_installation_id,
+            "content_hash": env.content_hash,
+            "raw_ingested_at": env.raw_ingested_at,
+            "normalized_at": env.normalized_at,
+            "ingress_metadata": dict(env.ingress_metadata),
+            "idem_hints": dict(env.idem_hints),
+            "contract_version": env.envelope_version,
+            "connector_version": env.connector_version,
+            "parser_version": env.parser_version,
+            "normalizer_version": env.normalizer_version,
+        },
     )
     if result.deduped:
         _bump("writer.full_mode_dedup_hits")

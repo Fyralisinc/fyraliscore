@@ -105,6 +105,7 @@ def _observation_draft(draft: Any) -> ObservationDraft:
         external_id=draft.external_id,
         entities_hint=list(draft.entities_hint),
         raw_payload=draft.raw_payload,
+        source_object=draft.source_object,
     )
 
 

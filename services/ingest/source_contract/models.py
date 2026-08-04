@@ -11,6 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from services.ingest.source_contract.identity import ConnectorId
 
 
+SourceOperation = Literal["create", "update", "delete", "retract", "snapshot"]
+
+
 class ContractModel(BaseModel):
     """Base for strict immutable contract values.
 
@@ -57,11 +60,46 @@ class CursorState(ContractModel):
     payload: dict[str, Any]
 
 
+class SourceObjectRef(ContractModel):
+    """Stable object identity plus one immutable source revision.
+
+    ``object_id`` remains stable while ``revision_id`` changes.  Connectors
+    must never put a mutable object identifier in ``revision_id`` without a
+    version component; when a provider exposes no revision token the raw
+    content hash is used by the writer as the deterministic fallback.
+    """
+
+    object_type: str = Field(min_length=1)
+    object_id: str = Field(min_length=1)
+    revision_id: str | None = None
+    operation: SourceOperation = "snapshot"
+    source_recorded_at: datetime | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    supersedes_revision_id: str | None = None
+    parent_object_type: str | None = None
+    parent_object_id: str | None = None
+    container_object_type: str | None = None
+    container_object_id: str | None = None
+    thread_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_valid_window(self) -> "SourceObjectRef":
+        if (
+            self.valid_from is not None
+            and self.valid_to is not None
+            and self.valid_to < self.valid_from
+        ):
+            raise ValueError("valid_to must not precede valid_from")
+        return self
+
+
 class SourceRecord(ContractModel):
     native_type: str = Field(min_length=1)
     payload: bytes | dict[str, Any]
     identity_hints: dict[str, str] = Field(default_factory=dict)
     occurred_at: datetime | None = None
+    source_object: SourceObjectRef | None = None
 
 
 class PlanRequest(ContractModel):
@@ -143,6 +181,7 @@ class ObservationDraft(ContractModel):
     external_id: str | None = None
     entities_hint: tuple[dict[str, Any], ...] = ()
     raw_payload: dict[str, Any] | None = None
+    source_object: SourceObjectRef | None = None
 
 
 class IdentityInput(ContractModel):
@@ -238,6 +277,8 @@ __all__ = [
     "ResourceDescriptor",
     "ShardPlan",
     "ShardSummary",
+    "SourceObjectRef",
+    "SourceOperation",
     "SourceRecord",
     "VerifiedWebhookEvent",
     "VerifiedWebhookResult",

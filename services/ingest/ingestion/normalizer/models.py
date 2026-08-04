@@ -25,6 +25,7 @@ from services.ingest.ingestion.raw_tier.envelope import (
     IngressKindLiteral,
     SourceLiteral,
 )
+from services.ingest.source_contract.models import SourceObjectRef
 
 
 class NormalizedEnvelope(BaseModel):
@@ -51,6 +52,10 @@ class NormalizedEnvelope(BaseModel):
     ingress_kind: IngressKindLiteral
     # ---- Upstream traceability ----
     tenant_id: UUID
+    connector_installation_id: UUID | None = None
+    connector_version: str = Field(default="unknown", min_length=1)
+    parser_version: str = Field(default="connector-normalization-v1", min_length=1)
+    normalizer_version: str = Field(default="normalized-envelope-v1", min_length=1)
     raw_s3_key: str = Field(min_length=1)
     content_hash: str = Field(min_length=1)
     raw_ingested_at: dt.datetime
@@ -64,6 +69,7 @@ class NormalizedEnvelope(BaseModel):
     source_actor_ref: str | None = None
     external_id: str | None = None
     entities_hint: list[dict[str, Any]] = Field(default_factory=list)
+    source_object: SourceObjectRef | None = None
     # ---- Normalizer-local ----
     normalized_at: dt.datetime
     ingress_metadata: dict[str, Any] = Field(default_factory=dict)
