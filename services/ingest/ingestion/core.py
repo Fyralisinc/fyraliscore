@@ -14,7 +14,8 @@ BUILD-PLAN §3 Prompt 2.A steps 1-7:
        error (post retries) → embedding_pending=True.
     6. Inside a tx: persist immutable source evidence, then insert the
        observation linked to that evidence. Exact-revision replay dedups.
-    7. Enqueue T1 trigger for Think in think_trigger_queue.
+    7. Enqueue durable episode intake. Keep the legacy T1 trigger active until
+       the episode-reasoning cutover gates pass.
 
 ARCHITECTURE §14 — trust assignment is lifted from CHANNEL_TRUST_MAP
 in the handler; core does not override unless the handler explicitly
@@ -62,6 +63,7 @@ from lib.shared.types import (
 from services.domain.actors.repo import ActorRepo
 from services.domain.clarifications import open_clarification_request
 from services.domain.entity_aliases.repo import EntityAliasRepo, normalize_phrase
+from services.domain.episodes.intake import EpisodeIntakeRepository
 from services.domain.evidence.repo import SourceEvidenceRepository
 from services.domain.triggers import enqueue_trigger as enqueue_think_trigger
 from services.ingest.ingestion.handlers import (
@@ -424,6 +426,7 @@ async def ingest_from_draft(
         obs_create=obs_create,
         embedding=embedding,
         enqueue_trigger=enqueue_trigger and not summary_pending,
+        enqueue_episode_intake=not summary_pending,
         obs_id=obs_id,
         tenant_id=tenant_id,
         evidence_create=evidence_create,
@@ -728,6 +731,7 @@ async def _insert_observation_and_maybe_enqueue_trigger(
     obs_create: ObservationCreate,
     embedding: _EmbeddingResult,
     enqueue_trigger: bool,
+    enqueue_episode_intake: bool,
     obs_id: UUID,
     tenant_id: UUID,
     evidence_create: SourceEvidenceCreate,
@@ -771,6 +775,11 @@ async def _insert_observation_and_maybe_enqueue_trigger(
                         observation=row,
                         deduped=True,
                         trigger_queue_id=None,
+                    )
+                if enqueue_episode_intake:
+                    await EpisodeIntakeRepository().enqueue_observation_ready(
+                        row,
+                        conn=conn,
                     )
                 await _maybe_open_actor_identity_clarification(
                     conn,

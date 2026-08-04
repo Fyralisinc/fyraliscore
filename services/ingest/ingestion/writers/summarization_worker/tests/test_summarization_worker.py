@@ -156,16 +156,44 @@ async def _insert_pending_observation(
                 "SELECT set_config('app.current_tenant', $1::text, true)",
                 str(tenant_id),
             )
+            evidence_id = uuid4()
+            await conn.execute(
+                """
+                INSERT INTO source_evidence (
+                  id, tenant_id, source, installation_scope, source_channel,
+                  source_object_type, source_object_id, source_revision_id,
+                  operation, source_recorded_at, raw_object_key, content_hash,
+                  raw_ingested_at, normalized_at, ingress_kind,
+                  contract_version, connector_version, parser_version,
+                  normalizer_version, raw_retention_state,
+                  access_policy, access_captured_at
+                ) VALUES (
+                  $1, $2, 'google_drive', 'stateless:google_drive',
+                  'google_drive:file', 'file', $3, $4, 'snapshot', $5,
+                  $6, repeat('a', 40), $5, $5, 'backfill',
+                  1, 'test', 'test', 'test', 'available',
+                  '{"visibility":"tenant","audience":[],"source_acl_version":"test-v1"}'::jsonb,
+                  $5
+                )
+                """,
+                evidence_id,
+                tenant_id,
+                str(obs_id),
+                f"summary:{obs_id}",
+                _NOW,
+                raw_s3_key,
+            )
             await conn.execute(
                 """
                 INSERT INTO observations (
                     id, tenant_id, occurred_at, kind, source_channel,
                     source_actor_ref, actor_id, content, content_text,
-                    embedding_pending, embedding, trust_tier, external_id
+                    embedding_pending, embedding, trust_tier, external_id,
+                    evidence_id
                 ) VALUES (
                     $1, $2, $3, 'signal', 'google_drive:file',
                     NULL, NULL, $4::jsonb, $5,
-                    TRUE, NULL, 'authoritative', $6
+                    TRUE, NULL, 'authoritative', $6, $7
                 )
                 """,
                 obs_id,
@@ -174,6 +202,7 @@ async def _insert_pending_observation(
                 json.dumps(content),
                 "Document 'Operating Plan.pdf' is queued for summarization.",
                 f"gdrive:{obs_id}:1",
+                evidence_id,
             )
 
 
@@ -280,6 +309,17 @@ async def test_summarizer_updates_observation_and_enqueues_t1(
         payload = json.loads(payload)
     assert payload["summarized"] is True
     assert "enterprise onboarding capacity" in payload["seed_natural_text"]
+    outbox = await fresh_db.fetchrow(
+        """
+        SELECT status, observation_id, evidence_id
+        FROM perception_outbox
+        WHERE tenant_id = $1 AND observation_id = $2
+        """,
+        tenant_id,
+        obs_id,
+    )
+    assert outbox is not None
+    assert outbox["status"] == "pending"
 
     embedding_publishes = [
         (topic, value) for (topic, value, _key) in producer.published
@@ -313,6 +353,14 @@ async def test_summarizer_updates_observation_and_enqueues_t1(
         obs_id,
     )
     assert trigger_count == 1
+    assert await fresh_db.fetchval(
+        """
+        SELECT count(*) FROM perception_outbox
+        WHERE tenant_id = $1 AND observation_id = $2
+        """,
+        tenant_id,
+        obs_id,
+    ) == 1
 
 
 async def test_summarizer_falls_back_to_inline_source_text_when_raw_s3_missing(
@@ -429,6 +477,14 @@ async def test_summarizer_failure_marks_observation_failed_not_pending(
     assert dlq_publishes == ["ingestion.dlq.google_drive"]
     metrics = sw.get_metrics()
     assert metrics["summarization_worker.summaries_failed"] == 1
+    assert await fresh_db.fetchval(
+        """
+        SELECT count(*) FROM perception_outbox
+        WHERE tenant_id = $1 AND observation_id = $2
+        """,
+        tenant_id,
+        obs_id,
+    ) == 0
 
 
 async def test_backfill_batch_lane_submits_polls_and_applies_summary(

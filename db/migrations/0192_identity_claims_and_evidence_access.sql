@@ -67,6 +67,48 @@ END $$;
 CREATE INDEX IF NOT EXISTS actor_identity_mappings_tenant_actor_idx
   ON actor_identity_mappings (tenant_id, actor_id);
 
+CREATE UNIQUE INDEX IF NOT EXISTS actors_tenant_id_id_uidx
+  ON actors (tenant_id, id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS source_installations_tenant_id_id_uidx
+  ON source_connector_installations (tenant_id, id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS source_evidence_tenant_id_id_uidx
+  ON source_evidence (tenant_id, id);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'observations'::regclass
+       AND conname = 'observations_tenant_evidence_fkey'
+  ) THEN
+    ALTER TABLE observations
+      ADD CONSTRAINT observations_tenant_evidence_fkey
+      FOREIGN KEY (tenant_id, evidence_id)
+      REFERENCES source_evidence(tenant_id, id);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'actor_identity_mappings'::regclass
+       AND conname = 'actor_identity_mappings_tenant_actor_fkey'
+  ) THEN
+    ALTER TABLE actor_identity_mappings
+      ADD CONSTRAINT actor_identity_mappings_tenant_actor_fkey
+      FOREIGN KEY (tenant_id, actor_id) REFERENCES actors(tenant_id, id);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'actor_identity_mappings'::regclass
+       AND conname = 'actor_identity_mappings_tenant_installation_fkey'
+  ) THEN
+    ALTER TABLE actor_identity_mappings
+      ADD CONSTRAINT actor_identity_mappings_tenant_installation_fkey
+      FOREIGN KEY (tenant_id, connector_installation_id)
+      REFERENCES source_connector_installations(tenant_id, id);
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS identity_assertions (
   id                    UUID PRIMARY KEY,
   tenant_id             UUID NOT NULL REFERENCES tenants(id),
@@ -125,6 +167,9 @@ CREATE TABLE IF NOT EXISTS identity_dependents (
   PRIMARY KEY (tenant_id, identity_assertion_id, dependent_kind, dependent_id)
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS identity_assertions_tenant_id_id_uidx
+  ON identity_assertions (tenant_id, id);
+
 -- A general perception-layer claim is evidence-derived and precedes Think
 -- models. Claimant perspective and exact evidence span are first-class.
 CREATE TABLE IF NOT EXISTS perception_claims (
@@ -166,6 +211,40 @@ CREATE INDEX IF NOT EXISTS perception_claims_subject_gin_idx
 
 CREATE INDEX IF NOT EXISTS perception_claims_evidence_idx
   ON perception_claims (tenant_id, evidence_id, created_at);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'identity_assertions'::regclass
+       AND conname = 'identity_assertions_tenant_evidence_fkey'
+  ) THEN
+    ALTER TABLE identity_assertions
+      ADD CONSTRAINT identity_assertions_tenant_evidence_fkey
+      FOREIGN KEY (tenant_id, evidence_id)
+      REFERENCES source_evidence(tenant_id, id);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'identity_dependents'::regclass
+       AND conname = 'identity_dependents_tenant_assertion_fkey'
+  ) THEN
+    ALTER TABLE identity_dependents
+      ADD CONSTRAINT identity_dependents_tenant_assertion_fkey
+      FOREIGN KEY (tenant_id, identity_assertion_id)
+      REFERENCES identity_assertions(tenant_id, id);
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+     WHERE conrelid = 'perception_claims'::regclass
+       AND conname = 'perception_claims_tenant_evidence_fkey'
+  ) THEN
+    ALTER TABLE perception_claims
+      ADD CONSTRAINT perception_claims_tenant_evidence_fkey
+      FOREIGN KEY (tenant_id, evidence_id)
+      REFERENCES source_evidence(tenant_id, id);
+  END IF;
+END $$;
 
 -- Source-object authorization is evidence, not a channel-name heuristic.
 ALTER TABLE source_evidence

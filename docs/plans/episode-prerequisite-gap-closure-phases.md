@@ -5,6 +5,16 @@ This work closes the prerequisites identified in
 boundary where external evidence is ready for episode construction; it does
 not implement topic routing, episode membership, or episode settlement.
 
+## Completion record
+
+| Phase | Status | Delivered boundary |
+|---|---|---|
+| Phase 1 | Complete | Immutable source revisions, raw lineage, tombstones, and revision-safe observation deduplication. |
+| Phase 2 | Complete | Tenant/installation identity ledger, evidence-bound claims, contradiction preservation, and fail-closed evidence access. |
+| Phase 3 | Complete | Transactional constructor intake, episode constitution/contracts, audit-week quality gates, and reasoning cutover ownership. |
+
+The next work is defined in `episode-creation-implementation-plan.md`.
+
 ## Phase 1 — Immutable evidence and source evolution
 
 Close B0, B1, and B2:

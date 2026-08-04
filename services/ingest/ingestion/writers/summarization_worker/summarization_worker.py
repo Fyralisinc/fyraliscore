@@ -14,6 +14,7 @@ import orjson
 from aiokafka import AIOKafkaConsumer
 
 from lib.shared.db import configure_connection_timeouts
+from services.domain.episodes.intake import EpisodeIntakeRepository
 from services.domain.triggers import enqueue_trigger
 from services.ingest.ingestion.dlq.publish import publish_dlq
 from services.ingest.ingestion.embedding.publish import publish_embedding_request
@@ -92,7 +93,8 @@ UPDATE observations
        embedding_pending = TRUE
  WHERE id = $3
    AND COALESCE(content->'summarization'->>'status', '') <> 'complete'
- RETURNING source_channel, content_text, occurred_at, kind, trust_tier, actor_id
+ RETURNING id, tenant_id, evidence_id, source_channel, content_text,
+           occurred_at, kind, trust_tier, actor_id
 """
 
 
@@ -163,6 +165,19 @@ async def _write_summary_and_enqueue(
             if updated is None:
                 _bump("summarization_worker.guard_no_op")
                 return "guard_no_op"
+            if updated["evidence_id"] is None:
+                raise RuntimeError("summarized observation has no immutable evidence")
+            await EpisodeIntakeRepository().enqueue_ready(
+                tenant_id=updated["tenant_id"],
+                observation_id=updated["id"],
+                observation_occurred_at=updated["occurred_at"],
+                evidence_id=updated["evidence_id"],
+                source_channel=updated["source_channel"],
+                kind=updated["kind"],
+                trust_tier=updated["trust_tier"],
+                actor_id=updated["actor_id"],
+                conn=conn,
+            )
             await enqueue_trigger(
                 conn,
                 tenant_id=env.tenant_id,
