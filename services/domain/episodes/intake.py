@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import ObservationRow
+from services.domain.identity.resolution import IdentityResolutionSnapshot
 
 
 class PerceptionOutboxRow(BaseModel):
@@ -26,6 +27,9 @@ class PerceptionOutboxRow(BaseModel):
     observation_id: UUID
     observation_occurred_at: datetime
     evidence_id: UUID
+    identity_snapshot_id: UUID | None = None
+    identity_snapshot_hash: str | None = None
+    identity_resolution_status: Literal["complete", "partial"] | None = None
     contract_version: int
     dedupe_key: str
     payload: dict[str, Any]
@@ -43,6 +47,7 @@ class PerceptionOutboxRow(BaseModel):
 _COLUMNS = (
     "id", "tenant_id", "event_kind", "aggregate_type", "aggregate_id",
     "observation_id", "observation_occurred_at", "evidence_id",
+    "identity_snapshot_id", "identity_snapshot_hash", "identity_resolution_status",
     "contract_version", "dedupe_key", "payload", "status", "available_at",
     "attempt_count", "lease_owner", "lease_expires_at", "last_error",
     "completed_at", "created_at", "updated_at",
@@ -58,16 +63,22 @@ def _hydrate(row: asyncpg.Record) -> PerceptionOutboxRow:
 
 
 class EpisodeIntakeRepository:
-    contract_version = 1
+    contract_version = 2
 
-    async def enqueue_observation_ready(
+    async def enqueue_identity_resolved(
         self,
         observation: ObservationRow,
+        identity_snapshot: IdentityResolutionSnapshot,
         *,
         conn: asyncpg.Connection,
     ) -> PerceptionOutboxRow:
         if observation.evidence_id is None:
             raise ValidationError("episode intake requires immutable evidence")
+        if (
+            identity_snapshot.tenant_id != observation.tenant_id
+            or identity_snapshot.observation_id != observation.id
+        ):
+            raise ValidationError("identity snapshot does not belong to observation")
         return await self.enqueue_ready(
             tenant_id=observation.tenant_id,
             observation_id=observation.id,
@@ -77,6 +88,9 @@ class EpisodeIntakeRepository:
             kind=observation.kind,
             trust_tier=observation.trust_tier,
             actor_id=observation.actor_id,
+            identity_snapshot_id=identity_snapshot.id,
+            identity_snapshot_hash=identity_snapshot.snapshot_hash,
+            identity_resolution_status=identity_snapshot.resolution_status,
             conn=conn,
         )
 
@@ -91,11 +105,14 @@ class EpisodeIntakeRepository:
         kind: str,
         trust_tier: str,
         actor_id: UUID | None,
+        identity_snapshot_id: UUID,
+        identity_snapshot_hash: str,
+        identity_resolution_status: Literal["complete", "partial"],
         conn: asyncpg.Connection,
     ) -> PerceptionOutboxRow:
         dedupe_key = (
             f"{tenant_id}:observation:{observation_id}:"
-            f"v{self.contract_version}"
+            f"identity:{identity_snapshot_hash}:v{self.contract_version}"
         )
         payload = {
             "observation_id": str(observation_id),
@@ -105,20 +122,23 @@ class EpisodeIntakeRepository:
             "trust_tier": trust_tier,
             "occurred_at": observation_occurred_at.isoformat(),
             "actor_id": str(actor_id) if actor_id else None,
+            "identity_snapshot_id": str(identity_snapshot_id),
+            "identity_snapshot_hash": identity_snapshot_hash,
+            "identity_resolution_status": identity_resolution_status,
         }
         row = await conn.fetchrow(
             f"""
             INSERT INTO perception_outbox (
               id, tenant_id, event_kind, aggregate_type, aggregate_id,
               observation_id, observation_occurred_at, evidence_id,
-              contract_version, dedupe_key, payload
+              identity_snapshot_id, identity_snapshot_hash,
+              identity_resolution_status, contract_version, dedupe_key, payload
             ) VALUES (
               $1, $2, 'observation.ready_for_episode', 'observation', $3,
-              $3, $4, $5, $6, $7, $8::jsonb
+              $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb
             )
-            ON CONFLICT (
-              tenant_id, event_kind, aggregate_id, contract_version
-            ) DO UPDATE SET updated_at = perception_outbox.updated_at
+            ON CONFLICT (tenant_id, dedupe_key)
+            DO UPDATE SET updated_at = perception_outbox.updated_at
             RETURNING {_SELECT}
             """,
             uuid7(),
@@ -126,6 +146,9 @@ class EpisodeIntakeRepository:
             observation_id,
             observation_occurred_at,
             evidence_id,
+            identity_snapshot_id,
+            identity_snapshot_hash,
+            identity_resolution_status,
             self.contract_version,
             dedupe_key,
             json.dumps(payload, sort_keys=True),
@@ -135,6 +158,7 @@ class EpisodeIntakeRepository:
         if (
             persisted.evidence_id != evidence_id
             or persisted.observation_occurred_at != observation_occurred_at
+            or persisted.identity_snapshot_id != identity_snapshot_id
         ):
             raise ValidationError("episode intake dedupe key maps to different evidence")
         return persisted

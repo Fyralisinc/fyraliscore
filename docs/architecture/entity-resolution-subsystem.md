@@ -17,8 +17,8 @@ flowchart LR
     SR --> R[Resolution engine]
     M --> R
     R --> S[Immutable identity snapshot]
-    S --> K[Claims and relations]
-    K --> EP[Episode intake]
+    S --> EP[Episode intake contract v2]
+    S -. identity grounding .-> K[Claims and relations]
 ```
 
 ## Source-grounded scope
@@ -125,6 +125,39 @@ only be explained with evidence visible to its requester.
 
 ## Episode boundary
 
-Episode intake receives the observation, evidence, active assertion IDs,
-resolution counts, and identity snapshot hash. A later correction emits a
-re-evaluation request. Existing settled episode snapshots remain immutable.
+Episode intake contract v2 receives the observation and evidence references,
+identity snapshot ID and hash, and the complete/partial resolution status. The
+snapshot manifest contains each mention's decision, alternatives, explanations,
+and assertion IDs. A later correction emits a targeted re-resolution request;
+previous snapshots remain immutable.
+
+## Runtime paths
+
+```mermaid
+flowchart TB
+    subgraph Automatic[Automatic observation path]
+      C[Connector-normalized signal] --> E[Immutable evidence + observation]
+      E --> IO[Identity outbox]
+      IO --> W[Leased identity worker]
+      W --> M[Source references + mentions]
+      M --> R[Candidates, constraints, scoring]
+      R --> S[Sealed identity snapshot]
+      S --> PO[Episode outbox contract v2]
+    end
+
+    subgraph Query[User-query path]
+      Q[User query] --> QM[Conservative query mentions]
+      QM --> AR[Access-aware candidate retrieval]
+      AR --> QS[Auditable query snapshot]
+      Q --> TS[Full query retained as topic seed]
+      QS --> Downstream[Query-seeded episode/reasoning downstream]
+      TS --> Downstream
+    end
+
+    H[Human correction / merge / split] --> RR[Targeted re-resolution]
+    RR --> IO
+```
+
+The query path does not create durable identity assertions. Supporting
+assertions are candidates only when their exact evidence is readable by the
+requester; unknown or missing ACL state is denied.

@@ -51,6 +51,20 @@ class EvidencePersistResult:
 
 
 class SourceEvidenceRepository:
+    async def get(
+        self,
+        evidence_id: UUID,
+        *,
+        tenant_id: UUID,
+        conn: asyncpg.Connection,
+    ) -> SourceEvidenceRow | None:
+        row = await conn.fetchrow(
+            f"SELECT {_SELECT} FROM source_evidence WHERE id = $1 AND tenant_id = $2",
+            evidence_id,
+            tenant_id,
+        )
+        return _hydrate(row) if row is not None else None
+
     async def insert(
         self,
         value: SourceEvidenceCreate,

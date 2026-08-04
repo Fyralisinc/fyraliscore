@@ -63,7 +63,7 @@ from lib.shared.types import (
 from services.domain.actors.repo import ActorRepo
 from services.domain.clarifications import open_clarification_request
 from services.domain.entity_aliases.repo import EntityAliasRepo, normalize_phrase
-from services.domain.episodes.intake import EpisodeIntakeRepository
+from services.domain.identity.intake import IdentityIntakeRepository
 from services.domain.evidence.repo import SourceEvidenceRepository
 from services.domain.triggers import enqueue_trigger as enqueue_think_trigger
 from services.ingest.ingestion.handlers import (
@@ -426,7 +426,7 @@ async def ingest_from_draft(
         obs_create=obs_create,
         embedding=embedding,
         enqueue_trigger=enqueue_trigger and not summary_pending,
-        enqueue_episode_intake=not summary_pending,
+        enqueue_identity_intake=not summary_pending,
         obs_id=obs_id,
         tenant_id=tenant_id,
         evidence_create=evidence_create,
@@ -731,7 +731,7 @@ async def _insert_observation_and_maybe_enqueue_trigger(
     obs_create: ObservationCreate,
     embedding: _EmbeddingResult,
     enqueue_trigger: bool,
-    enqueue_episode_intake: bool,
+    enqueue_identity_intake: bool,
     obs_id: UUID,
     tenant_id: UUID,
     evidence_create: SourceEvidenceCreate,
@@ -776,8 +776,8 @@ async def _insert_observation_and_maybe_enqueue_trigger(
                         deduped=True,
                         trigger_queue_id=None,
                     )
-                if enqueue_episode_intake:
-                    await EpisodeIntakeRepository().enqueue_observation_ready(
+                if enqueue_identity_intake:
+                    await IdentityIntakeRepository().enqueue_observation_ready(
                         row,
                         conn=conn,
                     )

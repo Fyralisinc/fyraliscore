@@ -1,0 +1,15 @@
+{
+  "company": "Alpen",
+  "source": "slack",
+  "installation_scope": "slack:alpen-workspace",
+  "source_actor_ref": "U42",
+  "actor": "Simanta",
+  "observation": "Audit Week: Simanta says the authentication audit is complete; Sam is checking payments.",
+  "unresolved_phrases": ["Audit Week", "Sam"],
+  "expected": {
+    "simanta": "resolved through installation-scoped principal mapping",
+    "audit_week": "unresolved topic seed retained for episode construction",
+    "sam": "unresolved or ambiguous unless stronger evidence exists",
+    "episode_release": true
+  }
+}

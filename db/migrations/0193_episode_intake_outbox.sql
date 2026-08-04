@@ -105,7 +105,7 @@ SELECT gen_random_uuid(), observation.tenant_id,
      observation.content->'summarization' IS NULL
      OR observation.content->'summarization'->>'status' = 'complete'
    )
-ON CONFLICT (tenant_id, event_kind, aggregate_id, contract_version) DO NOTHING;
+ON CONFLICT (tenant_id, dedupe_key) DO NOTHING;
 
 ALTER TABLE perception_outbox ENABLE ROW LEVEL SECURITY;
 ALTER TABLE perception_outbox FORCE ROW LEVEL SECURITY;

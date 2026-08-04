@@ -173,8 +173,8 @@ async def test_object_updates_and_deletion_persist_as_distinct_evidence_revision
     assert [row["operation"] for row in operations] == ["create", "update", "delete"]
     outbox_count = await gateway_pool.fetchval(
         """
-        SELECT count(*) FROM perception_outbox
-         WHERE tenant_id = $1 AND event_kind = 'observation.ready_for_episode'
+        SELECT count(*) FROM identity_resolution_outbox
+         WHERE tenant_id = $1 AND event_kind = 'observation.ready_for_identity'
         """,
         tenant_id,
     )

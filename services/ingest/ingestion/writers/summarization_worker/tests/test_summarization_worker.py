@@ -312,7 +312,7 @@ async def test_summarizer_updates_observation_and_enqueues_t1(
     outbox = await fresh_db.fetchrow(
         """
         SELECT status, observation_id, evidence_id
-        FROM perception_outbox
+        FROM identity_resolution_outbox
         WHERE tenant_id = $1 AND observation_id = $2
         """,
         tenant_id,
@@ -355,7 +355,7 @@ async def test_summarizer_updates_observation_and_enqueues_t1(
     assert trigger_count == 1
     assert await fresh_db.fetchval(
         """
-        SELECT count(*) FROM perception_outbox
+        SELECT count(*) FROM identity_resolution_outbox
         WHERE tenant_id = $1 AND observation_id = $2
         """,
         tenant_id,
@@ -479,7 +479,7 @@ async def test_summarizer_failure_marks_observation_failed_not_pending(
     assert metrics["summarization_worker.summaries_failed"] == 1
     assert await fresh_db.fetchval(
         """
-        SELECT count(*) FROM perception_outbox
+        SELECT count(*) FROM identity_resolution_outbox
         WHERE tenant_id = $1 AND observation_id = $2
         """,
         tenant_id,

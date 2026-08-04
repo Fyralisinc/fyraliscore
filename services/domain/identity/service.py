@@ -18,7 +18,11 @@ from .resolution import (
     decide_resolution,
     rank_candidates,
 )
-from .resolution_repo import IdentityResolutionRepository, PostgresCandidateProvider
+from .resolution_repo import (
+    CandidateProvider,
+    IdentityResolutionRepository,
+    PostgresCandidateProvider,
+)
 
 
 class IdentityResolutionService:
@@ -29,7 +33,7 @@ class IdentityResolutionService:
     def __init__(
         self,
         *,
-        candidates: PostgresCandidateProvider | None = None,
+        candidates: CandidateProvider | None = None,
         repository: IdentityResolutionRepository | None = None,
         assertions: IdentityAssertionRepository | None = None,
     ) -> None:
@@ -45,6 +49,7 @@ class IdentityResolutionService:
         access_policy_hash: str | None,
         conn: asyncpg.Connection,
         evaluated_at: datetime | None = None,
+        persist_assertions: bool = True,
     ) -> IdentityResolutionSnapshot:
         now = evaluated_at or datetime.now(UTC)
         constraints = await self._repository.active_constraints(
@@ -68,7 +73,11 @@ class IdentityResolutionService:
             )
             decision = decide_resolution(mention, ranked)
             assertion_id: UUID | None = None
-            if decision.selected_ref is not None and decision.outcome != "unresolved":
+            if (
+                persist_assertions
+                and decision.selected_ref is not None
+                and decision.outcome != "unresolved"
+            ):
                 top = next(
                     item for item in ranked if item.candidate_ref == decision.selected_ref
                 )

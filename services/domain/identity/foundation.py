@@ -42,6 +42,7 @@ def mention_key(value: "EntityMentionCreate") -> str:
             "span_start": value.span_start,
             "span_end": value.span_end,
             "source_reference_id": str(value.source_reference_id) if value.source_reference_id else None,
+            "context": value.context,
         }
     )
 

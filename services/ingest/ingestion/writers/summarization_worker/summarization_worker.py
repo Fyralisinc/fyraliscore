@@ -14,7 +14,7 @@ import orjson
 from aiokafka import AIOKafkaConsumer
 
 from lib.shared.db import configure_connection_timeouts
-from services.domain.episodes.intake import EpisodeIntakeRepository
+from services.domain.identity.intake import IdentityIntakeRepository
 from services.domain.triggers import enqueue_trigger
 from services.ingest.ingestion.dlq.publish import publish_dlq
 from services.ingest.ingestion.embedding.publish import publish_embedding_request
@@ -167,15 +167,14 @@ async def _write_summary_and_enqueue(
                 return "guard_no_op"
             if updated["evidence_id"] is None:
                 raise RuntimeError("summarized observation has no immutable evidence")
-            await EpisodeIntakeRepository().enqueue_ready(
+            await IdentityIntakeRepository().enqueue(
                 tenant_id=updated["tenant_id"],
                 observation_id=updated["id"],
                 observation_occurred_at=updated["occurred_at"],
                 evidence_id=updated["evidence_id"],
-                source_channel=updated["source_channel"],
-                kind=updated["kind"],
-                trust_tier=updated["trust_tier"],
-                actor_id=updated["actor_id"],
+                event_kind="observation.ready_for_identity",
+                reason="summary_completed",
+                cause_assertion_ids=(),
                 conn=conn,
             )
             await enqueue_trigger(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID
 
 import asyncpg
@@ -21,6 +21,16 @@ from .resolution import (
     IdentityResolutionSnapshot,
     RankedCandidate,
 )
+
+
+class CandidateProvider(Protocol):
+    async def candidates_for(
+        self,
+        mention: EntityMentionRow,
+        *,
+        tenant_id: UUID,
+        conn: asyncpg.Connection,
+    ) -> list[CandidateSeed]: ...
 
 
 def _json(value: Any) -> Any:
@@ -403,5 +413,31 @@ class IdentityResolutionRepository:
             {**_json(row["manifest"]), "snapshot_hash": row["snapshot_hash"]}
         )
 
+    async def snapshot_for_run(
+        self,
+        *,
+        tenant_id: UUID,
+        resolver_run_id: UUID,
+        conn: asyncpg.Connection,
+    ) -> IdentityResolutionSnapshot | None:
+        row = await conn.fetchrow(
+            """
+            SELECT manifest, snapshot_hash
+              FROM identity_resolution_snapshots
+             WHERE tenant_id = $1 AND resolver_run_id = $2
+            """,
+            tenant_id,
+            resolver_run_id,
+        )
+        if row is None:
+            return None
+        return IdentityResolutionSnapshot.model_validate(
+            {**_json(row["manifest"]), "snapshot_hash": row["snapshot_hash"]}
+        )
 
-__all__ = ["IdentityResolutionRepository", "PostgresCandidateProvider"]
+
+__all__ = [
+    "CandidateProvider",
+    "IdentityResolutionRepository",
+    "PostgresCandidateProvider",
+]

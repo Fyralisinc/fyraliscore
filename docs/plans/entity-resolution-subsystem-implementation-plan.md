@@ -7,6 +7,8 @@ that sits durably between observation creation and episode intake.
 
 ## Phase 1 — Source-grounded foundations
 
+Status: **Completed** in `912dddb5`.
+
 Deliverables:
 
 - Consolidated architecture and constitutional invariants.
@@ -26,6 +28,8 @@ Exit criteria:
 - Every non-query mention is tied to exact evidence.
 
 ## Phase 2 — Resolution and immutable identity snapshots
+
+Status: **Completed** in `17a625ea`.
 
 Deliverables:
 
@@ -48,6 +52,8 @@ Exit criteria:
 - Snapshots are immutable and content-addressed.
 
 ## Phase 3 — Orchestration, lifecycle, and episode handoff
+
+Status: **Completed** on the feature branch; see the final implementation report.
 
 Deliverables:
 

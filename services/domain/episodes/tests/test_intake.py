@@ -11,6 +11,13 @@ from lib.shared.ids import uuid7
 from lib.shared.types import ObservationRow, SourceEvidenceCreate
 from services.domain.episodes.intake import EpisodeIntakeRepository
 from services.domain.evidence.repo import SourceEvidenceRepository
+from services.domain.identity import (
+    IdentityResolutionRepository,
+    IdentityResolutionSnapshot,
+    ResolutionRunCreate,
+    ResolutionRunRepository,
+    capability_snapshot,
+)
 
 
 pytestmark = pytest.mark.integration
@@ -71,6 +78,50 @@ async def _seed_observation(conn: asyncpg.Connection, tenant_id) -> ObservationR
     return ObservationRow.model_validate(value)
 
 
+async def _identity_snapshot(
+    conn: asyncpg.Connection, observation: ObservationRow
+) -> IdentityResolutionSnapshot:
+    run = await ResolutionRunRepository().start(
+        ResolutionRunCreate(
+            tenant_id=observation.tenant_id,
+            input_kind="observation",
+            observation_id=observation.id,
+            observation_occurred_at=observation.occurred_at,
+            input_hash=hashlib.sha256(f"episode:{observation.id}".encode()).hexdigest(),
+            resolver_name="fyralis-identity",
+            resolver_version="1.0.0",
+            policy_version="source-grounded-v1",
+            capability_snapshot=capability_snapshot(),
+        ),
+        conn=conn,
+    )
+    snapshot = IdentityResolutionSnapshot.seal(
+        id=uuid7(),
+        tenant_id=observation.tenant_id,
+        resolver_run_id=run.id,
+        input_kind="observation",
+        observation_id=observation.id,
+        observation_occurred_at=observation.occurred_at,
+        resolution_status="complete",
+        items=(),
+        resolver_name="fyralis-identity",
+        resolver_version="1.0.0",
+        policy_version="source-grounded-v1",
+        created_at=observation.occurred_at,
+    )
+    snapshot = await IdentityResolutionRepository().persist_snapshot(
+        snapshot, assertion_ids=[], conn=conn
+    )
+    await ResolutionRunRepository().finish(
+        run.id,
+        tenant_id=observation.tenant_id,
+        status="completed",
+        result_hash=snapshot.snapshot_hash,
+        conn=conn,
+    )
+    return snapshot
+
+
 async def test_outbox_is_idempotent_leased_and_retryable(
     fresh_db: asyncpg.Pool,
 ) -> None:
@@ -78,8 +129,9 @@ async def test_outbox_is_idempotent_leased_and_retryable(
     repo = EpisodeIntakeRepository()
     async with fresh_db.acquire() as conn:
         observation = await _seed_observation(conn, tenant_id)
-        first = await repo.enqueue_observation_ready(observation, conn=conn)
-        replay = await repo.enqueue_observation_ready(observation, conn=conn)
+        snapshot = await _identity_snapshot(conn, observation)
+        first = await repo.enqueue_identity_resolved(observation, snapshot, conn=conn)
+        replay = await repo.enqueue_identity_resolved(observation, snapshot, conn=conn)
         assert replay.id == first.id
 
         claimed = await repo.claim(
@@ -129,10 +181,11 @@ async def test_outbox_enqueue_rolls_back_with_observation_transaction(
     tenant_id = uuid7()
     async with fresh_db.acquire() as conn:
         observation = await _seed_observation(conn, tenant_id)
+        snapshot = await _identity_snapshot(conn, observation)
         transaction = conn.transaction()
         await transaction.start()
-        await EpisodeIntakeRepository().enqueue_observation_ready(
-            observation, conn=conn
+        await EpisodeIntakeRepository().enqueue_identity_resolved(
+            observation, snapshot, conn=conn
         )
         await transaction.rollback()
         count = await conn.fetchval(
@@ -149,7 +202,8 @@ async def test_outbox_completion_requires_lease_owner(
     repo = EpisodeIntakeRepository()
     async with fresh_db.acquire() as conn:
         observation = await _seed_observation(conn, tenant_id)
-        item = await repo.enqueue_observation_ready(observation, conn=conn)
+        snapshot = await _identity_snapshot(conn, observation)
+        item = await repo.enqueue_identity_resolved(observation, snapshot, conn=conn)
         await repo.claim(
             worker_id="constructor-1",
             batch_size=1,
@@ -181,6 +235,7 @@ async def test_outbox_rejects_cross_tenant_evidence(
     tenant_id = uuid7()
     async with fresh_db.acquire() as conn:
         observation = await _seed_observation(conn, tenant_id)
+        snapshot = await _identity_snapshot(conn, observation)
         with pytest.raises(asyncpg.ForeignKeyViolationError):
             await EpisodeIntakeRepository().enqueue_ready(
                 tenant_id=uuid7(),
@@ -191,5 +246,8 @@ async def test_outbox_rejects_cross_tenant_evidence(
                 kind=observation.kind,
                 trust_tier=observation.trust_tier,
                 actor_id=observation.actor_id,
+                identity_snapshot_id=snapshot.id,
+                identity_snapshot_hash=snapshot.snapshot_hash,
+                identity_resolution_status=snapshot.resolution_status,
                 conn=conn,
             )
