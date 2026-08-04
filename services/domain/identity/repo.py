@@ -21,7 +21,8 @@ from .models import IdentityAssertionCreate, IdentityAssertionRow
 _COLUMNS = (
     "id", "tenant_id", "source_identity_key", "source_identity_ref",
     "candidate_entity_ref", "assertion_kind", "status", "confidence",
-    "evidence_id", "decision_provenance", "valid_from", "valid_to",
+    "evidence_id", "mention_id", "resolver_run_id", "score_components",
+    "scope", "access_policy_hash", "decision_provenance", "valid_from", "valid_to",
     "version", "supersedes_assertion_id", "created_at", "decided_at",
 )
 _SELECT = ", ".join(_COLUMNS)
@@ -35,7 +36,13 @@ def _object(value: Any) -> Any:
 
 def _hydrate(row: asyncpg.Record) -> IdentityAssertionRow:
     value = dict(row)
-    for key in ("source_identity_ref", "candidate_entity_ref", "decision_provenance"):
+    for key in (
+        "source_identity_ref",
+        "candidate_entity_ref",
+        "score_components",
+        "scope",
+        "decision_provenance",
+    ):
         value[key] = _object(value[key])
     return IdentityAssertionRow.model_validate(value)
 
@@ -92,16 +99,21 @@ class IdentityAssertionRepository:
             INSERT INTO identity_assertions (
               id, tenant_id, source_identity_key, source_identity_ref,
               candidate_entity_ref, assertion_kind, status, confidence,
-              evidence_id, decision_provenance, valid_from, version
+              evidence_id, mention_id, resolver_run_id, score_components,
+              scope, access_policy_hash, decision_provenance, valid_from, version
             ) VALUES (
               $1, $2, $3, $4::jsonb, $5::jsonb, $6, 'proposed', $7,
-              $8, $9::jsonb, COALESCE($10, now()), $11
+              $8, $9, $10, $11::jsonb, $12::jsonb, $13, $14::jsonb,
+              COALESCE($15, now()), $16
             ) RETURNING {_SELECT}
             """,
             uuid7(), value.tenant_id, value.source_identity_key,
             json.dumps(value.source_identity_ref, sort_keys=True),
             json.dumps(value.candidate_entity_ref, sort_keys=True),
             value.assertion_kind, value.confidence, value.evidence_id,
+            value.mention_id, value.resolver_run_id,
+            json.dumps(value.score_components, sort_keys=True),
+            json.dumps(value.scope, sort_keys=True), value.access_policy_hash,
             json.dumps(value.decision_provenance, sort_keys=True),
             value.valid_from, version,
         )
@@ -203,7 +215,7 @@ class IdentityAssertionRepository:
             f"{tenant_id}:{assertion.source_identity_key}",
         )
         supersedes_id = None
-        if decision == "accepted" and assertion.assertion_kind == "same_as":
+        if decision == "accepted" and assertion.assertion_kind != "not_same_as":
             supersedes_id = await conn.fetchval(
                 """
                 SELECT id FROM identity_assertions

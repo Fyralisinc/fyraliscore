@@ -25,8 +25,23 @@ from .foundation_repo import (
 )
 from .models import IdentityAssertionCreate, IdentityAssertionRow
 from .repo import IdentityAssertionRepository
+from .resolution import (
+    CandidateSeed,
+    IdentityConstraintCreate,
+    IdentityConstraintValue,
+    IdentityResolutionSnapshot,
+    IdentitySnapshotItem,
+    RankedCandidate,
+    ResolutionDecision,
+    ResolutionThreshold,
+    decide_resolution,
+    rank_candidates,
+)
+from .resolution_repo import IdentityResolutionRepository, PostgresCandidateProvider
+from .service import IdentityResolutionService
 
 __all__ = [
+    "CandidateSeed",
     "SOURCE_IDENTITY_CAPABILITIES",
     "EntityMentionCreate",
     "EntityMentionRepository",
@@ -34,9 +49,19 @@ __all__ = [
     "IdentityAssertionCreate",
     "IdentityAssertionRepository",
     "IdentityAssertionRow",
+    "IdentityConstraintCreate",
+    "IdentityConstraintValue",
+    "IdentityResolutionRepository",
+    "IdentityResolutionService",
+    "IdentityResolutionSnapshot",
+    "IdentitySnapshotItem",
+    "PostgresCandidateProvider",
+    "RankedCandidate",
+    "ResolutionDecision",
     "ResolutionRunCreate",
     "ResolutionRunRepository",
     "ResolutionRunRow",
+    "ResolutionThreshold",
     "SourceIdentityCapability",
     "SourceReferenceCreate",
     "SourceReferenceRepository",
@@ -44,7 +69,9 @@ __all__ = [
     "canonical_admission",
     "capability_for",
     "capability_snapshot",
+    "decide_resolution",
     "mention_key",
     "reference_kind_for_hint",
+    "rank_candidates",
     "source_reference_key",
 ]
