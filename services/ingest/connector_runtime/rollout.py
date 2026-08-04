@@ -1,4 +1,9 @@
-"""Fleet rollout models, threshold evaluation, and revision propagation."""
+"""Connector-artifact rollout evaluation and revision propagation.
+
+Every policy executes through the Source Connector contract. Rollouts select an
+artifact revision and evidence cohort; they cannot route back to source-local
+implementations because that execution surface no longer exists.
+"""
 
 from __future__ import annotations
 
@@ -7,13 +12,12 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Protocol
+from typing import Protocol
 
 from services.ingest.connector_runtime.policy import RoutingPolicy
 
 
 class RolloutStage(StrEnum):
-    SHADOW = "shadow"
     CANARY = "canary"
     COHORT = "cohort"
     FULL = "full"
@@ -23,72 +27,41 @@ class RolloutStage(StrEnum):
 class RolloutThresholds:
     minimum_executions: int = 100
     maximum_error_rate: float = 0.02
-    maximum_parity_mismatch_rate: float = 0.001
-    maximum_p95_regression_ratio: float = 1.25
+    maximum_p95_ms: float = 30_000
     maximum_lifecycle_failures: int = 0
-    maximum_dlq_rate_delta: float = 0.001
+    maximum_dlq_rate: float = 0.001
 
     def __post_init__(self) -> None:
         if self.minimum_executions < 0:
             raise ValueError("minimum executions cannot be negative")
-        for name in (
-            "maximum_error_rate",
-            "maximum_parity_mismatch_rate",
-            "maximum_dlq_rate_delta",
-        ):
-            if not 0 <= getattr(self, name) <= 1:
-                raise ValueError(f"{name} must be between zero and one")
-        if self.maximum_p95_regression_ratio < 1:
-            raise ValueError("p95 regression threshold cannot be below one")
+        if not 0 <= self.maximum_error_rate <= 1:
+            raise ValueError("maximum_error_rate must be between zero and one")
+        if self.maximum_p95_ms <= 0:
+            raise ValueError("maximum_p95_ms must be positive")
+        if not 0 <= self.maximum_dlq_rate <= 1:
+            raise ValueError("maximum_dlq_rate must be between zero and one")
 
 
 @dataclass(frozen=True)
 class RolloutMetrics:
     executions: int
     failures: int = 0
-    parity_samples: int = 0
-    parity_mismatches: int = 0
     connector_p95_ms: float = 0
-    legacy_p95_ms: float = 0
     lifecycle_failures: int = 0
     connector_dlq_rate: float = 0
-    baseline_dlq_rate: float = 0
 
     @property
     def error_rate(self) -> float:
         return self.failures / self.executions if self.executions else 0
-
-    @property
-    def parity_mismatch_rate(self) -> float:
-        return (
-            self.parity_mismatches / self.parity_samples if self.parity_samples else 0
-        )
-
-    @property
-    def p95_regression_ratio(self) -> float:
-        if self.legacy_p95_ms <= 0:
-            return 1
-        return self.connector_p95_ms / self.legacy_p95_ms
-
-    @property
-    def dlq_rate_delta(self) -> float:
-        return max(0, self.connector_dlq_rate - self.baseline_dlq_rate)
 
     def snapshot(self) -> dict[str, float | int]:
         return {
             "executions": self.executions,
             "failures": self.failures,
             "error_rate": self.error_rate,
-            "parity_samples": self.parity_samples,
-            "parity_mismatches": self.parity_mismatches,
-            "parity_mismatch_rate": self.parity_mismatch_rate,
             "connector_p95_ms": self.connector_p95_ms,
-            "legacy_p95_ms": self.legacy_p95_ms,
-            "p95_regression_ratio": self.p95_regression_ratio,
             "lifecycle_failures": self.lifecycle_failures,
             "connector_dlq_rate": self.connector_dlq_rate,
-            "baseline_dlq_rate": self.baseline_dlq_rate,
-            "dlq_rate_delta": self.dlq_rate_delta,
         }
 
 
@@ -106,14 +79,12 @@ def assess_rollout(
     breaches: list[str] = []
     if metrics.error_rate > thresholds.maximum_error_rate:
         breaches.append("error_rate")
-    if metrics.parity_mismatch_rate > thresholds.maximum_parity_mismatch_rate:
-        breaches.append("parity_mismatch_rate")
-    if metrics.p95_regression_ratio > thresholds.maximum_p95_regression_ratio:
-        breaches.append("p95_regression")
+    if metrics.connector_p95_ms > thresholds.maximum_p95_ms:
+        breaches.append("connector_p95")
     if metrics.lifecycle_failures > thresholds.maximum_lifecycle_failures:
         breaches.append("lifecycle_failures")
-    if metrics.dlq_rate_delta > thresholds.maximum_dlq_rate_delta:
-        breaches.append("dlq_rate_delta")
+    if metrics.connector_dlq_rate > thresholds.maximum_dlq_rate:
+        breaches.append("connector_dlq_rate")
     enough_evidence = metrics.executions >= thresholds.minimum_executions
     return RolloutAssessment(
         ready_to_promote=enough_evidence and not breaches,
@@ -139,101 +110,20 @@ class RolloutRevision:
             raise ValueError("canary rollout requires exactly one tenant")
         if self.stage is RolloutStage.COHORT and not self.tenant_cohort:
             raise ValueError("cohort rollout requires at least one tenant")
-        if (
-            self.stage in {RolloutStage.SHADOW, RolloutStage.FULL}
-            and self.tenant_cohort
-        ):
-            raise ValueError(f"{self.stage.value} rollout cannot carry a tenant cohort")
+        if self.stage is RolloutStage.FULL and self.tenant_cohort:
+            raise ValueError("full rollout cannot carry a tenant cohort")
         object.__setattr__(self, "policy", MappingProxyType(dict(self.policy)))
 
     def effective_policy(self) -> Mapping[str, object]:
-        """Translate stage/cohort metadata into enforceable routing scopes."""
-
-        policy = dict(self.policy)
-        policy["revision"] = self.revision
-        if self.stage is RolloutStage.FULL:
-            return MappingProxyType(policy)
-        if self.stage is RolloutStage.SHADOW:
-            return MappingProxyType(_shadow_policy(policy))
-        return MappingProxyType(_bounded_policy(policy, self.tenant_cohort))
-
-
-def _shadow_policy(policy: Mapping[str, object]) -> dict[str, object]:
-    """Preserve routing scopes while making every promotion non-authoritative."""
-
-    def shadow(value: Any) -> Any:
-        if isinstance(value, str):
-            return "shadow" if value.lower() == "connector" else value
-        if isinstance(value, list):
-            return [shadow(item) for item in value]
-        if isinstance(value, Mapping):
-            return {str(key): shadow(item) for key, item in value.items()}
-        return value
-
-    return dict(shadow(policy))
-
-
-def _bounded_policy(
-    policy: Mapping[str, object], cohort: tuple[str, ...]
-) -> dict[str, object]:
-    """Convert connector promotions into tenant-scoped overrides."""
-
-    if str(policy.get("global", "legacy")).lower() == "connector":
-        raise ValueError("bounded rollout cannot promote an unscoped global policy")
-    capability_modes = policy.get("capabilities")
-    if isinstance(capability_modes, Mapping) and any(
-        str(value).lower() == "connector" for value in capability_modes.values()
-    ):
-        raise ValueError("bounded rollout cannot promote an unscoped capability policy")
-
-    connector_modes = policy.get("connectors")
-    promoted_connectors = {
-        str(connector_id)
-        for connector_id, mode in (
-            connector_modes.items() if isinstance(connector_modes, Mapping) else ()
+        return MappingProxyType(
+            {"revision": self.revision, "global": "connector"}
         )
-        if str(mode).lower() == "connector"
-    }
-    connector_capabilities: list[tuple[str, str]] = []
-    for row in policy.get("connector_capabilities", ()) or ():
-        if not isinstance(row, Mapping):
-            raise ValueError("connector capability rollout entries must be objects")
-        if str(row.get("mode", "legacy")).lower() == "connector":
-            connector_capabilities.append(
-                (str(row["connector_id"]), str(row["capability"]))
-            )
-    if not promoted_connectors and not connector_capabilities:
-        raise ValueError("bounded rollout does not identify a connector promotion")
-
-    return {
-        "revision": int(policy["revision"]),
-        "global": "legacy",
-        "tenant_connectors": [
-            {
-                "tenant_id": tenant_id,
-                "connector_id": connector_id,
-                "mode": "connector",
-            }
-            for tenant_id in cohort
-            for connector_id in sorted(promoted_connectors)
-        ],
-        "tenant_capabilities": [
-            {
-                "tenant_id": tenant_id,
-                "connector_id": connector_id,
-                "capability": capability,
-                "mode": "connector",
-            }
-            for tenant_id in cohort
-            for connector_id, capability in sorted(connector_capabilities)
-        ],
-    }
 
 
 class RolloutRepository(Protocol):
     async def load_active(self) -> RolloutRevision | None: ...
 
-    async def rollback_to_legacy(
+    async def rollback_to_previous(
         self,
         failed_revision: int,
         *,
@@ -263,7 +153,7 @@ MetricReader = Callable[[RolloutRevision], Awaitable[RolloutMetrics]]
 
 
 class FleetRoutingController:
-    """Watch the durable active revision and keep one process in sync."""
+    """Propagate the active contract revision and roll back artifacts only."""
 
     def __init__(
         self,
@@ -296,7 +186,7 @@ class FleetRoutingController:
                 revision.revision,
                 action="propagated",
                 actor=self._actor,
-                reason="fleet process applied active revision",
+                reason="process applied connector artifact revision",
             )
         return revision
 
@@ -307,7 +197,7 @@ class FleetRoutingController:
         metrics = await self._metric_reader(revision)
         assessment = assess_rollout(metrics, revision.thresholds)
         if assessment.rollback_required:
-            rollback = await self._repository.rollback_to_legacy(
+            rollback = await self._repository.rollback_to_previous(
                 revision.revision,
                 actor=self._actor,
                 reason=",".join(assessment.reasons),
@@ -327,7 +217,7 @@ class FleetRoutingController:
             await self.evaluate_once()
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=interval_seconds)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
 
 

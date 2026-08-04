@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from services.ingest.connector_platform.catalog import CONNECTOR_CATALOG
-from services.ingest.connector_platform.pilots import (
-    build_pilot_composition,
+from services.ingest.connector_platform.catalog import (
+    CONNECTOR_CATALOG,
+    build_connector_runtime,
     build_runtime_candidates,
 )
 from services.ingest.connector_runtime.policy import ExecutionMode, RouteRequest
@@ -22,7 +22,7 @@ def test_catalog_is_complete_and_matches_generated_source_index() -> None:
 
 def test_all_catalog_entries_are_native_and_bootstrap_native() -> None:
     candidates = build_runtime_candidates()
-    composition = build_pilot_composition()
+    composition = build_connector_runtime()
 
     assert len(candidates) == 26
     assert all(candidate.conformance_fingerprint for candidate in candidates)

@@ -16,7 +16,7 @@ import structlog
 
 # In-container the repo lives at /app but `python scripts/x.py` puts
 # /app/scripts (not /app) on sys.path — same bootstrap as the other
-# script launchers (run_discord_gateway_worker.py).
+# script launchers (run_connector_gateway_worker.py).
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))

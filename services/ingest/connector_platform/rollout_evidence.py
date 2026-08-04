@@ -8,15 +8,12 @@ from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
-from services.ingest.connector_runtime.shadow import ShadowReport
-
-
 log = logging.getLogger(__name__)
 RevisionSupplier = Callable[[], int | None]
 
 
 class PostgresRolloutEvidenceSink:
-    """Translate synchronous metrics/shadow callbacks into durable events.
+    """Translate synchronous contract metrics into durable rollout events.
 
     Host metric ports are synchronous by contract. The sink therefore schedules
     small append-only writes on the active event loop and exposes ``flush`` for
@@ -60,14 +57,17 @@ class PostgresRolloutEvidenceSink:
         implementation: str | None = None,
         outcome: str | None = None,
         duration_ms: float | None = None,
-        parity_matches: bool | None = None,
     ) -> None:
+        # The contract-only schema deliberately has no implementation
+        # dimension. Keep the argument for host-metric compatibility, but
+        # persist the sole valid owner.
+        implementation = "connector"
         await self._pool.execute(
             """
             INSERT INTO source_connector_rollout_events (
               id, revision, event_type, connector_id, capability,
-              implementation, outcome, duration_ms, parity_matches
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+              implementation, outcome, duration_ms
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
             """,
             uuid4(),
             revision,
@@ -77,7 +77,6 @@ class PostgresRolloutEvidenceSink:
             implementation,
             outcome,
             duration_ms,
-            parity_matches,
         )
 
     def increment(
@@ -114,14 +113,6 @@ class PostgresRolloutEvidenceSink:
             implementation=values.get("implementation"),
             outcome=values.get("outcome"),
             duration_ms=value,
-        )
-
-    def record(self, report: ShadowReport) -> None:
-        self._schedule(
-            event_type="parity",
-            connector_id=report.connector_id,
-            capability=report.capability,
-            parity_matches=report.matches,
         )
 
     def record_lifecycle(self, *, connector_id: str, outcome: str) -> None:

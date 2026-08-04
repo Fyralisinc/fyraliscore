@@ -17,6 +17,16 @@
     "maturity": "stable",
     "capabilities": [
       {
+        "id": "installation.configure",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "installation.secret_rotation",
+        "version": 1,
+        "required": true
+      },
+      {
         "id": "health.probe",
         "version": 1,
         "required": true,

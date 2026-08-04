@@ -43,8 +43,6 @@ scrape_configs:
         labels: { worker: embedding_backlog }
       - targets: ["periodic_reconciler:9300"]
         labels: { worker: periodic_reconciler }
-      - targets: ["circuit_breaker:9300"]
-        labels: { worker: circuit_breaker }
       - targets: ["think_worker:9300"]
         labels: { worker: think_worker }
       - targets: ["post_commit_worker:9300"]
@@ -79,12 +77,8 @@ scrape_configs:
         labels: { worker: signal_gateway_worker }
       - targets: ["gmail_watch_scheduler:9300"]
         labels: { worker: gmail_watch_scheduler }
-      - targets: ["gmail_history_poller:9300"]
-        labels: { worker: gmail_history_poller }
-      - targets: ["google_calendar_live_poller:9300"]
-        labels: { worker: google_calendar_live_poller }
-      - targets: ["google_drive_live_poller:9300"]
-        labels: { worker: google_drive_live_poller }
+      - targets: ["connector_poll_worker:9300"]
+        labels: { worker: connector_poll_worker }
       - targets: ["google_calendar_watch_scheduler:9300"]
         labels: { worker: google_calendar_watch_scheduler }
       - targets: ["google_drive_watch_scheduler:9300"]

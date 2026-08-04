@@ -1,66 +1,35 @@
-from __future__ import annotations
-
-import json
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
+from services.ingest.connector_platform.routing_config import parse_routing_policy
 from services.ingest.connector_platform.startup import wire_source_connector_runtime
-from services.ingest.connector_runtime.policy import (
-    ExecutionMode,
-    RouteRequest,
-)
+from services.ingest.connector_runtime.policy import ExecutionMode, RouteRequest
 
 
-def test_startup_publishes_registry_alongside_legacy_and_configures_scopes() -> None:
-    tenant_id = uuid4()
-    state = SimpleNamespace(legacy_dispatch="unchanged")
-    config = {
-        "revision": 3,
-        "global": "shadow",
-        "connectors": {"fyralis/notion": "connector"},
-        "tenant_capabilities": [
-            {
-                "tenant_id": str(tenant_id),
-                "connector_id": "fyralis/slack",
-                "capability": "semantic.identity",
-                "mode": "legacy",
-            }
-        ],
-    }
-
-    wiring = wire_source_connector_runtime(
-        state, routing_config=json.dumps(config)
-    )
-
-    assert state.legacy_dispatch == "unchanged"
-    assert len(state.source_connector_registry.connector_ids()) == 26
-    identity = RouteRequest(
-        tenant_id,
-        "fyralis/slack",
-        "slack",
-        "semantic.identity",
-    )
-    notion = RouteRequest(
-        tenant_id,
-        "fyralis/notion",
-        "notion",
-        "ingestion.incremental_poll",
-    )
-    assert wiring.composition.routing.resolve(identity).mode is ExecutionMode.LEGACY
-    assert wiring.composition.routing.resolve(notion).mode is ExecutionMode.CONNECTOR
-
-
-def test_configuration_only_rollback_is_immediate() -> None:
+def test_startup_publishes_complete_contract_registry() -> None:
     state = SimpleNamespace()
     wiring = wire_source_connector_runtime(
-        state,
-        routing_config='{"revision": 1, "global": "connector"}',
+        state, routing_config='{"revision":3,"global":"connector"}'
     )
-    request = RouteRequest(
-        uuid4(), "fyralis/slack", "slack", "ingestion.historical_pull"
+    assert len(state.source_connector_registry.connector_ids()) == 26
+    decision = wiring.composition.routing.resolve(
+        RouteRequest(uuid4(), "fyralis/slack", "slack", "semantic.identity")
     )
-    assert wiring.composition.routing.resolve(request).mode is ExecutionMode.CONNECTOR
+    assert decision.mode is ExecutionMode.CONNECTOR
+    assert decision.policy_revision == 3
 
-    wiring.configuration.rollback()
 
-    assert wiring.composition.routing.resolve(request).mode is ExecutionMode.LEGACY
+@pytest.mark.parametrize(
+    "value",
+    [
+        '{"global":"legacy"}',
+        '{"global":"shadow"}',
+        '{"connectors":{"fyralis/slack":"connector"}}',
+        '{"tenant_capabilities":[]}',
+    ],
+)
+def test_retired_source_routing_shapes_are_rejected(value: str) -> None:
+    with pytest.raises(ValueError):
+        parse_routing_policy(value)

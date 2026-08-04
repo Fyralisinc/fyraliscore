@@ -36,6 +36,7 @@ class AuthorizationRedirect(ContractModel):
 class OAuthCompleteRequest(ContractModel):
     code: str = Field(min_length=1)
     redirect_uri: str
+    callback_parameters: dict[str, str] = Field(default_factory=dict)
 
 
 class OAuthResult(ContractModel):

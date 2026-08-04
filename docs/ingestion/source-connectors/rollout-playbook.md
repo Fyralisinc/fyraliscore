@@ -1,104 +1,56 @@
 # Source connector rollout playbook
 
-> Completion Phase 3 note: native stable-v1 is the fleet default. Persistent
-> bounded-cardinality rollout events feed threshold evaluation, and
-> database-backed execution owners continuously refresh admission and routing.
-> Missing or invalid durable signed state still fails closed to quarantine and
-> the emergency legacy path where one exists.
+## Model
 
-## Goal
+Every rollout revision is contract-only. Stages (`canary`, `cohort`, `full`)
+select an admitted connector artifact revision and evidence cohort; they cannot
+select a source-local implementation. Policy must resolve to
+`{"global":"connector"}` and may carry only its monotonic revision.
 
-Move one complete connector surface to native execution with measurable parity,
-bounded blast radius, automatic rollback, and retained legacy recovery until
-production evidence supports retirement.
+## Before rollout
 
-## Preconditions
-
-- Native capability and ingress tests pass.
-- Behavioral conformance passes and its fingerprint is attached to the
-  candidate.
-- The released artifact has valid signed provenance and is enabled.
-- Installation/authority backfill is complete for the rollout cohort.
-- Baseline legacy error, latency, lifecycle, parity, and DLQ metrics exist.
-- The operator has identified the exact rollback revision and owner.
+- Apply all migrations through `0190_source_connector_contract_only.sql` on a
+  staging clone and inspect common installation/authority/credential rows.
+- Reauthorize or reconfigure all intended installations left in `Maintenance`.
+- Verify the exact manifest and implementation fingerprint with the release
+  gate.
+- Enable a signed measured artifact for the connector version.
+- Confirm S3, Kafka, callback base URL, secret store, database pool and the
+  connector's generic worker owner are configured.
+- Exercise install, health, pause/resume, credential rotation and removal in a
+  provider sandbox.
 
 ## Stages
 
-### 1. Shadow
+1. Canary: one tenant/installation on the new artifact revision.
+2. Cohort: a bounded set of tenants with representative data volume and provider
+   permissions.
+3. Full: all eligible Ready installations for that connector version.
 
-Keep legacy authoritative. Duplicate only explicitly shadow-safe operations and
-record canonical comparisons. Webhook acknowledgements, mutations, remote
-subscription changes, cleanup, and other unsafe effects must not be duplicated.
-Require sufficient executions and zero unexplained identity, cursor,
-publication, normalization, or state mismatches.
+At each stage evaluate execution count, error rate, p95 duration, lifecycle
+failures and connector DLQ rate. Insufficient evidence holds the stage. A
+threshold breach rolls back to the previous admitted artifact revision; the
+execution path remains the connector contract.
 
-### 2. Canary
+## Quarantine
 
-Route a small, named tenant cohort to connector mode. Verify all ingress kinds,
-reconciliation, health, refresh, and uninstall behavior represented by that
-source. Keep the observation window long enough to include provider throttling
-and scheduled reconciliation.
+An invalid signature, digest mismatch, disabled artifact, or operator quarantine
+removes the connector from the admitted set. New execution fails closed and the
+lifecycle controller reports artifact quarantine. Restore availability by
+admitting a known-good artifact revision or repairing the admission record.
 
-### 3. Cohort
+## Installation controls
 
-Increase tenant coverage in bounded revisions. Avoid combining a connector code
-change with a broad cohort expansion. Confirm every gateway and workflow process
-has propagated the active revision.
+Use `scripts/manage_source_installations.py` for status, pause, resume,
+maintenance and uninstall. Each mutation bumps the installation generation,
+aligns active authority fencing, schedules immediate reconciliation and writes
+an operator audit event.
 
-### 4. Full
+## Rollback limits
 
-Route the connector to native mode for all installations. Continue collecting
-parity where safe and retain legacy recovery through the agreed soak window.
-
-## Default thresholds
-
-The runtime model defaults to at least 100 executions, error rate at most 2%,
-parity mismatch rate at most 0.1%, p95 regression ratio at most 1.25, zero
-lifecycle failures, and DLQ-rate increase at most 0.1 percentage points. Source
-owners may adopt stricter values. Looser values require an explicit risk review.
-
-Any threshold breach requires rollback. Insufficient evidence blocks promotion
-but does not itself trigger rollback.
-
-## Revision policy
-
-Every staged policy receives a monotonically increasing revision, stage,
-tenant cohort, thresholds, creator, and audit event. Activation atomically
-supersedes the prior active revision. Processes watch the active revision and
-record propagation. Metric evaluation uses the recent rollout windows. A breach
-atomically marks the failed revision rolled back and creates a newer active
-global-legacy revision.
-
-## Promotion checklist
-
-- Required execution count reached.
-- Error and retry classifications match baseline.
-- No unexplained parity mismatch remains.
-- p95 latency remains within threshold.
-- No lifecycle failure occurred.
-- DLQ delta remains within threshold.
-- Checkpoint and S3/Kafka ordering were sampled.
-- Artifact and runtime quarantine counts are zero for the connector.
-- Propagation audit covers all expected process owners.
-- On-call and connector owner approve the next stage.
-
-## Rollback drill
-
-Before full rollout, activate a legacy revision and confirm:
-
-- process-local decisions change without deployment;
-- in-flight work completes or retries under the host's existing semantics;
-- no checkpoint advances ahead of durable publication;
-- duplicate delivery remains idempotent;
-- lifecycle and authority records remain valid;
-- the audit trail identifies actor, reason, revision, and metric snapshot.
-
-Return to connector mode only with a newer reviewed revision.
-
-## Retirement
-
-Full routing is not legacy retirement. Remove source-specific dispatch and
-rollback code only after the migration guide's full criteria, the agreed
-production soak, and one durable retirement-evidence row per surface. If any
-ingress owner still calls a source-specific map directly, the source is not
-eligible for retirement.
+Artifact rollback does not undo acknowledged raw publication. Preserve raw
+objects, Kafka envelopes, connector state and idempotency keys. If the schema or
+manifest changed, use only declared compatible state migrations. A database
+rollback across migration `0190` requires restoring the pre-cutover database
+backup and matching application revision; it is not an online source-routing
+switch.

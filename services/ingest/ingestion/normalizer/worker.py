@@ -59,7 +59,6 @@ from aiokafka.coordinator.assignors.sticky.sticky_assignor import (
 )
 
 from services.ingest.ingestion.dlq.publish import publish_dlq
-from services.ingest.ingestion.handlers import get_handler
 from services.ingest.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
 from services.ingest.ingestion.kafka.topics import (
     consumer_group,
@@ -75,7 +74,6 @@ from services.ingest.ingestion.observability import (
     run_heartbeat_ticker,
     start_health_server,
 )
-from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
 from services.ingest.ingestion.normalizer.invariants import (
     EnvelopeInvariantError,
     assert_envelope_invariants,
@@ -491,32 +489,11 @@ async def _normalize_one_with_envelope(
         exc.envelope = envelope  # type: ignore[attr-defined]
         raise
 
-    # Reject unsupported compatibility ingress before paying for an S3 read.
-    # Native connectors own their semantic channel and therefore do not need a
-    # central channel-map entry.
-    native_source = bool(
-        connector_router is not None
-        and getattr(connector_router, "is_native", lambda _source: False)(
-            envelope.source
+    if connector_router is None or not connector_router.supports(envelope.source):
+        raise RuntimeError(
+            f"source connector is unavailable for {envelope.source!r}"
         )
-    )
-    channel = (
-        f"{envelope.source}:connector"
-        if native_source
-        else resolve_channel(envelope.source, envelope.ingress_kind)
-    )
-    if channel is None:
-        _bump("normalizer.unsupported_combination")
-        log.info(
-            "normalizer.unsupported_combination",
-            extra={
-                "source": envelope.source,
-                "ingress_kind": envelope.ingress_kind,
-                "reason": "no_handler_in_m2_scope",
-                "raw_s3_key": envelope.raw_s3_key,
-            },
-        )
-        return envelope, False
+    channel = f"{envelope.source}:connector"
 
     # Fetch the raw body from S3 (the only network call in this hot
     # path besides Kafka). Production S3Client verifies the body against the
@@ -554,53 +531,40 @@ async def _normalize_one_with_envelope(
         if event_type:
             headers = {"X-GitHub-Event": event_type}
 
-    # Native manifests own semantic routing. Compatibility sources retain the
-    # central channel map, and shadow mode resolves that legacy path lazily only
-    # when the executor actually needs a baseline.
+    # Every source manifest owns semantic routing and normalization.
     validate_ingest_json_payload(payload, channel=channel)
+    from services.ingest.source_contract.models import (
+        NormalizationInput,
+        SourceRecord,
+    )
 
-    async def legacy_normalize():
-        legacy_channel = resolve_channel(envelope.source, envelope.ingress_kind)
-        if legacy_channel is None:
-            raise ValueError("legacy normalization has no registered channel")
-        return await get_handler(legacy_channel)(payload, headers)
-
-    if connector_router is not None and connector_router.supports(envelope.source):
-        from services.ingest.source_contract.models import (
-            NormalizationInput,
-            SourceRecord,
-        )
-
-        draft = await connector_router.normalize(
-            envelope.source,
-            {
-                "id": uuid5(
-                    NAMESPACE_URL,
-                    f"fyralis:semantic:{envelope.tenant_id}:{envelope.source}",
-                )
-                if envelope.connector_installation_id is None
-                else envelope.connector_installation_id,
-                "tenant_id": envelope.tenant_id,
-                "installation_id": "stateless-semantic-binding",
-                "secret_ref": "stateless-semantic-authority",
-                "enabled": True,
-            },
-            NormalizationInput(
-                record=SourceRecord(
-                    native_type=str(
-                        payload.get("object") or payload.get("type") or "record"
-                    ),
-                    payload=payload,
+    draft = await connector_router.normalize(
+        envelope.source,
+        {
+            "id": uuid5(
+                NAMESPACE_URL,
+                f"fyralis:semantic:{envelope.tenant_id}:{envelope.source}",
+            )
+            if envelope.connector_installation_id is None
+            else envelope.connector_installation_id,
+            "tenant_id": envelope.tenant_id,
+            "installation_id": "stateless-semantic-binding",
+            "secret_ref": "stateless-semantic-authority",
+            "enabled": True,
+        },
+        NormalizationInput(
+            record=SourceRecord(
+                native_type=str(
+                    payload.get("object") or payload.get("type") or "record"
                 ),
-                ingress_kind=envelope.ingress_kind,
-                ingress_metadata=headers,
-                raw_object_key=envelope.raw_s3_key,
-                content_hash=envelope.content_hash,
+                payload=payload,
             ),
-            legacy_normalize,
-        )
-    else:
-        draft = await legacy_normalize()
+            ingress_kind=envelope.ingress_kind,
+            ingress_metadata=headers,
+            raw_object_key=envelope.raw_s3_key,
+            content_hash=envelope.content_hash,
+        ),
+    )
 
     normalized = NormalizedEnvelope(
         envelope_version=1,

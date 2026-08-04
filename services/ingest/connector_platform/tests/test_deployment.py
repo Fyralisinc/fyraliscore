@@ -12,7 +12,7 @@ from services.ingest.connector_platform.deployment import (
     ArtifactAdmissionSettings,
     _trusted_signers,
 )
-from services.ingest.connector_platform.pilots import build_pilot_candidates
+from services.ingest.connector_platform.catalog import build_runtime_candidates
 from services.ingest.connector_runtime.artifacts import ArtifactAttestation
 from services.ingest.connector_runtime.policy import (
     AtomicRoutingPolicy,
@@ -20,6 +20,7 @@ from services.ingest.connector_runtime.policy import (
     RouteRequest,
     RoutingPolicy,
 )
+from services.ingest.source_contract.errors import SourceUnavailableError
 
 
 class MemoryArtifacts:
@@ -36,14 +37,9 @@ class MemoryArtifacts:
 
 @pytest.mark.asyncio
 async def test_missing_signed_artifacts_quarantine_and_override_routing() -> None:
-    candidates = build_pilot_candidates()
+    candidates = build_runtime_candidates()
     routing = AtomicRoutingPolicy(
-        RoutingPolicy(
-            connector_modes={
-                candidate.manifest.connector_id: ExecutionMode.CONNECTOR
-                for candidate in candidates
-            }
-        )
+        RoutingPolicy()
     )
     controller = ArtifactAdmissionController(
         MemoryArtifacts(),
@@ -57,16 +53,15 @@ async def test_missing_signed_artifacts_quarantine_and_override_routing() -> Non
     assert set(admission.quarantined) == {
         candidate.manifest.connector_id for candidate in candidates
     }
-    decision = routing.resolve(
-        RouteRequest(
-            tenant_id=uuid4(),
-            connector_id="fyralis/slack",
-            source="slack",
-            capability="ingestion.historical_pull",
+    with pytest.raises(SourceUnavailableError, match="quarantined"):
+        routing.resolve(
+            RouteRequest(
+                tenant_id=uuid4(),
+                connector_id="fyralis/slack",
+                source="slack",
+                capability="ingestion.historical_pull",
+            )
         )
-    )
-    assert decision.mode is ExecutionMode.LEGACY
-    assert decision.matched_scope == "artifact_quarantine"
 
 
 def test_trusted_signers_parser_accepts_raw_ed25519_public_keys() -> None:

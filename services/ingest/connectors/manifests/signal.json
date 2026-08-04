@@ -10,10 +10,11 @@
   },
   "spec": {
     "contract": ">=1.0,<2.0",
-    "implementation": "services.ingest.connectors.fleet:build_signal_connector",
+    "implementation": "services.ingest.connectors.gateway_sources:build_signal_connector",
     "artifactModules": [
-      "services.ingest.connectors.native",
-      "services.ingest.connectors.profiles"
+      "services.ingest.connectors.fleet",
+      "services.ingest.connectors.gateway_sources",
+      "services.ingest.connectors.provider_spec"
     ],
     "maturity": "stable",
     "capabilities": [
@@ -75,6 +76,9 @@
     "ingressKinds": [
       "backfill",
       "gateway"
+    ],
+    "installationDataNamespaces": [
+      "signal_gateway"
     ],
     "permissions": {
       "secretSlots": [

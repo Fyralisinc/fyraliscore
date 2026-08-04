@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from services.ingest.connector_platform.catalog import CONNECTOR_CATALOG
 from services.ingest.connector_runtime.definitions import ConnectorCandidate
-from services.ingest.ingestion.handlers import get_handler
-from services.ingest.ingestion.normalizer.channel_mapping import resolve_channel
+from services.ingest.source_contract.capabilities import (
+    GATEWAY_STREAM_V1,
+    HISTORICAL_PULL_V1,
+    INCREMENTAL_POLL_V1,
+    PUSH_SUBSCRIPTION_V1,
+    WEBHOOK_V1,
+)
 from services.ingest.source_contract.manifest import MANIFEST_API_VERSION, Maturity
 from services.ingest.source_contract.source_catalog import source_ids
 
@@ -34,13 +39,23 @@ def validate_native_fleet(candidates: tuple[ConnectorCandidate, ...]) -> None:
             raise ValueError(
                 f"{manifest.connector_id} factory is outside the connector package"
             )
+        declared = set(manifest.available_capability_refs)
+        required_for_ingress = {
+            "backfill": (HISTORICAL_PULL_V1.ref,),
+            "poll": (INCREMENTAL_POLL_V1.ref,),
+            "webhook": (WEBHOOK_V1.ref,),
+            "gateway": (GATEWAY_STREAM_V1.ref,),
+            "pubsub": (PUSH_SUBSCRIPTION_V1.ref, INCREMENTAL_POLL_V1.ref),
+        }
         for ingress_kind in manifest.spec.ingress_kinds:
-            channel = resolve_channel(manifest.source, ingress_kind)  # type: ignore[arg-type]
-            if channel is None:
+            missing = set(required_for_ingress[ingress_kind]) - declared
+            if missing:
+                refs = ", ".join(f"{ref.id}@{ref.version}" for ref in sorted(
+                    missing, key=lambda item: (item.id, item.version)
+                ))
                 raise ValueError(
-                    f"{manifest.connector_id} has no channel for {ingress_kind}"
+                    f"{manifest.connector_id} ingress {ingress_kind} lacks {refs}"
                 )
-            get_handler(channel)
 
 
 __all__ = ["validate_native_fleet"]

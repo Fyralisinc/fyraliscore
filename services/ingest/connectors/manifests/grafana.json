@@ -10,10 +10,11 @@
   },
   "spec": {
     "contract": ">=1.0,<2.0",
-    "implementation": "services.ingest.connectors.fleet:build_grafana_connector",
+    "implementation": "services.ingest.connectors.rest_sources:build_grafana_connector",
     "artifactModules": [
-      "services.ingest.connectors.native",
-      "services.ingest.connectors.profiles"
+      "services.ingest.connectors.fleet",
+      "services.ingest.connectors.provider_spec",
+      "services.ingest.connectors.rest_sources"
     ],
     "maturity": "stable",
     "capabilities": [

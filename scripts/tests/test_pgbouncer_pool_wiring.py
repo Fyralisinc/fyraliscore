@@ -15,15 +15,9 @@ PRODUCTION_POOL_FILES = (
     "scripts/run_sage_topology_optimizer_worker.py",
     "scripts/run_relationship_ontology_proposals_worker.py",
     "scripts/run_topology_sweeper.py",
-    "scripts/run_signal_gateway_worker.py",
-    "scripts/run_telegram_gateway_worker.py",
-    "scripts/run_discord_gateway_worker.py",
-    "scripts/run_gmail_watch_scheduler.py",
-    "scripts/run_google_drive_watch_scheduler.py",
-    "scripts/run_google_calendar_watch_scheduler.py",
-    "scripts/run_gmail_history_poller.py",
-    "scripts/run_google_drive_live_poller.py",
-    "scripts/run_google_calendar_live_poller.py",
+    "scripts/run_connector_gateway_worker.py",
+    "scripts/run_connector_subscription_scheduler.py",
+    "scripts/run_connector_poll_worker.py",
 )
 
 

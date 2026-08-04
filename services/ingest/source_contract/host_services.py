@@ -54,6 +54,8 @@ class GovernedHttpRequest:
     query: tuple[tuple[str, str], ...] = ()
     body: bytes | None = None
     timeout_seconds: float | None = None
+    url_secret: SecretValue | None = None
+    url_secret_placeholder: str = "{secret}"
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,26 @@ class GovernedHttpResponse:
     status_code: int
     headers: tuple[tuple[str, str], ...]
     body: bytes
+
+
+@dataclass(frozen=True)
+class GovernedGatewayRequest:
+    url: str
+    headers: tuple[tuple[str, str], ...] = ()
+    maximum_message_bytes: int = 1024 * 1024
+
+
+@runtime_checkable
+class GatewayTransportPort(Protocol):
+    """Host-owned bounded WebSocket transport for session connectors."""
+
+    async def connect(self, request: GovernedGatewayRequest) -> str: ...
+
+    async def send_json(self, connection_id: str, payload: dict[str, Any]) -> None: ...
+
+    async def receive_json(self, connection_id: str) -> dict[str, Any]: ...
+
+    async def close(self, connection_id: str, *, code: int = 1000) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -127,7 +149,12 @@ class InstallationStorePort(Protocol):
 class RawEmissionPort(Protocol):
     """Host-owned durable emission used only by active/gateway connectors."""
 
-    async def emit(self, record: "SourceRecord") -> "PublicationReceipt": ...
+    async def emit(
+        self,
+        record: "SourceRecord",
+        *,
+        ingress_kind: str,
+    ) -> "PublicationReceipt": ...
 
 
 @runtime_checkable
@@ -191,6 +218,7 @@ class LeasePort(Protocol):
 class HostServices:
     secrets: SecretsPort
     http: HttpPort
+    gateway: GatewayTransportPort
     state: StateViewPort
     installation_store: InstallationStorePort
     raw_emission: RawEmissionPort
@@ -208,6 +236,8 @@ __all__ = [
     "ClockPort",
     "GovernedHttpRequest",
     "GovernedHttpResponse",
+    "GovernedGatewayRequest",
+    "GatewayTransportPort",
     "HostServices",
     "HttpPort",
     "InstallationData",

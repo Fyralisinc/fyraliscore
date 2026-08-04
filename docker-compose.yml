@@ -341,72 +341,43 @@ services:
     command: python -m services.ingest.ingestion.recovery.embedding_backlog
     healthcheck: *consumer-healthcheck
 
-  # Cutover circuit breaker: a SINGLE long-running observer that measures
-  # consumer lag on every per-source raw lane (ingestion.raw.<source> vs.
-  # group normalizer.<source>) and, on sustained breach, flips a tenant's
-  # ingestion.kafka_path_enabled flag to FALSE — pulling that tenant back
-  # to the inline path. Auto-recovery is operator-driven (see the module
-  # docstring + scripts/reenable_kafka_path.py). NOT per-source: the flag is
-  # per-tenant, so one instance trips each tenant on its worst lane.
-  # Exposes /healthz + /metrics on INGESTION_HEALTH_PORT (9300, from app-env);
-  # /healthz goes 503 if the tick loop wedges, so a hung breaker is restarted.
-  circuit_breaker:
-    <<: *worker
-    container_name: company_os_circuit_breaker
-    command: python -m services.ingest.ingestion.feature_flags
-    healthcheck: *consumer-healthcheck
-    # Tuning knobs (defaults shown) — override in .env.production:
-    #   BREAKER_TICK_INTERVAL_SEC=60  BREAKER_THRESHOLD_SEC=60
-    #   BREAKER_WINDOW_TICKS=5        BREAKER_NORMALIZER_GROUP_BASE=normalizer
-    # INGESTION_ALERT_WEBHOOK_URL (if set) receives trip alerts.
-
   # ---- live source workers -----------------------------------------
   discord_gateway_worker:
     <<: *worker
     container_name: company_os_discord_gateway_worker
-    command: python scripts/run_discord_gateway_worker.py
+    command: python scripts/run_connector_gateway_worker.py --source discord
     healthcheck: *consumer-healthcheck
 
   telegram_gateway_worker:
     <<: *worker
     container_name: company_os_telegram_gateway_worker
-    command: python scripts/run_telegram_gateway_worker.py
+    command: python scripts/run_connector_gateway_worker.py --source telegram
     healthcheck: *consumer-healthcheck
 
   signal_gateway_worker:
     <<: *worker
     container_name: company_os_signal_gateway_worker
-    command: python scripts/run_signal_gateway_worker.py
+    command: python scripts/run_connector_gateway_worker.py --source signal
     healthcheck: *consumer-healthcheck
 
   gmail_watch_scheduler:
     <<: *worker
-    command: python scripts/run_gmail_watch_scheduler.py
+    command: python scripts/run_connector_subscription_scheduler.py --source gmail
     healthcheck: *consumer-healthcheck
 
-  gmail_history_poller:
+  connector_poll_worker:
     <<: *worker
-    command: python scripts/run_gmail_history_poller.py
-    healthcheck: *consumer-healthcheck
-
-  google_calendar_live_poller:
-    <<: *worker
-    command: python scripts/run_google_calendar_live_poller.py
-    healthcheck: *consumer-healthcheck
-
-  google_drive_live_poller:
-    <<: *worker
-    command: python scripts/run_google_drive_live_poller.py
+    command: python scripts/run_connector_poll_worker.py
     healthcheck: *consumer-healthcheck
 
   google_calendar_watch_scheduler:
     <<: *worker
-    command: python scripts/run_google_calendar_watch_scheduler.py
+    command: python scripts/run_connector_subscription_scheduler.py --source google_calendar
     healthcheck: *consumer-healthcheck
 
   google_drive_watch_scheduler:
     <<: *worker
-    command: python scripts/run_google_drive_watch_scheduler.py
+    command: python scripts/run_connector_subscription_scheduler.py --source google_drive
     healthcheck: *consumer-healthcheck
 
   # ---- think / post-commit application workers ---------------------

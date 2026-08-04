@@ -10,10 +10,11 @@
   },
   "spec": {
     "contract": ">=1.0,<2.0",
-    "implementation": "services.ingest.connectors.fleet:build_discord_connector",
+    "implementation": "services.ingest.connectors.gateway_sources:build_discord_connector",
     "artifactModules": [
-      "services.ingest.connectors.native",
-      "services.ingest.connectors.profiles"
+      "services.ingest.connectors.fleet",
+      "services.ingest.connectors.gateway_sources",
+      "services.ingest.connectors.provider_spec"
     ],
     "maturity": "stable",
     "capabilities": [
@@ -86,13 +87,17 @@
       "gateway",
       "webhook"
     ],
+    "installationDataNamespaces": [
+      "discord_gateway"
+    ],
     "permissions": {
       "secretSlots": [
         "bot_token",
         "webhook_public_key"
       ],
       "outboundHosts": [
-        "discord.com"
+        "discord.com",
+        "gateway.discord.gg"
       ],
       "requestedScopes": []
     },

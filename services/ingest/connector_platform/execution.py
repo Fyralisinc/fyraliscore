@@ -1,17 +1,12 @@
-"""Old-shape worker adapters backed by registry-resolved capabilities."""
+"""Workflow adapters backed exclusively by registry-resolved capabilities."""
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 import json
-from typing import Any, TypeVar
+from typing import Any
 from uuid import UUID, uuid4
 
-from services.ingest.connector_platform.legacy_context import (
-    LegacyBindingPayload,
-    legacy_binding_scope,
-)
 from services.ingest.connector_runtime.authority import (
     AuthorityRepository,
     scope_authority,
@@ -27,28 +22,32 @@ from services.ingest.connector_runtime.lifecycle import (
     InstallationLifecycle,
     InstallationPhase,
 )
-from services.ingest.connector_runtime.shadow import (
-    ShadowDimension,
-    ShadowReportSink,
-)
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH, FetchResult
-from services.ingest.ingestion.handlers import ObservationDraft as LegacyDraft
-from services.ingest.ingestion.planners import PLANNER_DISPATCH, Shard
-from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
-    ReconciliationDecision as LegacyReconciliationDecision,
+from services.ingest.connector_platform.workflow_models import (
+    FetchResult,
+    ObservationDraft,
+    ReconciliationDecision,
     ResharedShard,
+    Shard,
 )
 from services.ingest.source_contract.capabilities import (
+    GATEWAY_STREAM_V1,
     HISTORICAL_PULL_V1,
     IDENTITY_V1,
     INCREMENTAL_POLL_V1,
     NORMALIZATION_V1,
+    PUSH_SUBSCRIPTION_V1,
     RECONCILIATION_V1,
     WEBHOOK_V1,
 )
+from services.ingest.source_contract.capabilities.ingestion import (
+    GatewayOpenRequest,
+    GatewayReceiveRequest,
+    SubscriptionRequest,
+    SubscriptionState,
+)
 from services.ingest.source_contract.connector import GrantedAuthority
 from services.ingest.source_contract.errors import BindingError
+from services.ingest.source_contract.host_services import InstallationDataPatch
 from services.ingest.source_contract.models import (
     BoundedWebhookRequest,
     CursorState,
@@ -63,11 +62,6 @@ from services.ingest.source_contract.models import (
     ShardPlan,
     VerifiedWebhookResult,
 )
-
-
-T = TypeVar("T")
-LegacyWebhookCall = Callable[[], Awaitable[VerifiedWebhookResult]]
-
 
 def _value(record: Any, key: str, default: Any = None) -> Any:
     try:
@@ -89,7 +83,7 @@ def _object(value: Any) -> dict[str, Any]:
         return {}
 
 
-def _legacy_shard(shard: ShardPlan) -> Shard:
+def _workflow_shard(shard: ShardPlan) -> Shard:
     return Shard(
         shard_kind=shard.kind,
         shard_identifier=dict(shard.identifier),
@@ -99,8 +93,8 @@ def _legacy_shard(shard: ShardPlan) -> Shard:
     )
 
 
-def _legacy_draft(draft: Any) -> LegacyDraft:
-    return LegacyDraft(
+def _observation_draft(draft: Any) -> ObservationDraft:
+    return ObservationDraft(
         source_channel=draft.source_channel,
         content_text=draft.content_text,
         content=dict(draft.content),
@@ -114,15 +108,14 @@ def _legacy_draft(draft: Any) -> LegacyDraft:
     )
 
 
-class LegacyExecutionRouter:
-    """Compatibility facade retaining every pre-Phase-2 return shape."""
+class ConnectorExecutionRouter:
+    """Resolve and execute contract capabilities for existing workflow DTOs."""
 
     def __init__(
         self,
         composition: ConnectorRuntimeComposition,
         host_services: HostServicesFactory,
         *,
-        shadow_sink: ShadowReportSink | None = None,
         deadline_seconds: float = 60.0,
         authority_repository: AuthorityRepository | None = None,
         require_durable_authority: bool = False,
@@ -132,7 +125,6 @@ class LegacyExecutionRouter:
         self._executor = ConnectorCapabilityExecutor(
             composition.registry,
             composition.routing,
-            shadow_sink=shadow_sink,
         )
         self._deadline_seconds = deadline_seconds
         self._authority_repository = authority_repository
@@ -159,24 +151,15 @@ class LegacyExecutionRouter:
             id=UUID(str(_value(install, "id"))),
             tenant_id=UUID(str(_value(install, "tenant_id"))),
             connector_id=description.connector_id,
-            generation=1,
+            generation=max(1, int(_value(install, "generation", 1))),
         )
 
     def _authority(self, source: str, install: Any) -> GrantedAuthority:
         manifest = self._composition.registry.for_source(source).manifest
-        permissions = manifest.spec.permissions
-        # Existing provider_installations proves an installation-scoped
-        # credential grant through secret_ref. Do not infer a secret grant
-        # merely because the manifest requested one.
-        secret_slots = (
-            frozenset(permissions.secret_slots)
-            if _value(install, "secret_ref")
-            else frozenset()
-        )
+        # Processes without a durable authority repository are restricted to
+        # secretless, networkless capabilities such as pure normalization.
+        # Requested manifest permissions are never treated as grants.
         return GrantedAuthority(
-            secret_slots=secret_slots,
-            outbound_hosts=frozenset(permissions.outbound_hosts),
-            scopes=frozenset(permissions.requested_scopes),
             maximum_trust_tier=manifest.spec.trust.maximum_tier,
         )
 
@@ -184,18 +167,37 @@ class LegacyExecutionRouter:
         self, installation: InstallationRef, install: Any
     ) -> InstallationLifecycle:
         enabled = bool(_value(install, "enabled", True))
+        desired_value = str(
+            _value(
+                install,
+                "desired_state",
+                "Ready" if enabled else "Paused",
+            )
+        )
+        observed_value = str(
+            _value(
+                install,
+                "observed_phase",
+                "Ready" if enabled else "Paused",
+            )
+        )
         return InstallationLifecycle(
             installation_id=installation.id,
             tenant_id=installation.tenant_id,
             connector_id=installation.connector_id,
-            desired=(
-                DesiredInstallationState.READY
-                if enabled
-                else DesiredInstallationState.PAUSED
-            ),
-            observed=(InstallationPhase.READY if enabled else InstallationPhase.PAUSED),
+            desired=DesiredInstallationState(desired_value),
+            observed=InstallationPhase(observed_value),
             generation=installation.generation,
-            observed_generation=installation.generation,
+            observed_generation=max(
+                0,
+                int(
+                    _value(
+                        install,
+                        "observed_generation",
+                        installation.generation,
+                    )
+                ),
+            ),
         )
 
     async def _base(
@@ -234,23 +236,19 @@ class LegacyExecutionRouter:
         self,
         source: str,
         planner_context: Any,
-        *,
-        shadow_safe: bool = False,
     ) -> list[Shard]:
         install = planner_context.install
         installation, authority, services, lifecycle = await self._base(source, install)
-        payload = LegacyBindingPayload(
-            install=install,
-            planner_context=planner_context,
-            external_installation_id=str(_value(install, "installation_id", "")),
-        )
-
-        async def legacy_call() -> list[Shard]:
-            return await PLANNER_DISPATCH[source](planner_context)
 
         async def connector_call(capability: Any, operation: Any) -> list[Shard]:
-            result = await capability.plan(PlanRequest(), operation)
-            return [_legacy_shard(shard) for shard in result.shards]
+            selected = tuple(
+                str(item)
+                for item in (_value(install, "selected_resources", ()) or ())
+            )
+            result = await capability.plan(
+                PlanRequest(selected_resources=selected), operation
+            )
+            return [_workflow_shard(shard) for shard in result.shards]
 
         request = CapabilityExecutionRequest(
             installation=installation,
@@ -259,14 +257,10 @@ class LegacyExecutionRouter:
             services=services,
             capability=HISTORICAL_PULL_V1,
             connector_call=connector_call,
-            legacy_call=legacy_call,
             deadline=self._deadline(),
             lifecycle=lifecycle,
-            shadow_safe=shadow_safe,
-            shadow_projection=lambda value: {ShadowDimension.STATE: value},
         )
-        with legacy_binding_scope(payload):
-            return await self._executor.execute(request)
+        return await self._executor.execute(request)
 
     async def fetch(
         self,
@@ -276,23 +270,15 @@ class LegacyExecutionRouter:
         cursor: dict[str, Any] | None,
         *,
         shard_kind: str | None = None,
-        shadow_safe: bool = False,
     ) -> FetchResult:
         installation, authority, services, lifecycle = await self._base(source, install)
-        payload = LegacyBindingPayload(
-            install=install,
-            external_installation_id=str(_value(install, "installation_id", "")),
-        )
-
-        async def legacy_call() -> FetchResult:
-            return await FETCHER_DISPATCH[source](install, shard_identifier, cursor)
 
         async def connector_call(capability: Any, operation: Any) -> FetchResult:
             page = await capability.fetch(
                 FetchRequest(
                     shard=ShardPlan(
                         kind=shard_kind
-                        or str(shard_identifier.get("shard_kind") or "legacy_shard"),
+                        or str(shard_identifier.get("shard_kind") or "source_shard"),
                         identifier=shard_identifier,
                     ),
                     cursor=CursorState(schema_version=1, payload=cursor)
@@ -322,18 +308,10 @@ class LegacyExecutionRouter:
             services=services,
             capability=HISTORICAL_PULL_V1,
             connector_call=connector_call,
-            legacy_call=legacy_call,
             deadline=self._deadline(),
             lifecycle=lifecycle,
-            shadow_safe=shadow_safe,
-            shadow_projection=lambda value: {
-                ShadowDimension.PUBLICATION: value.records,
-                ShadowDimension.CURSOR: value.next_cursor,
-                ShadowDimension.STATE: value.end_of_data,
-            },
         )
-        with legacy_binding_scope(payload):
-            return await self._executor.execute(request)
+        return await self._executor.execute(request)
 
     async def poll(
         self,
@@ -341,18 +319,8 @@ class LegacyExecutionRouter:
         install: Any,
         shard_identifier: dict[str, Any],
         cursor: dict[str, Any] | None,
-        *,
-        shadow_safe: bool = False,
     ) -> FetchResult:
         installation, authority, services, lifecycle = await self._base(source, install)
-        payload = LegacyBindingPayload(
-            install=install,
-            external_installation_id=str(_value(install, "installation_id", "")),
-            poll_shard_identifier=shard_identifier,
-        )
-
-        async def legacy_call() -> FetchResult:
-            return await FETCHER_DISPATCH[source](install, shard_identifier, cursor)
 
         async def connector_call(capability: Any, operation: Any) -> FetchResult:
             page = await capability.poll(
@@ -360,6 +328,11 @@ class LegacyExecutionRouter:
                     cursor=CursorState(schema_version=1, payload=cursor)
                     if cursor is not None
                     else None,
+                    selected_resources=(
+                        str(shard_identifier.get("resource_id")),
+                    )
+                    if shard_identifier.get("resource_id") is not None
+                    else (),
                 ),
                 operation,
             )
@@ -384,31 +357,18 @@ class LegacyExecutionRouter:
             services=services,
             capability=INCREMENTAL_POLL_V1,
             connector_call=connector_call,
-            legacy_call=legacy_call,
             deadline=self._deadline(),
             lifecycle=lifecycle,
-            shadow_safe=shadow_safe,
-            shadow_projection=lambda value: {
-                ShadowDimension.PUBLICATION: value.records,
-                ShadowDimension.CURSOR: value.next_cursor,
-                ShadowDimension.STATE: value.end_of_data,
-            },
         )
-        with legacy_binding_scope(payload):
-            return await self._executor.execute(request)
+        return await self._executor.execute(request)
 
     async def identity(
         self,
         source: str,
         install: Any,
         input: IdentityInput,
-        legacy_call: Callable[[], Awaitable[str]],
     ) -> str:
         installation, authority, services, lifecycle = await self._base(source, install)
-        payload = LegacyBindingPayload(
-            install=install,
-            external_installation_id=str(_value(install, "installation_id", "")),
-        )
 
         async def connector_call(capability: Any, _operation: Any) -> str:
             return capability.external_id(input)
@@ -420,13 +380,10 @@ class LegacyExecutionRouter:
             services=services,
             capability=IDENTITY_V1,
             connector_call=connector_call,
-            legacy_call=legacy_call,
             deadline=self._deadline(),
             lifecycle=lifecycle,
-            shadow_projection=lambda value: {ShadowDimension.IDENTITY: value},
         )
-        with legacy_binding_scope(payload):
-            return await self._executor.execute(request)
+        return await self._executor.execute(request)
 
     async def reconcile(
         self,
@@ -434,23 +391,12 @@ class LegacyExecutionRouter:
         install: Any,
         shards: list[Any],
         run: Any,
-        *,
-        shadow_safe: bool = False,
-    ) -> LegacyReconciliationDecision:
+    ) -> ReconciliationDecision:
         installation, authority, services, lifecycle = await self._base(source, install)
-        payload = LegacyBindingPayload(
-            install=install,
-            external_installation_id=str(_value(install, "installation_id", "")),
-            reconciliation_shards=shards,
-            reconciliation_run=run,
-        )
-
-        async def legacy_call() -> LegacyReconciliationDecision:
-            return await RECONCILER_DISPATCH[source](shards, run)
 
         async def connector_call(
             capability: Any, operation: Any
-        ) -> LegacyReconciliationDecision:
+        ) -> ReconciliationDecision:
             decision = await capability.reconcile(
                 ReconciliationRequest(
                     run_id=UUID(str(_value(run, "onboarding_run_id", uuid4()))),
@@ -458,7 +404,7 @@ class LegacyExecutionRouter:
                         ShardSummary(
                             shard_id=UUID(str(_value(shard, "id"))),
                             shard=ShardPlan(
-                                kind=str(_value(shard, "shard_kind", "legacy_shard")),
+                                kind=str(_value(shard, "shard_kind", "source_shard")),
                                 identifier=_object(
                                     _value(shard, "shard_identifier", {})
                                 ),
@@ -484,12 +430,12 @@ class LegacyExecutionRouter:
                 ),
                 operation,
             )
-            return LegacyReconciliationDecision(
+            return ReconciliationDecision(
                 has_gaps=decision.has_gaps,
                 message=decision.message,
                 new_shards=[
                     ResharedShard(
-                        shard=_legacy_shard(item.shard),
+                        shard=_workflow_shard(item.shard),
                         parent_shard_id=item.parent_shard_id,
                     )
                     for item in decision.new_shards
@@ -503,33 +449,24 @@ class LegacyExecutionRouter:
             services=services,
             capability=RECONCILIATION_V1,
             connector_call=connector_call,
-            legacy_call=legacy_call,
             deadline=self._deadline(),
             lifecycle=lifecycle,
-            shadow_safe=shadow_safe,
-            shadow_projection=lambda value: {ShadowDimension.STATE: value},
         )
-        with legacy_binding_scope(payload):
-            return await self._executor.execute(request)
+        return await self._executor.execute(request)
 
     async def normalize(
         self,
         source: str,
         install: Any,
         input: NormalizationInput,
-        legacy_call: Callable[[], Awaitable[LegacyDraft]],
-    ) -> LegacyDraft:
+    ) -> ObservationDraft:
         installation, authority, services, lifecycle = await self._base(source, install)
-        payload = LegacyBindingPayload(
-            install=install,
-            external_installation_id=str(_value(install, "installation_id", "")),
-        )
 
-        async def connector_call(capability: Any, operation: Any) -> LegacyDraft:
+        async def connector_call(capability: Any, operation: Any) -> ObservationDraft:
             drafts = await capability.normalize(input, operation)
             if len(drafts) != 1:
-                raise ValueError("legacy normalizer bridge requires one draft")
-            return _legacy_draft(drafts[0])
+                raise ValueError("normalizer workflow requires exactly one draft")
+            return _observation_draft(drafts[0])
 
         request = CapabilityExecutionRequest(
             installation=installation,
@@ -538,29 +475,18 @@ class LegacyExecutionRouter:
             services=services,
             capability=NORMALIZATION_V1,
             connector_call=connector_call,
-            legacy_call=legacy_call,
             deadline=self._deadline(),
             lifecycle=lifecycle,
-            shadow_projection=lambda value: {
-                ShadowDimension.IDENTITY: value.external_id,
-                ShadowDimension.NORMALIZATION: value,
-            },
         )
-        with legacy_binding_scope(payload):
-            return await self._executor.execute(request)
+        return await self._executor.execute(request)
 
     async def webhook(
         self,
         source: str,
         install: Any,
         request_value: BoundedWebhookRequest,
-        legacy_call: LegacyWebhookCall,
     ) -> VerifiedWebhookResult:
         installation, authority, services, lifecycle = await self._base(source, install)
-        payload = LegacyBindingPayload(
-            install=install,
-            external_installation_id=str(_value(install, "installation_id", "")),
-        )
 
         async def connector_call(
             capability: Any, operation: Any
@@ -574,20 +500,242 @@ class LegacyExecutionRouter:
             services=services,
             capability=WEBHOOK_V1,
             connector_call=connector_call,
-            legacy_call=legacy_call,
             deadline=self._deadline(),
             lifecycle=lifecycle,
-            shadow_projection=lambda value: {
-                ShadowDimension.IDENTITY: tuple(
-                    event.external_installation_id for event in value.events
-                ),
-                ShadowDimension.PUBLICATION: tuple(
-                    event.record for event in value.events
-                ),
-            },
         )
-        with legacy_binding_scope(payload):
-            return await self._executor.execute(request)
+        return await self._executor.execute(request)
+
+    async def webhook_and_emit(
+        self,
+        source: str,
+        install: Any,
+        request_value: BoundedWebhookRequest,
+    ) -> VerifiedWebhookResult:
+        """Verify/decode then durably publish every contract event."""
+
+        installation, authority, services, lifecycle = await self._base(source, install)
+
+        async def connector_call(
+            capability: Any, operation: Any
+        ) -> VerifiedWebhookResult:
+            result = await capability.verify_and_decode(request_value, operation)
+            for event in result.events:
+                await operation.services.raw_emission.emit(
+                    event.record, ingress_kind="webhook"
+                )
+            return result
+
+        request = CapabilityExecutionRequest(
+            installation=installation,
+            source=source,
+            authority=authority,
+            services=services,
+            capability=WEBHOOK_V1,
+            connector_call=connector_call,
+            deadline=self._deadline(),
+            lifecycle=lifecycle,
+        )
+        return await self._executor.execute(request)
+
+    async def run_gateway(
+        self,
+        source: str,
+        install: Any,
+        stop_event: Any,
+        *,
+        batch_size: int = 100,
+    ) -> None:
+        """Own one installation's resumable gateway session until stopped.
+
+        Raw publication is acknowledged before the resume state advances. This
+        preserves the same durable publication/checkpoint ordering as backfill.
+        """
+
+        installation, authority, services, lifecycle = await self._base(source, install)
+
+        async def connector_call(capability: Any, operation: Any) -> None:
+            stored = await operation.services.installation_store.read("gateway.resume")
+            generation = stored.generation if stored is not None else 0
+            resume = None
+            if stored is not None and stored.values.get("payload") is not None:
+                resume = CursorState(
+                    schema_version=int(stored.values.get("schema_version", 1)),
+                    payload=_object(stored.values.get("payload")),
+                )
+            session = await capability.open(
+                GatewayOpenRequest(resume_state=resume), operation
+            )
+            try:
+                while not stop_event.is_set():
+                    batch = await capability.receive(
+                        GatewayReceiveRequest(
+                            session=session,
+                            max_records=batch_size,
+                        ),
+                        operation,
+                    )
+                    for record in batch.records:
+                        await operation.services.raw_emission.emit(
+                            record, ingress_kind="gateway"
+                        )
+                    if batch.resume_state is not None:
+                        generation = await operation.services.installation_store.compare_and_set(
+                            InstallationDataPatch(
+                                namespace="gateway.resume",
+                                expected_generation=generation,
+                                values={
+                                    "schema_version": batch.resume_state.schema_version,
+                                    "payload": dict(batch.resume_state.payload),
+                                },
+                            )
+                        )
+                        session = session.model_copy(
+                            update={"resume_state": batch.resume_state}
+                        )
+                    await operation.services.lease.heartbeat(
+                        {
+                            "source": source,
+                            "records": len(batch.records),
+                            "resume_generation": generation,
+                        }
+                    )
+                    if batch.session_closed:
+                        await capability.close(session, operation)
+                        session = await capability.open(
+                            GatewayOpenRequest(resume_state=session.resume_state),
+                            operation,
+                        )
+            finally:
+                await capability.close(session, operation)
+
+        request = CapabilityExecutionRequest(
+            installation=installation,
+            source=source,
+            authority=authority,
+            services=services,
+            capability=GATEWAY_STREAM_V1,
+            connector_call=connector_call,
+            deadline=datetime.now(timezone.utc) + timedelta(days=365),
+            lifecycle=lifecycle,
+        )
+        await self._executor.execute(request)
+
+    async def ensure_subscription(
+        self,
+        source: str,
+        install: Any,
+        *,
+        event_types: tuple[str, ...] = (),
+    ) -> SubscriptionState:
+        installation, authority, services, lifecycle = await self._base(source, install)
+
+        async def connector_call(capability: Any, operation: Any) -> SubscriptionState:
+            callback_url = "https://localhost.invalid/unused"
+            endpoint_id = f"{source}:{installation.id}"
+            verification_token = None
+            if source != "gmail":
+                allocation = await operation.services.subscription_callbacks.allocate(
+                    f"{source}.watch"
+                )
+                callback_url = allocation.callback_url
+                endpoint_id = allocation.endpoint_id
+                verification_token = allocation.verification_nonce.reveal_text()
+            subscription = await capability.ensure(
+                SubscriptionRequest(
+                    callback_url=callback_url,
+                    endpoint_id=endpoint_id,
+                    event_types=event_types,
+                    verification_token=verification_token,
+                ),
+                operation,
+            )
+            stored = await operation.services.installation_store.read(
+                "subscription.state"
+            )
+            await operation.services.installation_store.compare_and_set(
+                InstallationDataPatch(
+                    namespace="subscription.state",
+                    expected_generation=stored.generation if stored else 0,
+                    values=subscription.model_dump(mode="json"),
+                )
+            )
+            return subscription
+
+        request = CapabilityExecutionRequest(
+            installation=installation,
+            source=source,
+            authority=authority,
+            services=services,
+            capability=PUSH_SUBSCRIPTION_V1,
+            connector_call=connector_call,
+            deadline=self._deadline(),
+            lifecycle=lifecycle,
+        )
+        return await self._executor.execute(request)
+
+    async def poll_and_emit(
+        self,
+        source: str,
+        install: Any,
+        *,
+        page_size: int = 100,
+    ) -> tuple[int, bool]:
+        """Poll one page, durably emit it, then atomically advance state."""
+
+        installation, authority, services, lifecycle = await self._base(source, install)
+
+        async def connector_call(capability: Any, operation: Any) -> tuple[int, bool]:
+            stored = await operation.services.installation_store.read("poll.cursor")
+            generation = stored.generation if stored is not None else 0
+            cursor = None
+            if stored is not None:
+                cursor = CursorState(
+                    schema_version=int(stored.values.get("schema_version", 1)),
+                    payload=_object(stored.values.get("payload")),
+                )
+            elif source == "gmail":
+                subscription = await operation.services.installation_store.read(
+                    "subscription.state"
+                )
+                state = _object(subscription.values.get("state")) if subscription else {}
+                payload = _object(state.get("payload"))
+                if payload:
+                    cursor = CursorState(
+                        schema_version=int(state.get("schema_version", 1)),
+                        payload=payload,
+                    )
+            page = await capability.poll(
+                PollRequest(cursor=cursor, page_size_hint=page_size), operation
+            )
+            for record in page.records:
+                await operation.services.raw_emission.emit(
+                    record, ingress_kind="poll"
+                )
+            proposed = page.next_cursor or page.checkpoint
+            if proposed is not None:
+                await operation.services.installation_store.compare_and_set(
+                    InstallationDataPatch(
+                        namespace="poll.cursor",
+                        expected_generation=generation,
+                        values={
+                            "schema_version": proposed.schema_version,
+                            "payload": dict(proposed.payload),
+                        },
+                    )
+                )
+            return len(page.records), not page.end_of_data
+
+        request = CapabilityExecutionRequest(
+            installation=installation,
+            source=source,
+            authority=authority,
+            services=services,
+            capability=INCREMENTAL_POLL_V1,
+            connector_call=connector_call,
+            deadline=self._deadline(),
+            lifecycle=lifecycle,
+        )
+        return await self._executor.execute(request)
 
 
-__all__ = ["LegacyExecutionRouter", "LegacyWebhookCall"]
+__all__ = ["ConnectorExecutionRouter"]

@@ -159,6 +159,9 @@ class ConnectorSpec(ManifestModel):
     ingress_kinds: tuple[
         Literal["webhook", "gateway", "pubsub", "backfill", "poll"], ...
     ] = Field(default=(), alias="ingressKinds")
+    installation_data_namespaces: tuple[str, ...] = Field(
+        default=(), alias="installationDataNamespaces"
+    )
     permissions: PermissionRequest = Field(default_factory=PermissionRequest)
     trust: TrustDeclaration
     runtime: RuntimeProfile = Field(default_factory=RuntimeProfile)
@@ -178,6 +181,24 @@ class ConnectorSpec(ManifestModel):
             raise ValueError("ingress kinds must be unique")
         if len(self.artifact_modules) != len(set(self.artifact_modules)):
             raise ValueError("artifact modules must be unique")
+        if len(self.installation_data_namespaces) != len(
+            set(self.installation_data_namespaces)
+        ):
+            raise ValueError("installation data namespaces must be unique")
+        for namespace in self.installation_data_namespaces:
+            if (
+                not namespace
+                or len(namespace) > 80
+                or any(
+                    not (character.islower() or character.isdigit() or character in "._-")
+                    for character in namespace
+                )
+                or namespace.startswith(".")
+                or namespace.endswith(".")
+            ):
+                raise ValueError(
+                    f"installation data namespace is invalid: {namespace!r}"
+                )
         for module in self.artifact_modules:
             if not module or any(not part.isidentifier() for part in module.split(".")):
                 raise ValueError(f"artifact module is invalid: {module!r}")

@@ -6,7 +6,8 @@ health determines current operational availability.
 
 Every declaration has two independent signals. `available: false` reserves a
 known capability without registering a factory. `configuredBy` names the
-secret slots that must be present in the durable authority grant before the
+current credential-backed secret slots that must be present in the durable
+authority grant before the
 facet is constructed for an installation. Required capabilities cannot be
 unavailable, and configured slots must be a subset of manifest permissions.
 Discovery registers only available facets; binding exposes only configured

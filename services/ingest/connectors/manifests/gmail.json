@@ -10,10 +10,11 @@
   },
   "spec": {
     "contract": ">=1.0,<2.0",
-    "implementation": "services.ingest.connectors.fleet:build_gmail_connector",
+    "implementation": "services.ingest.connectors.google_sources:build_gmail_connector",
     "artifactModules": [
-      "services.ingest.connectors.native",
-      "services.ingest.connectors.profiles"
+      "services.ingest.connectors.fleet",
+      "services.ingest.connectors.google_sources",
+      "services.ingest.connectors.provider_spec"
     ],
     "maturity": "stable",
     "capabilities": [
@@ -62,6 +63,14 @@
         ]
       },
       {
+        "id": "ingestion.push_subscription",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "oauth_access_token"
+        ]
+      },
+      {
         "id": "semantic.identity",
         "version": 1,
         "required": true
@@ -74,7 +83,11 @@
     ],
     "ingressKinds": [
       "backfill",
-      "poll"
+      "poll",
+      "pubsub"
+    ],
+    "installationDataNamespaces": [
+      "google_watch"
     ],
     "permissions": {
       "secretSlots": [

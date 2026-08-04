@@ -7,10 +7,7 @@ import pytest
 from services.ingest.connector_platform.lifecycle_controller import (
     ContinuousInstallationController,
 )
-from services.ingest.connector_platform.pilots import (
-    NOTION_CONNECTOR_ID,
-    build_pilot_composition,
-)
+from services.ingest.connector_platform.catalog import build_connector_runtime
 from services.ingest.connector_runtime.authority import InstallationAuthority
 from services.ingest.connector_runtime.host_services import HostServicesFactory
 from services.ingest.connector_runtime.lifecycle import (
@@ -19,6 +16,9 @@ from services.ingest.connector_runtime.lifecycle import (
     InstallationPhase,
 )
 from services.ingest.source_contract.host_services import SecretValue
+
+
+NOTION_CONNECTOR_ID = "fyralis/notion"
 
 
 class _Authorities:
@@ -70,7 +70,9 @@ def _authority(lifecycle):
         connector_id=lifecycle.connector_id,
         generation=1,
         credential_owner="oauth_callback",
-        secret_slots=frozenset({"oauth_access_token"}),
+        secret_slots=frozenset(
+            {"oauth_access_token", "webhook_verification_token"}
+        ),
         outbound_hosts=frozenset({"api.notion.com"}),
         maximum_trust_tier="attested_agent",
         granted_at=datetime.now(timezone.utc),
@@ -88,7 +90,7 @@ async def test_continuous_controller_observes_health_and_marks_ready() -> None:
 
     async with httpx.AsyncClient() as client:
         controller = ContinuousInstallationController(
-            build_pilot_composition().registry,
+            build_connector_runtime().registry,
             authorities,
             repository,
             HostServicesFactory(http_client=client, secret_reader=read_secret),
@@ -105,7 +107,7 @@ async def test_continuous_controller_reconciles_cleanup_and_revokes_authority() 
     repository = _LifecycleRepository(lifecycle)
     async with httpx.AsyncClient() as client:
         controller = ContinuousInstallationController(
-            build_pilot_composition().registry,
+            build_connector_runtime().registry,
             authorities,
             repository,
             HostServicesFactory(http_client=client),
@@ -124,7 +126,7 @@ async def test_continuous_controller_rejects_quarantined_artifact() -> None:
     repository = _LifecycleRepository(lifecycle)
     async with httpx.AsyncClient() as client:
         controller = ContinuousInstallationController(
-            build_pilot_composition().registry,
+            build_connector_runtime().registry,
             authorities,
             repository,
             HostServicesFactory(http_client=client),

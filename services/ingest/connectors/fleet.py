@@ -1,10 +1,9 @@
-"""Native, profile-driven capability implementations for the connector fleet.
+"""Reusable HTTP capability kit for first-party source connectors.
 
 This module intentionally depends only on connector-local data and the public
 source contract.  It does not call the legacy planner/fetcher/reconciler or
-normalizer registries.  Provider differences are expressed by immutable wire
-profiles, while durability, networking, secrets, cancellation, and leases stay
-host-owned.
+normalizer registries. Provider modules supply their own immutable wire
+definitions; this module is not a source registry or dispatch table.
 """
 
 from __future__ import annotations
@@ -25,10 +24,7 @@ from services.ingest.connectors.native import (
     NativeIdentity,
     NativeSourceConnector,
 )
-from services.ingest.connectors.profiles import (
-    SourceProfile,
-    require_profile,
-)
+from services.ingest.connectors.provider_spec import SourceProfile
 from services.ingest.source_contract.capabilities import (
     CLEANUP_V1,
     CONFIGURATION_V1,
@@ -219,9 +215,9 @@ class FleetIngestion:
         page_size: int,
     ) -> dict[str, Any] | list[Any]:
         context.services.cancellation.raise_if_cancelled()
-        query = [("limit", str(page_size))]
+        query = [(self._profile.limit_parameter, str(page_size))]
         if cursor:
-            query.append(("cursor", cursor))
+            query.append((self._profile.cursor_parameter, cursor))
         response = await context.services.http.send(
             GovernedHttpRequest(
                 method="GET",
@@ -273,19 +269,10 @@ class FleetIngestion:
                         return [item for item in nested if isinstance(item, dict)]
         return [payload] if payload else []
 
-    @staticmethod
-    def _next(payload: dict[str, Any] | list[Any]) -> str | None:
+    def _next(self, payload: dict[str, Any] | list[Any]) -> str | None:
         if not isinstance(payload, dict):
             return None
-        for field in (
-            "next_cursor",
-            "nextCursor",
-            "next_page_token",
-            "nextPageToken",
-            "continuation_token",
-            "paging.next",
-            "page.next",
-        ):
+        for field in self._profile.next_cursor_fields:
             value = _nested(payload, field)
             if isinstance(value, (str, int)) and str(value):
                 return str(value)
@@ -577,9 +564,17 @@ class FleetNormalization:
         )
 
 
-def build_fleet_connector(source: str) -> NativeSourceConnector:
-    profile = require_profile(source)
-    from services.ingest.connectors.native import _manifest
+def build_http_connector(
+    profile: SourceProfile,
+    *,
+    oauth_spec: Any | None = None,
+) -> NativeSourceConnector:
+    from services.ingest.connectors.native import OAuthCleanup, _manifest
+    from services.ingest.connectors.standard_oauth import StandardOAuthCapability
+    from services.ingest.source_contract.capabilities import (
+        OAUTH2_LIFECYCLE_V1,
+        OAUTH2_V1,
+    )
 
     factories: dict[Any, Callable[[BindingContext], object]] = {
         CONFIGURATION_V1.ref: lambda _context: FleetConfiguration(profile),
@@ -610,41 +605,17 @@ def build_fleet_connector(source: str) -> NativeSourceConnector:
         factories[GATEWAY_STREAM_V1.ref] = lambda context: FleetGateway(
             context, profile
         )
-    return NativeSourceConnector(_manifest(source), factories)
-
-
-def _factory(source: str) -> Callable[[], NativeSourceConnector]:
-    def build() -> NativeSourceConnector:
-        return build_fleet_connector(source)
-
-    build.__name__ = f"build_{source}_connector"
-    build.__qualname__ = build.__name__
-    return build
-
-
-build_ashby_connector = _factory("ashby")
-build_aws_connector = _factory("aws")
-build_brex_connector = _factory("brex")
-build_carta_connector = _factory("carta")
-build_deel_connector = _factory("deel")
-build_discord_connector = _factory("discord")
-build_figma_connector = _factory("figma")
-build_fireflies_connector = _factory("fireflies")
-build_github_connector = _factory("github")
-build_gmail_connector = _factory("gmail")
-build_google_calendar_connector = _factory("google_calendar")
-build_google_drive_connector = _factory("google_drive")
-build_grafana_connector = _factory("grafana")
-build_gusto_connector = _factory("gusto")
-build_hibob_connector = _factory("hibob")
-build_jira_connector = _factory("jira")
-build_linkedin_connector = _factory("linkedin")
-build_mercury_connector = _factory("mercury")
-build_miro_connector = _factory("miro")
-build_quickbooks_connector = _factory("quickbooks")
-build_ramp_connector = _factory("ramp")
-build_signal_connector = _factory("signal")
-build_telegram_connector = _factory("telegram")
+    if oauth_spec is not None:
+        factories[OAUTH2_V1.ref] = lambda context: StandardOAuthCapability(
+            context, oauth_spec
+        )
+        factories[OAUTH2_LIFECYCLE_V1.ref] = (
+            lambda context: StandardOAuthCapability(context, oauth_spec)
+        )
+        factories[CLEANUP_V1.ref] = lambda context: OAuthCleanup(
+            StandardOAuthCapability(context, oauth_spec)
+        )
+    return NativeSourceConnector(_manifest(profile.source), factories)
 
 
 __all__ = [
@@ -654,28 +625,5 @@ __all__ = [
     "FleetNormalization",
     "FleetSecretRotation",
     "FleetWebhook",
-    "build_ashby_connector",
-    "build_aws_connector",
-    "build_brex_connector",
-    "build_carta_connector",
-    "build_deel_connector",
-    "build_discord_connector",
-    "build_figma_connector",
-    "build_fireflies_connector",
-    "build_fleet_connector",
-    "build_github_connector",
-    "build_gmail_connector",
-    "build_google_calendar_connector",
-    "build_google_drive_connector",
-    "build_grafana_connector",
-    "build_gusto_connector",
-    "build_hibob_connector",
-    "build_jira_connector",
-    "build_linkedin_connector",
-    "build_mercury_connector",
-    "build_miro_connector",
-    "build_quickbooks_connector",
-    "build_ramp_connector",
-    "build_signal_connector",
-    "build_telegram_connector",
+    "build_http_connector",
 ]

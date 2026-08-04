@@ -39,6 +39,7 @@ class SubscriptionRequest(ContractModel):
     callback_url: str
     endpoint_id: str
     event_types: tuple[str, ...]
+    verification_token: str | None = None
 
 
 class SubscriptionState(ContractModel):

@@ -62,8 +62,13 @@ class RegisteredConnector:
             binding=raw_binding,
         )
 
+        configured_refs = set(
+            self.manifest.configured_capability_refs(context.authority.secret_slots)
+        )
         capabilities: dict[CapabilityRef, object] = {}
         for key in self.capability_keys:
+            if key.ref not in configured_refs:
+                continue
             try:
                 implementation = raw_binding.capability(key)
             except CapabilityMismatchError as exc:
@@ -86,7 +91,7 @@ class RegisteredConnector:
                 ) from exc
             if implementation is None:
                 raise BindingError(
-                    f"connector {self.connector_id} declared but did not bind "
+                    f"connector {self.connector_id} configured but did not bind "
                     f"{key.ref.id}/v{key.ref.version}",
                     details={
                         "connector_id": self.connector_id,

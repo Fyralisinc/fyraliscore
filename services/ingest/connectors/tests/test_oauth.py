@@ -5,11 +5,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from services.ingest.connector_platform.pilots import (
-    NOTION_CONNECTOR_ID,
-    SLACK_CONNECTOR_ID,
-    build_pilot_composition,
-)
+from services.ingest.connector_platform.catalog import build_connector_runtime
 from services.ingest.connector_runtime.host_services import HostServicesFactory
 from services.ingest.source_contract.capabilities import (
     OAUTH2_LIFECYCLE_V1,
@@ -27,6 +23,10 @@ from services.ingest.source_contract.connector import (
 )
 from services.ingest.source_contract.host_services import SecretValue
 from services.ingest.source_contract.models import InstallationRef
+
+
+NOTION_CONNECTOR_ID = "fyralis/notion"
+SLACK_CONNECTOR_ID = "fyralis/slack"
 
 
 def _authority(connector_id: str) -> GrantedAuthority:
@@ -57,7 +57,9 @@ def _authority(connector_id: str) -> GrantedAuthority:
             maximum_trust_tier="attested_agent",
         )
     return GrantedAuthority(
-        secret_slots=frozenset({"oauth_access_token"}),
+        secret_slots=frozenset(
+            {"oauth_access_token", "webhook_verification_token"}
+        ),
         outbound_hosts=frozenset({"api.notion.com"}),
         maximum_trust_tier="attested_agent",
     )
@@ -122,7 +124,7 @@ async def test_slack_oauth_is_registry_resolved_and_returns_secret_candidates(
             _authority(SLACK_CONNECTOR_ID),
             connector_id=SLACK_CONNECTOR_ID,
         )
-        binding = build_pilot_composition().registry.resolve_for_install(
+        binding = build_connector_runtime().registry.resolve_for_install(
             _context(SLACK_CONNECTOR_ID, services)
         )
         oauth = binding.require(OAUTH2_V1)
@@ -182,7 +184,7 @@ async def test_notion_oauth_uses_governed_http_and_long_lived_token(
             _authority(NOTION_CONNECTOR_ID),
             connector_id=NOTION_CONNECTOR_ID,
         )
-        binding = build_pilot_composition().registry.resolve_for_install(
+        binding = build_connector_runtime().registry.resolve_for_install(
             _context(NOTION_CONNECTOR_ID, services)
         )
         result, candidates = await binding.require(OAUTH2_V1).complete(

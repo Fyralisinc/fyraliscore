@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import hmac
 import math
 import os
 from datetime import datetime, timezone
@@ -20,6 +22,7 @@ from services.ingest.source_contract.errors import (
 from services.ingest.source_contract.host_services import GovernedHttpRequest
 from services.ingest.source_contract.identity import SlotId
 from services.ingest.source_contract.models import (
+    BoundedWebhookRequest,
     CursorState,
     FetchRequest,
     FetchedPage,
@@ -34,6 +37,8 @@ from services.ingest.source_contract.models import (
     RepairShard,
     ShardPlan,
     SourceRecord,
+    VerifiedWebhookEvent,
+    VerifiedWebhookResult,
 )
 
 
@@ -617,4 +622,67 @@ class NotionIngestion:
         return value if isinstance(value, str) else None
 
 
-__all__ = ["NotionIngestion", "NotionNormalization", "notion_external_id"]
+class NotionWebhook:
+    """Verify a thin Notion event and fetch its canonical page record."""
+
+    def __init__(self, binding: BindingContext) -> None:
+        self._binding = binding
+        self._ingestion = NotionIngestion(binding)
+
+    async def verify_and_decode(
+        self,
+        request: BoundedWebhookRequest,
+        context: OperationContext,
+    ) -> VerifiedWebhookResult:
+        secret = await self._binding.services.secrets.resolve(
+            SlotId("webhook_verification_token")
+        )
+        headers = {key.lower(): value for key, value in request.headers.items()}
+        supplied = headers.get("x-notion-signature", "")
+        expected = hmac.new(
+            secret.reveal_bytes(), request.body, hashlib.sha256
+        ).hexdigest()
+        if not (
+            hmac.compare_digest(supplied, expected)
+            or hmac.compare_digest(supplied, f"sha256={expected}")
+        ):
+            raise AuthenticationRejectedError("Notion webhook signature is invalid")
+        try:
+            payload = json.loads(request.body)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PayloadRejectedError("Notion webhook body is not valid JSON") from exc
+        if not isinstance(payload, dict):
+            raise PayloadRejectedError("Notion webhook body must be an object")
+        entity = payload.get("entity")
+        entity_id = entity.get("id") if isinstance(entity, dict) else None
+        entity_type = entity.get("type") if isinstance(entity, dict) else None
+        workspace = payload.get("workspace_id")
+        if entity_type != "page" or not isinstance(entity_id, str):
+            return VerifiedWebhookResult(events=(), response_status_hint=202)
+        page = await self._ingestion._call(
+            context,
+            "GET",
+            f"pages/{quote(entity_id, safe='')}",
+        )
+        page["_fyralis_workspace_id"] = workspace
+        external = (
+            str(workspace)
+            if workspace not in (None, "")
+            else await self._ingestion._external_installation_id()
+        )
+        return VerifiedWebhookResult(
+            events=(
+                VerifiedWebhookEvent(
+                    external_installation_id=external,
+                    native_event_type=str(payload.get("type") or "page.updated"),
+                    record=SourceRecord(native_type="page", payload=page),
+                    verification_evidence={"scheme": "notion-hmac-sha256"},
+                ),
+            ),
+        )
+__all__ = [
+    "NotionIngestion",
+    "NotionNormalization",
+    "NotionWebhook",
+    "notion_external_id",
+]

@@ -9,6 +9,12 @@ from datetime import datetime, timezone
 from typing import Any
 
 from services.ingest.source_contract.connector import BindingContext, OperationContext
+from services.ingest.source_contract.capabilities.installation import (
+    ConfigurationIssue,
+    ConfigurationValidation,
+    SecretRotationRequest,
+    SecretRotationVerification,
+)
 from services.ingest.source_contract.errors import (
     AuthenticationRejectedError,
     PayloadRejectedError,
@@ -23,6 +29,48 @@ from services.ingest.source_contract.models import (
     VerifiedWebhookEvent,
     VerifiedWebhookResult,
 )
+
+
+class WhatsAppConfiguration:
+    async def validate_configuration(
+        self,
+        configuration: dict[str, Any],
+        context: OperationContext,
+    ) -> ConfigurationValidation:
+        del context
+        external_id = configuration.get("external_installation_id")
+        if isinstance(external_id, str) and external_id.strip():
+            return ConfigurationValidation(valid=True)
+        return ConfigurationValidation(
+            valid=False,
+            issues=(
+                ConfigurationIssue(
+                    field="external_installation_id",
+                    code="required",
+                    message="the WhatsApp phone number id is required",
+                ),
+            ),
+        )
+
+
+class WhatsAppSecretRotation:
+    async def verify_candidate(
+        self,
+        request: SecretRotationRequest,
+        context: OperationContext,
+    ) -> SecretRotationVerification:
+        del context
+        if str(request.slot) != "app_secret":
+            return SecretRotationVerification(
+                valid=False,
+                reason_code="slot_not_declared",
+                message="the candidate targets an undeclared WhatsApp slot",
+            )
+        return SecretRotationVerification(
+            valid=True,
+            reason_code="candidate_handle_accepted",
+            message="the host may atomically promote the app secret handle",
+        )
 
 
 def _payload(record: SourceRecord) -> dict[str, Any]:
@@ -283,7 +331,9 @@ class WhatsAppWebhook:
 
 
 __all__ = [
+    "WhatsAppConfiguration",
     "WhatsAppNormalization",
+    "WhatsAppSecretRotation",
     "WhatsAppWebhook",
     "whatsapp_external_id",
 ]

@@ -19,7 +19,6 @@ from services.ingest.connector_runtime.execution import (
     ConnectorCapabilityExecutor,
 )
 from services.ingest.connector_runtime.host_services import HostServicesFactory
-from services.ingest.connector_runtime.legacy import LegacyConnectorAdapter
 from services.ingest.connector_runtime.policy import (
     AtomicRoutingPolicy,
     ExecutionMode,
@@ -55,7 +54,6 @@ __all__ = [
     "HostCompatibility",
     "HostServicesFactory",
     "InstallationAuthority",
-    "LegacyConnectorAdapter",
     "RegisteredConnector",
     "RegistryBuildResult",
     "RegistryDiagnostic",

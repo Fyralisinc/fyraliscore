@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 from uuid import UUID
 
 import httpx
+from websockets.asyncio.client import connect as websocket_connect
 
 from services.ingest.source_contract.connector import GrantedAuthority
 from services.ingest.source_contract.errors import (
@@ -22,6 +24,7 @@ from services.ingest.source_contract.host_services import (
     CallbackAllocation,
     GovernedHttpRequest,
     GovernedHttpResponse,
+    GovernedGatewayRequest,
     HostServices,
     InstallationData,
     InstallationDataPatch,
@@ -45,7 +48,9 @@ InstallationDataReader = Callable[
 InstallationDataWriter = Callable[
     [UUID, InstallationDataPatch], Awaitable[int]
 ]
-RawRecordPublisher = Callable[[UUID, SourceRecord], Awaitable[PublicationReceipt]]
+RawRecordPublisher = Callable[
+    [UUID, SourceRecord, str], Awaitable[PublicationReceipt]
+]
 CallbackProvider = Callable[[UUID, str], Awaitable[CallbackAllocation]]
 MetricIncrement = Callable[[str, int, tuple[tuple[str, str], ...]], None]
 MetricObserve = Callable[[str, float, tuple[tuple[str, str], ...]], None]
@@ -88,7 +93,7 @@ async def _deny_installation_write(
 
 
 async def _deny_raw_emit(
-    _installation: UUID, _record: SourceRecord
+    _installation: UUID, _record: SourceRecord, _ingress_kind: str
 ) -> PublicationReceipt:
     raise PermissionDeniedError("raw emission backend is not configured")
 
@@ -156,7 +161,8 @@ class GovernedHttp:
     async def send(self, request: GovernedHttpRequest) -> GovernedHttpResponse:
         parsed = urlsplit(request.url)
         host = (parsed.hostname or "").lower()
-        if parsed.scheme != "https" or host not in self._allowed_hosts:
+        granted = any(fnmatch.fnmatchcase(host, pattern) for pattern in self._allowed_hosts)
+        if parsed.scheme != "https" or not granted:
             raise PermissionDeniedError(
                 "outbound HTTP destination is outside the binding grant",
                 details={"scheme": parsed.scheme, "host": host},
@@ -167,9 +173,17 @@ class GovernedHttp:
             request.timeout_seconds or self._maximum_timeout_seconds,
             self._maximum_timeout_seconds,
         )
+        url = request.url
+        if request.url_secret is not None:
+            if request.url_secret_placeholder not in url:
+                raise PermissionDeniedError("governed URL secret placeholder is absent")
+            url = url.replace(
+                request.url_secret_placeholder,
+                quote(request.url_secret.reveal_text(), safe=""),
+            )
         response = await self._client.request(
             request.method.upper(),
-            request.url,
+            url,
             headers=request.headers,
             params=request.query,
             content=request.body,
@@ -198,6 +212,58 @@ class ReadOnlyStateView:
         return await self._reader(self._installation_id, kind)
 
 
+class GovernedGateway:
+    """Bounded WebSocket sessions constrained to the connector host grant."""
+
+    def __init__(self, allowed_hosts: frozenset[str]) -> None:
+        self._allowed_hosts = allowed_hosts
+        self._connections: dict[str, Any] = {}
+
+    async def connect(self, request: GovernedGatewayRequest) -> str:
+        parsed = urlsplit(request.url)
+        host = (parsed.hostname or "").lower()
+        granted = any(fnmatch.fnmatchcase(host, pattern) for pattern in self._allowed_hosts)
+        if parsed.scheme != "wss" or not granted:
+            raise PermissionDeniedError(
+                "gateway destination is outside the binding grant",
+                details={"scheme": parsed.scheme, "host": host},
+            )
+        connection = await websocket_connect(
+            request.url,
+            additional_headers=request.headers,
+            max_size=request.maximum_message_bytes,
+            open_timeout=15,
+        )
+        connection_id = str(id(connection))
+        self._connections[connection_id] = connection
+        return connection_id
+
+    def _require(self, connection_id: str) -> Any:
+        try:
+            return self._connections[connection_id]
+        except KeyError as exc:
+            raise PermissionDeniedError("gateway connection is unavailable") from exc
+
+    async def send_json(self, connection_id: str, payload: dict[str, Any]) -> None:
+        import json
+
+        await self._require(connection_id).send(json.dumps(payload))
+
+    async def receive_json(self, connection_id: str) -> dict[str, Any]:
+        import json
+
+        raw = await self._require(connection_id).recv()
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise PermissionDeniedError("gateway frame is not a JSON object")
+        return value
+
+    async def close(self, connection_id: str, *, code: int = 1000) -> None:
+        connection = self._connections.pop(connection_id, None)
+        if connection is not None:
+            await connection.close(code=code)
+
+
 class ScopedInstallationStore:
     def __init__(
         self,
@@ -223,8 +289,10 @@ class DurableRawEmitter:
         self._installation_id = installation_id
         self._publisher = publisher
 
-    async def emit(self, record: SourceRecord) -> PublicationReceipt:
-        return await self._publisher(self._installation_id, record)
+    async def emit(
+        self, record: SourceRecord, *, ingress_kind: str
+    ) -> PublicationReceipt:
+        return await self._publisher(self._installation_id, record, ingress_kind)
 
 
 class ScopedCallbackAllocator:
@@ -394,6 +462,7 @@ class HostServicesFactory:
                 self._secret_writer,
             ),
             http=GovernedHttp(authority.outbound_hosts, self._http_client),
+            gateway=GovernedGateway(authority.outbound_hosts),
             state=ReadOnlyStateView(installation_id, self._state_reader),
             installation_store=ScopedInstallationStore(
                 installation_id,

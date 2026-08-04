@@ -12,6 +12,7 @@ from services.ingest.source_contract.connector import (
 )
 from services.ingest.source_contract.host_services import (
     CallbackAllocation,
+    GovernedGatewayRequest,
     GovernedHttpRequest,
     GovernedHttpResponse,
     HostServices,
@@ -64,6 +65,33 @@ class FakeHttp:
         return self.responses.pop(0)
 
 
+class FakeGateway:
+    def __init__(self) -> None:
+        self.connections: dict[str, list[dict[str, Any]]] = {}
+        self.sent: list[tuple[str, dict[str, Any]]] = []
+        self.planned_connections: list[list[dict[str, Any]]] = []
+
+    async def connect(self, request: GovernedGatewayRequest) -> str:
+        connection_id = f"fake-gateway-{len(self.connections) + 1}"
+        self.connections[connection_id] = (
+            list(self.planned_connections.pop(0))
+            if self.planned_connections
+            else []
+        )
+        return connection_id
+
+    async def send_json(self, connection_id: str, payload: dict[str, Any]) -> None:
+        self.sent.append((connection_id, dict(payload)))
+
+    async def receive_json(self, connection_id: str) -> dict[str, Any]:
+        if not self.connections[connection_id]:
+            raise AssertionError("unexpected gateway receive")
+        return self.connections[connection_id].pop(0)
+
+    async def close(self, connection_id: str, *, code: int = 1000) -> None:
+        self.connections.pop(connection_id, None)
+
+
 class FakeStateView:
     def __init__(self, values: dict[str, VersionedState] | None = None) -> None:
         self.values = dict(values or {})
@@ -99,9 +127,13 @@ class FakeInstallationStore:
 class FakeRawEmission:
     def __init__(self) -> None:
         self.records: list[SourceRecord] = []
+        self.ingress_kinds: list[str] = []
 
-    async def emit(self, record: SourceRecord) -> PublicationReceipt:
+    async def emit(
+        self, record: SourceRecord, *, ingress_kind: str
+    ) -> PublicationReceipt:
         self.records.append(record)
+        self.ingress_kinds.append(ingress_kind)
         index = len(self.records)
         return PublicationReceipt(
             receipt_id=uuid5(_FAKE_NAMESPACE, f"receipt:{index}"),
@@ -211,6 +243,7 @@ class FakeHostEnvironment:
     def __init__(self) -> None:
         self.secrets = FakeSecrets()
         self.http = FakeHttp()
+        self.gateway = FakeGateway()
         self.state = FakeStateView()
         self.installation_store = FakeInstallationStore()
         self.raw_emission = FakeRawEmission()
@@ -223,6 +256,7 @@ class FakeHostEnvironment:
         self.services = HostServices(
             secrets=self.secrets,
             http=self.http,
+            gateway=self.gateway,
             state=self.state,
             installation_store=self.installation_store,
             raw_emission=self.raw_emission,
@@ -272,6 +306,7 @@ __all__ = [
     "FakeCancellation",
     "FakeClock",
     "FakeHostEnvironment",
+    "FakeGateway",
     "FakeHttp",
     "FakeInstallationStore",
     "FakeLease",

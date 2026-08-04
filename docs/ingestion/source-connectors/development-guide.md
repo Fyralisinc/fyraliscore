@@ -1,158 +1,153 @@
 # Source connector development guide
 
-This guide describes how to add a first-class Fyralis source connector. The
-normative contract is the [Source Connector Contract](../../architecture/source-connector-contract.md);
-this document is the repository-level implementation path.
+This is the repository implementation path for adding a first-party source.
+The normative boundary is the
+[Source Connector Contract](../../architecture/source-connector-contract.md).
 
-## What a connector is
+## Connector shape
 
-A connector is an immutable `SourceConnector` definition with:
+A connector consists of:
 
-- a manifest identifying one canonical `fyralis/<source>` connector;
-- factories for the versioned capability facets it implements;
+- one canonical source entry and stable `fyralis/<source>` ID;
+- one side-effect-free stable-v1 manifest;
+- one explicit zero-argument factory returning a `SourceConnector` root;
+- only the capability facets the source supports;
 - installation-scoped binding through `BindingContext`;
-- access only to host services granted by its manifest and durable authority;
-- a conformance fingerprint independently approved before registry registration.
+- structural and behavioral release evidence.
 
-Connectors decode provider behavior. The host still owns tenant selection,
-durable raw publication, Kafka acknowledgement, checkpoints, retry policy,
-circuit breaking, DLQ routing, metrics, leases, and process lifecycle.
+Provider code owns authentication mechanics, API/resource semantics, cursor
+meaning, webhook verification, identity and normalization. Fyralis owns tenant
+selection, secrets at rest, governed egress, scheduling, leases, S3/Kafka
+durability, acknowledgement, checkpoint commits, telemetry and lifecycle.
 
-## Add a source
+## Add a source: Stripe example
 
-Using Stripe as an example:
+1. Add `stripe` to
+   `services/ingest/source_contract/source-index.json`. Do not create another
+   allowlist or dispatch registry.
+2. Add `services/ingest/connectors/manifests/stripe.json` with ID
+   `fyralis/stripe`, connector version, implementation factory, artifact
+   modules, exact capabilities, ingress kinds, secret slots, allowed hosts,
+   scopes, trust ceiling and runtime profile.
+3. Add an explicit factory, for example
+   `services.ingest.connectors.stripe:build_stripe_connector`. It may use shared
+   contract-native authoring utilities, but the factory remains source named and
+   deterministic.
+4. Implement installation facets. Stripe would normally expose OAuth2 and OAuth
+   lifecycle, configuration/secret rotation where manual credentials are
+   supported, health and cleanup.
+5. Implement ingestion facets that are actually supported: historical pull,
+   incremental poll, webhook, reconciliation, identity and normalization.
+   Unsupported behavior is absent, never a no-op stub.
+6. Declare `oauth_access_token`, `oauth_refresh_token`, and
+   `webhook_signing_secret` only if the implementation uses them. OAuth
+   completion returns `SecretCandidate` values; connector code never persists
+   or logs the token text.
+7. Route provider calls through `GovernedHttpPort`; declare `api.stripe.com` and
+   any OAuth/revocation host in the manifest. Do not instantiate an unrestricted
+   HTTP client.
+8. Verify Stripe webhook signatures over the bounded raw body inside the
+   webhook capability. The platform will allocate an installation-scoped
+   callback URL and durably emit verified records.
+9. Define stable native identity inputs and normalize to contract observation
+   drafts. Do not write domain tables from the connector.
+10. Add facet unit tests plus structural/behavioral conformance. Cover OAuth
+    state and scope handling, webhook tampering/replay, pagination, cursor
+    monotonicity, identity stability, normalization, failure classification,
+    cleanup and lifecycle binding.
+11. Generate the structural fingerprint, review the behavioral result, and add
+    the approved evidence to `release-evidence.json`.
+12. Add the connector to the appropriate generic process topology only when its
+    capabilities introduce a new execution archetype. A normal REST/OAuth,
+    webhook, poll, Google-style subscription, or gateway connector requires no
+    new source dispatch.
 
-1. Add `stripe` to the canonical
-   `services/ingest/source_contract/source-index.json`. Raw-envelope validation,
-   Kafka topics, raw S3 layout, and fleet validation consume this index; do not
-   add another source registry or edit the derived `CONNECTOR_CATALOG`.
-2. Add a JSON manifest under `services/ingest/connectors/manifests` with ID
-   `fyralis/stripe`, semantic connector version,
-   supported contract range, declared capabilities, secret slots, OAuth scopes,
-   outbound hosts, trust ceiling, and isolation profile.
-3. Add Stripe's provider behavior as a dedicated connector or an immutable
-   connector-local wire profile. Implement a root `SourceConnector`. Its
-   `bind()` method must return facets
-   created for the supplied installation and host services; it must not retain
-   process-global tenant or credential state.
-4. Implement only the capabilities Stripe needs. A likely initial set is OAuth,
-   OAuth lifecycle, historical pull, incremental poll, webhook, reconciliation,
-   identity, normalization, health, and cleanup.
-5. Put OAuth credentials into named secret slots. Return `SecretCandidate`
-   values from OAuth completion or refresh; never persist or log token values in
-   connector code.
-6. Emit `SourceRecord` values or verified webhook events. Do not write S3,
-   publish Kafka, advance checkpoints, or acknowledge provider cursors inside
-   the connector.
-7. Define stable external identity and normalization behavior. Preserve the
-   existing `RawEnvelope` and `NormalizedEnvelope` semantics.
-8. Add the declared ingress channel and handler wiring. The release gate checks
-   that every manifest ingress kind resolves; it does not permit an orphaned
-   webhook, poll, backfill, or gateway declaration.
-9. Run structural and behavioral conformance, review the result, and add its
-   independently approved fingerprint to `release-evidence.json`. Registration
-   fails if computed and approved evidence differ.
-10. Add signed artifact provenance and enable the artifact record only after its
-   measured implementation digest, manifest digest, conformance fingerprint,
-   builder, and signature are valid.
-11. For a migrated source, keep its legacy path available while running shadow,
-    canary, cohort, and full rollout. Remove it only after every ingress surface
-    has production evidence, a rollback drill has passed, and durable retirement
-    evidence names the rollback owner. A brand-new source has no legacy path and
-    therefore remains quarantined if native admission fails.
+## Manifest example
 
-## Manifest shape
-
-```yaml
-apiVersion: sources.fyralis.io/v1
-kind: SourceConnector
-metadata:
-  id: fyralis/stripe
-  source: stripe
-  displayName: Stripe
-  version: 1.0.0
-  owner: ingestion
-spec:
-  contract: ">=1.0,<2.0"
-  implementation: services.ingest.connectors.stripe:build_connector
-  maturity: stable
-  capabilities:
-    - id: installation.oauth2
-      version: 1
-      available: true
-    - id: ingestion.webhook
-      version: 1
-      configuredBy: [webhook_signing_secret]
-    - id: semantic.identity
-      version: 1
-    - id: semantic.normalization
-      version: 1
-    - id: health.probe
-      version: 1
-    - id: lifecycle.cleanup
-      version: 1
-  ingressKinds: [webhook]
-  permissions:
-    secretSlots: [oauth_access_token, webhook_signing_secret]
-    outboundHosts: [api.stripe.com, connect.stripe.com]
-    requestedScopes: []
-  trust:
-    maximumTier: attested_agent
-  runtime:
-    isolation: in_process_trusted
+```json
+{
+  "apiVersion": "sources.fyralis.io/v1",
+  "kind": "SourceConnector",
+  "metadata": {
+    "id": "fyralis/stripe",
+    "source": "stripe",
+    "displayName": "Stripe",
+    "version": "1.0.0",
+    "owner": "ingestion"
+  },
+  "spec": {
+    "contract": ">=1.0,<2.0",
+    "implementation": "services.ingest.connectors.stripe:build_stripe_connector",
+    "artifactModules": ["services.ingest.connectors.stripe"],
+    "maturity": "stable",
+    "capabilities": [
+      {"id": "installation.oauth2", "version": 1, "required": true},
+      {"id": "installation.oauth2_lifecycle", "version": 1, "required": true},
+      {"id": "ingestion.webhook", "version": 1, "required": true,
+       "configuredBy": ["webhook_signing_secret"]},
+      {"id": "semantic.identity", "version": 1, "required": true},
+      {"id": "semantic.normalization", "version": 1, "required": true},
+      {"id": "health.probe", "version": 1, "required": true,
+       "configuredBy": ["oauth_access_token", "webhook_signing_secret"]},
+      {"id": "lifecycle.cleanup", "version": 1, "required": true}
+    ],
+    "ingressKinds": ["webhook"],
+    "permissions": {
+      "secretSlots": [
+        "oauth_access_token",
+        "oauth_refresh_token",
+        "webhook_signing_secret"
+      ],
+      "outboundHosts": ["api.stripe.com", "connect.stripe.com"],
+      "requestedScopes": []
+    },
+    "trust": {"maximumTier": "authoritative"},
+    "runtime": {"isolation": "in_process_trusted", "resourceClass": "io_standard"}
+  }
+}
 ```
 
-The example is illustrative. Requested capabilities and authority must reflect
-the actual product behavior and provider authorization model.
+The exact capabilities, scopes and hosts must follow the provider contract; the
+example is a shape, not an authorization recommendation.
 
-## Implementation rules
+## Install behavior
 
-- Use capability DTOs from `services.ingest.source_contract`; do not introduce
-  provider SDK objects into the contract layer.
-- Treat cursors as opaque, versioned state. A successful page may propose a
-  cursor, but the host advances it only after durable publication.
-- Webhook verification must operate on the bounded raw request and must fail
-  before decoding untrusted events as authoritative.
-- Identity must be deterministic for the same native entity.
-- Normalize into observation drafts without mutating domain storage.
-- Use governed HTTP so host allowlists, deadlines, cancellation, and telemetry
-  remain enforceable.
-- Classify provider failures with the typed source-contract error taxonomy.
-- Cleanup, refresh, revocation, and state migration operations must be
-  idempotent under retry.
+Use the common endpoints only:
 
-## Required tests
+```text
+GET  /integrations/stripe/install
+GET  /integrations/stripe/callback
+POST /integrations/stripe/configure
+POST /webhooks/stripe/callback/{endpoint_id}
+```
 
-Add unit tests for each facet, behavioral conformance tests, an installation
-binding test, ingress parity tests, and a rollback test. Pagination tests must
-cover terminal pages and monotonic cursors. Webhook tests must cover valid,
-invalid, replayed, oversized, and multi-event requests. OAuth tests must cover
-state validation, insufficient scopes, refresh rotation, revocation, and secret
-redaction.
+The configuration payload accepts `external_installation_id`, `credentials`,
+`configuration`, and manifest-declared `installation_data`. The platform
+persists the common installation, authority, credential references, callback,
+and onboarding trigger transactionally.
 
-The minimum repository gate is:
+## Required verification
 
 ```bash
-.venv/bin/pytest -q \
+.venv/bin/python -m pytest -q \
   services/ingest/source_contract/tests \
   services/ingest/connector_conformance/tests \
   services/ingest/connector_runtime/tests \
-  services/ingest/connector_platform/tests
-```
+  services/ingest/connector_platform/tests \
+  services/ingest/connectors/tests
 
-Also run `.venv/bin/python scripts/check_source_connector_release_gate.py`; it
-verifies the complete inventory, factories, manifest-derived catalog and
-ingress wiring, independent evidence, measurable artifacts, native default,
-and fail-closed signed-admission policy.
+.venv/bin/python scripts/check_source_connector_release_gate.py
+.venv/bin/python scripts/check_source_lifecycle_contract.py
+```
 
 ## Review checklist
 
-- One canonical source and connector ID exist.
-- The manifest requests least authority.
-- No raw credentials appear in state, logs, metrics, or errors.
-- All declared capabilities are implemented and all providers are declared.
-- `available` and `configuredBy` reflect implementation and installation truth.
-- Conformance evidence is reproducible.
+- Source index, manifest and factory identity agree.
+- The manifest requests least authority and only bare allowed DNS hosts.
+- Declared capabilities have implementations and correct `configuredBy` slots.
+- No credential value appears in state, logs, metrics or errors.
+- Provider I/O uses governed ports and typed failures.
 - Raw durability and checkpoint ordering stay host-owned.
-- Tenant isolation is covered by binding and persistence tests.
-- Shadow comparison and rollback are ready before connector routing is enabled.
+- Installation generation and authority fences are preserved.
+- Conformance evidence is independently reproducible.
+- Adding the connector did not add a source-keyed runtime dispatch map.

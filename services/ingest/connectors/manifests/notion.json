@@ -18,6 +18,16 @@
     "maturity": "stable",
     "capabilities": [
       {
+        "id": "installation.configure",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "installation.secret_rotation",
+        "version": 1,
+        "required": true
+      },
+      {
         "id": "installation.oauth2",
         "version": 1,
         "required": true
@@ -60,6 +70,15 @@
         ]
       },
       {
+        "id": "ingestion.webhook",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "oauth_access_token",
+          "webhook_verification_token"
+        ]
+      },
+      {
         "id": "ingestion.reconciliation",
         "version": 1,
         "required": true,
@@ -80,11 +99,13 @@
     ],
     "ingressKinds": [
       "backfill",
-      "poll"
+      "poll",
+      "webhook"
     ],
     "permissions": {
       "secretSlots": [
-        "oauth_access_token"
+        "oauth_access_token",
+        "webhook_verification_token"
       ],
       "outboundHosts": [
         "api.notion.com"

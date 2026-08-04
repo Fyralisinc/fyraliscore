@@ -1,4 +1,4 @@
-"""Connector runtime wiring shared by legacy workflow processes."""
+"""Contract-only connector runtime wiring shared by ingestion workflows."""
 
 from __future__ import annotations
 
@@ -18,11 +18,11 @@ from services.ingest.connector_platform.deployment import (
     ArtifactAdmissionController,
     ArtifactAdmissionSettings,
 )
-from services.ingest.connector_platform.execution import LegacyExecutionRouter
-from services.ingest.connector_platform.pilots import (
-    build_fleet_candidates,
-    build_fleet_composition,
-    default_migrated_routing_policy,
+from services.ingest.connector_platform.execution import ConnectorExecutionRouter
+from services.ingest.connector_platform.catalog import (
+    build_connector_runtime,
+    build_runtime_candidates,
+    default_routing_policy,
 )
 from services.ingest.connector_platform.production_host_services import (
     ProductionHostBackends,
@@ -42,13 +42,12 @@ from services.ingest.connector_platform.startup import ROUTING_CONFIG_ENV
 from services.ingest.connector_runtime.composition import ConnectorRuntimeComposition
 from services.ingest.connector_runtime.host_services import HostServicesFactory
 from services.ingest.connector_runtime.rollout import FleetRoutingController
-from services.ingest.connector_runtime.shadow import ShadowReportSink
 
 
 @dataclass(frozen=True)
 class WorkflowConnectorWiring:
     composition: ConnectorRuntimeComposition
-    router: LegacyExecutionRouter
+    router: ConnectorExecutionRouter
     http_client: httpx.AsyncClient
     rollout: FleetRoutingController | None = None
     artifact_admission: ArtifactAdmissionController | None = None
@@ -82,7 +81,6 @@ class WorkflowConnectorWiring:
 def build_workflow_connector_wiring(
     *,
     routing_config: str | None = None,
-    shadow_sink: ShadowReportSink | None = None,
     pool: object | None = None,
     secret_store: object | None = None,
     s3_raw_client: object | None = None,
@@ -94,9 +92,9 @@ def build_workflow_connector_wiring(
     policy = (
         parse_routing_policy(raw_config)
         if raw_config
-        else default_migrated_routing_policy()
+        else default_routing_policy()
     )
-    composition = build_fleet_composition(policy)
+    composition = build_connector_runtime(policy)
     admission_settings = ArtifactAdmissionSettings.from_env()
     if pool is None and admission_settings.require_signed:
         composition.routing.replace_quarantine(
@@ -104,7 +102,7 @@ def build_workflow_connector_wiring(
                 candidate.manifest.connector_id: (
                     "durable artifact admission is unavailable in this process"
                 )
-                for candidate in build_fleet_candidates()
+                for candidate in build_runtime_candidates()
                 if candidate.origin.startswith("first-party-native:")
             }
         )
@@ -134,10 +132,9 @@ def build_workflow_connector_wiring(
                 metric_observer=evidence_sink.observe,
             )
         )
-    router = LegacyExecutionRouter(
+    router = ConnectorExecutionRouter(
         composition,
         host_services,
-        shadow_sink=shadow_sink or evidence_sink,
         authority_repository=authority_repository,
         require_durable_authority=authority_repository is not None,
     )
@@ -154,7 +151,7 @@ def build_workflow_connector_wiring(
         artifact_admission = ArtifactAdmissionController(
             PostgresArtifactRepository(pool),
             composition.routing,
-            build_fleet_candidates(),
+            build_runtime_candidates(),
             admission_settings,
         )
     return WorkflowConnectorWiring(

@@ -1,131 +1,143 @@
 # Source connector runtime architecture
 
-## Final authority boundary
+## Authority boundary
 
-The Source Connector Runtime is the definition and normal execution authority
-for the 26 first-party ingestion source families. Every candidate is discovered
-from a checked-in stable-v1 manifest, resolves a connector-local factory, and
-must match independently checked-in structural and behavioral evidence before
-registration. The default fleet policy selects connector execution.
+The Source Connector Runtime is the sole definition and execution authority for
+all 26 first-party ingestion sources. A source must exist in the canonical source
+index, have one stable-v1 manifest, resolve one first-party factory, pass
+structural and behavioral conformance, and bind to a common installation before
+any source operation can run.
 
-Durable installation authority and signed measured-artifact admission remain
-higher-precedence gates. A missing, invalid, disabled, or quarantined artifact
-fails closed to the retained legacy emergency path. That path is rollback
-infrastructure, not a second catalog or registration authority, and may be
-deleted source by source only after durable retirement evidence is accepted.
+There is no source-local fallback. Artifact quarantine, missing authority,
+missing credentials, stale generations, or an unavailable capability fail
+closed with a typed connector error.
 
 ```mermaid
 flowchart LR
-    I[Ingress and workflow owners] --> RR[Registry and routing snapshot]
-    A[Artifact admission] --> RR
-    IA[Installation authority] --> B[Installation binding]
-    RR -->|native default| B
-    RR -->|quarantine or emergency revision| LG[Legacy rollback]
-    B --> C[Configured capability]
-    C --> HS[Least-authority host services]
-    HS --> S3[S3 raw authority]
+    I[Install or ingress owner] --> R[Manifest-derived registry]
+    A[Artifact admission] --> R
+    CP[Common installation control plane] --> B[Least-authority binding]
+    R --> B
+    B --> C[Typed connector capability]
+    C --> H[Host service ports]
+    H --> S3[S3 raw authority]
     S3 --> K[Kafka]
-    K --> CP[Checkpoint / acknowledgement]
-    LG --> S3
+    K --> ACK[Checkpoint after acknowledgement]
 ```
 
 ## Layers
 
 | Layer | Responsibility |
 | --- | --- |
-| `source_contract` | Stable-v1 manifests, DTOs, capability protocols, source index, identity, versions, state migrations, typed errors, host-service ports |
-| `connector_conformance` | Structural and deterministic behavioral evidence before admission |
-| `connector_runtime` | Immutable registry, binding, execution, policy, lifecycle, rollout, artifact admission, resilience contract, diagnostics |
-| `connectors` | Connector-local provider behavior and immutable first-party wire profiles |
-| `connector_platform` | Fyralis persistence, fleet composition, production host services, lifecycle/routing controllers, OAuth and ingress wiring |
-| Ingress/workflow hosts | Request bounds, tenancy, S3/Kafka durability, checkpoints, retries, breakers, DLQ, process ownership |
+| `source_contract` | Manifest/DTO schemas, capability protocols, source index, versions, typed errors, host ports |
+| `connector_conformance` | Reusable structural and behavioral verification |
+| `connector_runtime` | Immutable registry, admission, binding, policy, execution, lifecycle and telemetry |
+| `connectors` | Provider authentication, API/wire behavior, identity and normalization |
+| `connector_platform` | PostgreSQL repositories, production host adapters, install ingress, lifecycle and process composition |
+| Runtime owners | HTTP bounds, scheduling, leases, S3/Kafka durability, acknowledgement, retry and process supervision |
 
-Dependencies point inward. The source contract does not import provider
-clients, FastAPI, Temporal, PostgreSQL, Kafka, or S3. Native connector modules
-do not import legacy ingestion, integration, platform, or application runtime
-modules.
+Dependencies point inward. Connectors do not import application routes, legacy
+source implementations, PostgreSQL records, Kafka producers, or S3 clients.
 
-## Definition and startup
+## Definition and admission
 
-`source-index.json` is the source-identity authority used by raw envelopes,
-Kafka topics, and raw S3 layout. The 26 manifests define metadata,
-implementation factories, capability availability/configuration, ingress,
-permissions, trust, and runtime requirements. `CONNECTOR_CATALOG` is derived
-from the manifests rather than maintained as another source list.
+`source-index.json` owns the 26 source wire identities. JSON manifests declare
+connector identity/version, implementation factory and artifact modules,
+capabilities, ingress kinds, installation-data namespaces, secret slots,
+outbound hosts, scopes, trust ceiling, and runtime profile.
 
-Gateway and workflow startup build the same immutable candidate set. Fleet
-validation proves exact equality among source index, manifests, catalog, and
-candidate identities; stable API/maturity/version; connector-local native
-origins; and resolvable channel/handler wiring for every declared ingress kind.
-Registration then validates host compatibility and exact structural plus
-behavioral fingerprints. The registry fingerprint identifies the resulting
-process-local composition.
+Startup constructs an immutable catalog and validates exact agreement among the
+source index, manifests, factories, capabilities, and checked-in release
+evidence. Artifact admission measures implementation and manifest digests and
+can quarantine a connector. Quarantine never changes execution mode; it makes
+that connector unavailable.
 
-Artifact admission verifies enabled records and compares their signed digest
-with the running implementation module and exact manifest. A continuous
-controller refreshes admission and durable routing. Production processes that
-cannot obtain required signed state are quarantined rather than allowed to run
-an unattested native path.
+## Installation and authority
 
-## Binding and capability resolution
+Every source uses these common records:
 
-An execution request carries an installation reference, durable authority,
-scoped host services, typed capability key, deadline, connector call, and
-emergency rollback call. The registry validates tenant, connector,
-installation, generation, trust ceiling, and granted authority before creating
-a bound connector.
+- `source_connector_installations` for identity, desired/observed lifecycle,
+  generation fences, bound version and enabled capabilities;
+- `source_connector_authority_grants` for credential owner, granted slots,
+  scopes, hosts, trust and provenance;
+- `source_connector_credentials` for current/pending/retired secret references;
+- `source_connector_installation_data` for manifest-declared namespaced state;
+- `source_connector_callbacks` for installation-scoped webhook/watch endpoints.
 
-A manifest declaration distinguishes three states:
+Binding validates installation identity, tenant, connector ID, lifecycle,
+generation, active authority, manifest permission ceilings, and configured
+secret slots. Capability factories are exposed only when their `configuredBy`
+slots are present. Pure normalization/identity can bind without provider
+credentials; provider I/O cannot.
 
-- declared but unavailable: no factory is registered;
-- available but not configured: one or more `configuredBy` secret slots are
-  absent from the grant and the facet is withheld;
-- configured: a factory constructs the installation-scoped facet.
+## Install surfaces
 
-Connector code receives only the granted secret slots, outbound hosts, scopes,
-trust ceiling, state, emitter, callback, lease, metrics, logging, clock, and
-cancellation ports. It cannot publish Kafka, write S3, advance checkpoints, or
-select a tenant directly.
+OAuth-capable connectors use:
 
-## Execution and ingress
+```text
+GET /integrations/{source}/install
+GET /integrations/{source}/callback
+```
 
-Routing supports `legacy`, `shadow`, and `connector`, with quarantine evaluated
-first. The stable fleet default is `connector`. Shadow retains the rollback
-result as authoritative and duplicates only operations declared safe to
-compare. Bounded execution, error, duration, parity, lifecycle, and DLQ events
-feed staged rollout and automatic rollback.
+API-key, service-token, AWS, gateway/session, and manually supplied OAuth-token
+installations use:
 
-Planner, pull/poll, webhook, gateway, reconciliation, normalization, OAuth, and
-lifecycle owners resolve the admitted registry artifact and durable
-installation authority. A release-time cross-layer validator rejects a
-manifest whose ingress cannot resolve to a registered channel and handler.
-The host preserves existing envelope, retry, circuit-breaker, DLQ, S3-first,
-Kafka-ordering, and checkpoint semantics around the capability call.
+```text
+POST /integrations/{source}/configure
+{
+  "external_installation_id": "provider-native-id",
+  "credentials": {"manifest_slot": "secret-value"},
+  "configuration": {"selected_resources": []},
+  "installation_data": {"declared_namespace": {}}
+}
+```
 
-## Lifecycle and state evolution
+Undeclared slots/namespaces and incomplete required credentials are rejected.
+OAuth callbacks that lack another required slot are persisted in `Maintenance`
+and do not enqueue onboarding until completed.
 
-The continuous lifecycle controller owns desired/observed reconciliation,
-configuration, health, degradation/recovery, maintenance, cleanup, authority
-revocation, credential retirement, and removal. API handlers request desired
-state; they do not assert health.
+## Execution families
 
-Connector state has an independent schema version and producing connector
-version. Upgrades advance through explicit deterministic one-step transforms.
-Mixed workers are allowed only within the same connector major and when they
-declare the current state schema. Downgrade is forbidden unless every crossed
-edge provides a reversible transform. Installation records persist accepted
-schemas and replay certification.
+REST/OAuth calls run through governed HTTP with manifest host allowlists and
+typed provider failure translation. Google subscription scheduling uses the
+push-subscription capability; Pub/Sub or watch callbacks trigger connector
+incremental polling. Gateway workers open/receive/close through the gateway
+port and persist resume state only after raw publication. AWS CloudTrail builds
+SigV4 requests inside its connector using scoped secret handles.
 
-## Operations and retirement
+All successful source records use host-owned raw emission. The host writes the
+raw object to S3, publishes the versioned envelope to Kafka, then commits cursor
+or resume state. Connectors cannot reverse that ordering.
 
-The fleet dashboard and Prometheus rules expose execution, latency, quarantine,
-control failure, lifecycle, and rollback signals. Resilience certification has
-an explicit, version-bound evidence contract for throttling, provider outage,
-lease loss, cancellation, secret rotation, credential revocation, poison
-payload, multi-region failover, and disaster-recovery replay.
+## Runtime owners
 
-Full native routing does not itself authorize deletion. A legacy surface may be
-removed only after parity and soak acceptance, a successful rollback drill, a
-named rollback owner, and a durable `source_connector_retirement_evidence`
-record. Until that point it remains a fenced recovery mechanism and has no
-manifest, catalog, or registration authority.
+- `run_connector_poll_worker.py` owns all poll-capable installations.
+- `run_connector_subscription_scheduler.py` owns Google watches/subscriptions.
+- `run_connector_gateway_worker.py` owns Discord, Telegram, and Signal sessions.
+- the generic workflow router owns plan/fetch/reconcile/normalize capability
+  calls;
+- the webhook router accepts source callbacks only through common callback
+  records;
+- the continuous lifecycle controller owns health, pause, maintenance,
+  degradation, cleanup, revocation and removal.
+
+Compose, the canonical process manifest, Prometheus targets, and PgBouncer
+checks name these owners. The source-specific worker launchers were removed.
+
+## Routing and rollout
+
+Routing policy contains only a monotonically increasing artifact revision and
+the fixed global mode `connector`. Source-, tenant-, and capability-specific
+execution overrides are rejected. Rollout stages and thresholds can promote or
+roll back artifact revisions, but every revision still executes the same
+contract path.
+
+## Failure and availability semantics
+
+Provider failures are translated into the contract error taxonomy and retain
+retryability, rate-limit, authentication, payload, state, cancellation, and
+timeout meaning. Paused and Maintenance installations do not bind provider
+capabilities. Removed installations bind only long enough to execute idempotent
+cleanup and retire authority. With no alternative runtime, failures are visible
+and recoverable through configuration, credential repair, lifecycle control, or
+artifact revision rollback—not hidden source dispatch.

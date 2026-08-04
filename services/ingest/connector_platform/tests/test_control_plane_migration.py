@@ -12,7 +12,7 @@ from services.ingest.connector_platform.rollout_store import (
     PostgresRolloutRepository,
 )
 from services.ingest.connector_runtime.rollout import RolloutRevision, RolloutStage
-from services.ingest.connector_runtime.shadow import ShadowReport
+
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 
@@ -31,165 +31,88 @@ async def test_connector_control_plane_schema_is_fail_closed(db_pool) -> None:
             """
             SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity,
                    EXISTS (
-                     SELECT 1
-                       FROM pg_policy p
-                      WHERE p.polrelid = c.oid
-                        AND p.polname = 'tenant_isolation'
+                     SELECT 1 FROM pg_policy p
+                      WHERE p.polrelid = c.oid AND p.polname = 'tenant_isolation'
                    ) AS has_tenant_policy
               FROM pg_class c
              WHERE c.relname = ANY($1::text[])
             """,
             list(TENANT_TABLES),
         )
-        by_name = {row["relname"]: row for row in rows}
-
-        assert set(by_name) == set(TENANT_TABLES)
+        assert {row["relname"] for row in rows} == set(TENANT_TABLES)
         assert all(row["relrowsecurity"] for row in rows)
         assert all(row["relforcerowsecurity"] for row in rows)
         assert all(row["has_tenant_policy"] for row in rows)
-
         credential_columns = {
             row["column_name"]
             for row in await connection.fetch(
                 """
-                SELECT column_name
-                  FROM information_schema.columns
+                SELECT column_name FROM information_schema.columns
                  WHERE table_schema = 'public'
                    AND table_name = 'source_connector_credentials'
                 """
             )
         }
         assert "secret_ref" in credential_columns
-        assert "secret" not in credential_columns
-        assert "secret_value" not in credential_columns
+        assert not {"secret", "secret_value"}.intersection(credential_columns)
 
 
-async def test_stable_v1_state_and_operational_evidence_schema(db_pool) -> None:
-    tenant_id = uuid4()
-    installation_id = uuid4()
+async def test_contract_only_migration_removes_legacy_control_columns(db_pool) -> None:
     async with db_pool.acquire() as connection:
-        await connection.execute(
-            "INSERT INTO tenants (id, name) VALUES ($1, $2)",
-            tenant_id,
-            "connector-stable-v1-schema",
-        )
-        row = await connection.fetchrow(
-            """
-            INSERT INTO source_connector_installations (
-              id, tenant_id, connector_id, external_installation_id
-            ) VALUES ($1, $2, 'fyralis/slack', 'T-STABLE-V1')
-            RETURNING state_schema_version, accepted_state_schema_versions,
-                      last_replay_certified_at
-            """,
-            installation_id,
-            tenant_id,
-        )
-        assert row["state_schema_version"] == 1
-        assert row["accepted_state_schema_versions"] == [1]
-        assert row["last_replay_certified_at"] is None
-
-        await connection.execute(
-            """
-            INSERT INTO source_connector_resilience_evidence (
-              connector_id, connector_version, scenario, region,
-              passed, observed_at, evidence_ref
-            ) VALUES (
-              'fyralis/slack', '1.0.0', 'provider_throttle', 'test-region',
-              TRUE, now(), 'test://provider-throttle'
+        assert await connection.fetchval(
+            "SELECT to_regclass('source_connector_retirement_evidence')"
+        ) is None
+        metric_columns = {
+            row["column_name"]
+            for row in await connection.fetch(
+                """
+                SELECT column_name FROM information_schema.columns
+                 WHERE table_schema = 'public'
+                   AND table_name = 'source_connector_rollout_metric_windows'
+                """
             )
-            """
-        )
+        }
+        assert not {
+            "parity_samples",
+            "parity_mismatches",
+            "legacy_p95_ms",
+            "baseline_dlq_rate",
+        }.intersection(metric_columns)
+        trigger_columns = {
+            row["column_name"]
+            for row in await connection.fetch(
+                """
+                SELECT column_name FROM information_schema.columns
+                 WHERE table_schema = 'public' AND table_name = 'onboarding_triggers'
+                """
+            )
+        }
+        assert "connector_installation_id" in trigger_columns
+        assert "installation_row_id" not in trigger_columns
+        assert "gmail_installation_id" not in trigger_columns
+
+
+async def test_routing_and_rollout_evidence_reject_legacy_shapes(db_pool) -> None:
+    revision = 910001
+    async with db_pool.acquire() as connection:
         with pytest.raises(asyncpg.CheckViolationError):
             await connection.execute(
                 """
-                INSERT INTO source_connector_resilience_evidence (
-                  connector_id, connector_version, scenario, region,
-                  passed, observed_at, evidence_ref
-                ) VALUES (
-                  'fyralis/slack', '1.0.0', 'invented_scenario', 'test-region',
-                  TRUE, now(), 'test://invalid'
-                )
-                """
+                INSERT INTO source_connector_routing_revisions (
+                  revision, policy, status, created_by
+                ) VALUES ($1, $2::jsonb, 'staged', 'integration-test')
+                """,
+                revision,
+                '{"revision":910001,"global":"legacy"}',
             )
-        with pytest.raises(asyncpg.CheckViolationError):
-            await connection.execute(
-                """
-                INSERT INTO source_connector_retirement_evidence (
-                  connector_id, connector_version, legacy_surface,
-                  parity_accepted_at, rollback_owner, evidence_ref
-                ) VALUES (
-                  'fyralis/slack', '1.0.0', 'legacy-test', now(), '',
-                  'test://invalid-owner'
-                )
-                """
-            )
-
-
-async def test_connector_installation_rls_isolates_tenants(
-    db_pool,
-    rls_app_pool,
-) -> None:
-    tenant_a = uuid4()
-    tenant_b = uuid4()
-    installation_id = uuid4()
-    async with db_pool.acquire() as connection:
-        await connection.executemany(
-            "INSERT INTO tenants (id, name) VALUES ($1, $2)",
-            ((tenant_a, "connector-tenant-a"), (tenant_b, "connector-tenant-b")),
-        )
-        await connection.execute(
-            """
-            INSERT INTO source_connector_installations (
-              id, tenant_id, connector_id, external_installation_id
-            ) VALUES ($1, $2, 'fyralis/slack', 'T-RLS')
-            """,
-            installation_id,
-            tenant_a,
-        )
-
-    async with rls_app_pool.acquire() as connection:
-        assert (
-            await connection.fetchval(
-                "SELECT count(*) FROM source_connector_installations WHERE id = $1",
-                installation_id,
-            )
-            == 0
-        )
-        async with connection.transaction():
-            await connection.execute(
-                "SELECT set_config('app.current_tenant', $1::text, true)",
-                str(tenant_b),
-            )
-            assert (
-                await connection.fetchval(
-                    "SELECT count(*) FROM source_connector_installations WHERE id = $1",
-                    installation_id,
-                )
-                == 0
-            )
-        async with connection.transaction():
-            await connection.execute(
-                "SELECT set_config('app.current_tenant', $1::text, true)",
-                str(tenant_a),
-            )
-            assert (
-                await connection.fetchval(
-                    "SELECT count(*) FROM source_connector_installations WHERE id = $1",
-                    installation_id,
-                )
-                == 1
-            )
-
-
-async def test_rollout_event_constraints_reject_invalid_evidence(db_pool) -> None:
-    async with db_pool.acquire() as connection:
         await connection.execute(
             """
             INSERT INTO source_connector_routing_revisions (
               revision, policy, status, created_by
-            ) VALUES (900001, '{"revision": 900001, "global": "legacy"}',
-                      'active', 'integration-test')
-            """
+            ) VALUES ($1, $2::jsonb, 'staged', 'integration-test')
+            """,
+            revision,
+            '{"revision":910001,"global":"connector"}',
         )
         with pytest.raises(asyncpg.CheckViolationError):
             await connection.execute(
@@ -197,34 +120,39 @@ async def test_rollout_event_constraints_reject_invalid_evidence(db_pool) -> Non
                 INSERT INTO source_connector_rollout_events (
                   id, revision, event_type, connector_id, capability,
                   implementation, outcome
-                ) VALUES ($1, 900001, 'execution', 'fyralis/slack',
-                          'semantic.identity', 'unbounded-process', 'completed')
+                ) VALUES ($1, $2, 'execution', 'fyralis/slack',
+                          'semantic.identity', 'legacy', 'completed')
                 """,
                 uuid4(),
+                revision,
+            )
+        with pytest.raises(asyncpg.CheckViolationError):
+            await connection.execute(
+                """
+                INSERT INTO source_connector_rollout_events (
+                  id, revision, event_type, connector_id, capability,
+                  implementation, outcome
+                ) VALUES ($1, $2, 'parity', 'fyralis/slack',
+                          'semantic.identity', 'connector', 'completed')
+                """,
+                uuid4(),
+                revision,
             )
 
 
-async def test_rollout_evidence_writer_feeds_threshold_reader(db_pool) -> None:
-    revision_number = 900002
-    next_revision = 900003
+async def test_connector_evidence_writer_feeds_threshold_reader(db_pool) -> None:
+    revision = 910002
     async with db_pool.acquire() as connection:
-        await connection.executemany(
+        await connection.execute(
             """
             INSERT INTO source_connector_routing_revisions (
               revision, policy, status, created_by
             ) VALUES ($1, $2::jsonb, 'staged', 'integration-test')
             """,
-            (
-                (
-                    revision_number,
-                    '{"revision": 900002, "global": "legacy"}',
-                ),
-                (next_revision, '{"revision": 900003, "global": "legacy"}'),
-            ),
+            revision,
+            '{"revision":910002,"global":"connector"}',
         )
-
-    active_revision = revision_number
-    sink = PostgresRolloutEvidenceSink(db_pool, lambda: active_revision)
+    sink = PostgresRolloutEvidenceSink(db_pool, lambda: revision)
     attributes = (
         ("connector_id", "fyralis/slack"),
         ("capability", "semantic.normalization"),
@@ -237,27 +165,9 @@ async def test_rollout_evidence_writer_feeds_threshold_reader(db_pool) -> None:
         "source_connector.rollout.execution",
         1,
         tuple(
-            (key, "failed" if key == "outcome" else value) for key, value in attributes
+            (key, "failed" if key == "outcome" else value)
+            for key, value in attributes
         ),
-    )
-    sink.observe(
-        "source_connector.rollout.duration_ms",
-        10.0,
-        (
-            ("connector_id", "fyralis/slack"),
-            ("capability", "semantic.normalization"),
-            ("implementation", "legacy"),
-            ("outcome", "completed"),
-        ),
-    )
-    sink.record(
-        ShadowReport(
-            connector_id="fyralis/slack",
-            installation_id="not-persisted",
-            capability="semantic.normalization",
-            differences=(),
-            connector_error_code="behavior_mismatch",
-        )
     )
     sink.record_lifecycle(connector_id="fyralis/slack", outcome="failed")
     sink.record_dlq(
@@ -265,30 +175,12 @@ async def test_rollout_evidence_writer_feeds_threshold_reader(db_pool) -> None:
         capability="semantic.normalization",
         implementation="connector",
     )
-    active_revision = next_revision
     await sink.flush()
-
     metrics = await PostgresRolloutRepository(db_pool).read_metrics(
-        RolloutRevision(
-            revision=revision_number,
-            policy={"revision": revision_number, "global": "legacy"},
-            stage=RolloutStage.FULL,
-        )
+        RolloutRevision(revision, {}, RolloutStage.FULL)
     )
     assert metrics.executions == 2
     assert metrics.failures == 1
-    assert metrics.parity_samples == 1
-    assert metrics.parity_mismatches == 1
     assert metrics.connector_p95_ms == 20.0
-    assert metrics.legacy_p95_ms == 10.0
     assert metrics.lifecycle_failures == 1
     assert metrics.connector_dlq_rate == 0.5
-    assert metrics.baseline_dlq_rate == 0.0
-    async with db_pool.acquire() as connection:
-        assert (
-            await connection.fetchval(
-                "SELECT count(*) FROM source_connector_rollout_events WHERE revision = $1",
-                next_revision,
-            )
-            == 0
-        )

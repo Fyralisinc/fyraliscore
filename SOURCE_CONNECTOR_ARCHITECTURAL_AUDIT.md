@@ -3,19 +3,17 @@
 **Audit date:** 2026-08-03<br>
 **Branch:** feature/source-connector-contract<br>
 **Audited revision:** a4fd22d4<br>
-**Decision:** **Do not merge under the claim that the source-connector roadmap is complete.**
+**Historical decision for revision `a4fd22d4`:** **Do not merge under the claim that the source-connector roadmap is complete.**
 
-> **Remediation status:** The findings below are a historical audit of revision
-> `a4fd22d4`. Completion Phases 1–3 have since implemented the stable-v1 native
-> fleet, manifest-derived catalog validation, source-index ownership,
-> least-authority configuration semantics, closed-loop rollout, state evolution,
-> resilience evidence, observability, and migration `0189`. Compatibility
-> candidate generation is gone. The remaining legacy callable is deliberately
-> fenced behind signed-admission quarantine and emergency rollback and cannot be
-> deleted until live retirement evidence is accepted. See
-> `SOURCE_CONNECTOR_FINAL_SUMMARY.md` and `PHASE_3_IMPLEMENTATION_REPORT.md` for
-> the current review boundary; do not use this historical decision as the
-> present merge verdict.
+> **Remediation status (2026-08-04):** The findings below are retained as the
+> historical audit of revision `a4fd22d4`. The contract-only cutover subsequently
+> migrated all 26 source families, replaced the compatibility/profile candidates
+> with explicit first-party factories, cut over every runtime owner, added common
+> OAuth/configuration/callback/lifecycle paths, and deleted legacy/shadow routing,
+> source dispatch and source-local implementations. Migration `0190` completes
+> the pre-production schema cutover. See `SOURCE_CONNECTOR_FINAL_SUMMARY.md` and
+> `PHASE_3_IMPLEMENTATION_REPORT.md` for current evidence and merge boundaries;
+> the scores and verdict below no longer describe the working tree.
 
 ## Executive Summary
 

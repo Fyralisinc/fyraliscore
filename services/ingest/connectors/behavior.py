@@ -6,7 +6,6 @@ import hashlib
 import hmac
 import json
 from datetime import UTC, datetime, timedelta
-from functools import partial
 from uuid import UUID
 
 from cryptography.hazmat.primitives import serialization
@@ -30,13 +29,30 @@ from services.ingest.connector_conformance.fakes import (
     make_binding_context,
 )
 from services.ingest.connector_conformance.models import ConformanceReport
-from services.ingest.connectors.fleet import build_fleet_connector
+from services.ingest.connectors.aws_source import AWS, build_aws_connector
+from services.ingest.connectors.gateway_sources import (
+    DISCORD,
+    SIGNAL,
+    TELEGRAM,
+    build_discord_connector,
+    build_signal_connector,
+    build_telegram_connector,
+)
+from services.ingest.connectors.google_sources import (
+    CALENDAR,
+    DRIVE,
+    GMAIL,
+    build_gmail_connector,
+    build_google_calendar_connector,
+    build_google_drive_connector,
+)
 from services.ingest.connectors.native import (
     build_notion_connector,
     build_slack_connector,
     build_whatsapp_connector,
 )
-from services.ingest.connectors.profiles import FLEET_PROFILES, SourceProfile
+from services.ingest.connectors.provider_spec import SourceProfile
+from services.ingest.connectors import rest_sources
 from services.ingest.source_contract.capabilities import (
     CLEANUP_V1,
     CONFIGURATION_V1,
@@ -85,6 +101,39 @@ from services.ingest.source_contract.state_migrations import (
 
 _INVOCATION_ID = UUID("f71f5d95-e410-482d-a267-2d36abc87736")
 _NOW = datetime(2025, 1, 1, tzinfo=UTC)
+
+_SOURCE_FIXTURES = {
+    profile.source: (profile, factory)
+    for profile, factory in (
+        (rest_sources.GITHUB, rest_sources.build_github_connector),
+        (rest_sources.JIRA, rest_sources.build_jira_connector),
+        (rest_sources.MERCURY, rest_sources.build_mercury_connector),
+        (rest_sources.QUICKBOOKS, rest_sources.build_quickbooks_connector),
+        (rest_sources.GRAFANA, rest_sources.build_grafana_connector),
+        (rest_sources.BREX, rest_sources.build_brex_connector),
+        (rest_sources.RAMP, rest_sources.build_ramp_connector),
+        (rest_sources.GUSTO, rest_sources.build_gusto_connector),
+        (rest_sources.DEEL, rest_sources.build_deel_connector),
+        (rest_sources.FIREFLIES, rest_sources.build_fireflies_connector),
+        (rest_sources.MIRO, rest_sources.build_miro_connector),
+        (rest_sources.FIGMA, rest_sources.build_figma_connector),
+        (rest_sources.CARTA, rest_sources.build_carta_connector),
+        (rest_sources.HIBOB, rest_sources.build_hibob_connector),
+        (rest_sources.ASHBY, rest_sources.build_ashby_connector),
+        (rest_sources.LINKEDIN, rest_sources.build_linkedin_connector),
+        (GMAIL, build_gmail_connector),
+        (CALENDAR, build_google_calendar_connector),
+        (DRIVE, build_google_drive_connector),
+        (DISCORD, build_discord_connector),
+        (TELEGRAM, build_telegram_connector),
+        (SIGNAL, build_signal_connector),
+        (AWS, build_aws_connector),
+    )
+}
+
+
+def _factory_for(source: str):
+    return _SOURCE_FIXTURES[source][1]
 
 
 def _operation(environment: FakeHostEnvironment) -> OperationContext:
@@ -427,44 +476,67 @@ def pilot_behavioral_fixtures() -> dict[str, tuple[str, BehavioralFixture]]:
 async def _fleet_pages(profile: SourceProfile):
     environment = FakeHostEnvironment()
     environment.secrets.values[profile.auth_slot] = SecretValue.from_text("token")
+    if profile.source == "aws":
+        environment.secrets.values["aws_secret_access_key"] = (
+            SecretValue.from_text("fixture-secret")
+        )
+
+    def page(record_id: str, *, continued: bool) -> dict[str, object]:
+        record = {
+            "id": record_id,
+            "EventId": record_id,
+            "type": profile.native_type,
+            "updated_at": "2025-01-01T00:00:00Z",
+            "title": record_id,
+        }
+        identity_path = profile.identity_fields[0]
+        identity_target: dict[str, object] = record
+        identity_parts = identity_path.split(".")
+        for part in identity_parts[:-1]:
+            nested = identity_target.get(part)
+            if not isinstance(nested, dict):
+                nested = {}
+                identity_target[part] = nested
+            identity_target = nested
+        identity_target[identity_parts[-1]] = record_id
+        if profile.source == "aws":
+            value: dict[str, object] = {"Events": [record]}
+            if continued:
+                value["NextToken"] = "page-2"
+            return value
+        value = {profile.record_keys[0]: [record]}
+        if continued:
+            next_field = (
+                "syncToken"
+                if profile.source == "ashby"
+                else profile.next_cursor_fields[0]
+            )
+            target: dict[str, object] = value
+            parts = next_field.split(".")
+            for part in parts[:-1]:
+                nested: dict[str, object] = {}
+                target[part] = nested
+                target = nested
+            target[parts[-1]] = "page-2"
+            if profile.source == "ashby":
+                value["moreDataAvailable"] = True
+        return value
+
     environment.http.responses.extend(
         (
             GovernedHttpResponse(
                 status_code=200,
                 headers=(),
-                body=json.dumps(
-                    {
-                        profile.record_keys[0]: [
-                            {
-                                "id": "one",
-                                "type": profile.native_type,
-                                "updated_at": "2025-01-01T00:00:00Z",
-                                "title": "first",
-                            }
-                        ],
-                        "next_cursor": "page-2",
-                    }
-                ).encode(),
+                body=json.dumps(page("one", continued=True)).encode(),
             ),
             GovernedHttpResponse(
                 status_code=200,
                 headers=(),
-                body=json.dumps(
-                    {
-                        profile.record_keys[0]: [
-                            {
-                                "id": "two",
-                                "type": profile.native_type,
-                                "updated_at": "2025-01-01T00:01:00Z",
-                                "title": "second",
-                            }
-                        ]
-                    }
-                ).encode(),
+                body=json.dumps(page("two", continued=False)).encode(),
             ),
         )
     )
-    factory = partial(build_fleet_connector, profile.source)
+    factory = _factory_for(profile.source)
     capability = _bound(factory, environment).require(HISTORICAL_PULL_V1)
     operation = _operation(environment)
     shard = ShardPlan(
@@ -524,7 +596,7 @@ def _fleet_configuration_check(profile: SourceProfile):
     async def check() -> None:
         environment = FakeHostEnvironment()
         capability = _bound(
-            partial(build_fleet_connector, profile.source), environment
+            _factory_for(profile.source), environment
         ).require(CONFIGURATION_V1)
         valid = await capability.validate_configuration(
             {
@@ -546,7 +618,7 @@ def _fleet_rotation_check(profile: SourceProfile):
     async def check() -> None:
         environment = FakeHostEnvironment()
         capability = _bound(
-            partial(build_fleet_connector, profile.source), environment
+            _factory_for(profile.source), environment
         ).require(SECRET_ROTATION_V1)
         accepted = await capability.verify_candidate(
             SecretRotationRequest(
@@ -600,7 +672,7 @@ def _fleet_webhook_check(profile: SourceProfile):
         environment = FakeHostEnvironment()
         environment.secrets.values[profile.webhook_secret_slot] = SecretValue(secret)  # type: ignore[index]
         capability = _bound(
-            partial(build_fleet_connector, profile.source), environment
+            _factory_for(profile.source), environment
         ).require(WEBHOOK_V1)
         headers = {profile.webhook_header: candidate}  # type: ignore[dict-item]
         if profile.webhook_mode == "ed25519":
@@ -631,17 +703,42 @@ def _fleet_gateway_check(profile: SourceProfile):
     async def check() -> None:
         environment = FakeHostEnvironment()
         environment.secrets.values[profile.auth_slot] = SecretValue.from_text("token")
-        environment.http.responses.append(
-            GovernedHttpResponse(
-                status_code=200,
-                headers=(),
-                body=json.dumps(
-                    {profile.record_keys[0]: [{"id": "event-1", "text": "hello"}]}
-                ).encode(),
+        if profile.source == "telegram":
+            environment.http.responses.append(
+                GovernedHttpResponse(
+                    status_code=200,
+                    headers=(),
+                    body=json.dumps(
+                        {
+                            "ok": True,
+                            "result": [{"update_id": 1, "message": {"text": "hello"}}],
+                        }
+                    ).encode(),
+                )
             )
-        )
+        elif profile.source == "discord":
+            environment.gateway.planned_connections.append(
+                [
+                    {"op": 10, "d": {"heartbeat_interval": 45_000}},
+                    {
+                        "op": 0,
+                        "s": 1,
+                        "t": "READY",
+                        "d": {
+                            "session_id": "fixture-session",
+                            "resume_gateway_url": "wss://gateway.discord.gg",
+                        },
+                    },
+                    {"op": 0, "s": 2, "t": "MESSAGE_CREATE", "d": {"id": "event-1", "content": "hello"}},
+                    {"op": 7},
+                ]
+            )
+        else:
+            environment.gateway.planned_connections.append(
+                [{"type": "message", "id": "event-1", "text": "hello"}]
+            )
         capability = _bound(
-            partial(build_fleet_connector, profile.source), environment
+            _factory_for(profile.source), environment
         ).require(GATEWAY_STREAM_V1)
         session = await capability.open(GatewayOpenRequest(), _operation(environment))
         batch = await capability.receive(
@@ -764,8 +861,7 @@ def _fleet_downgrade_check():
 
 def fleet_behavioral_fixtures() -> dict[str, tuple[str, BehavioralFixture]]:
     fixtures = dict(pilot_behavioral_fixtures())
-    for source, profile in FLEET_PROFILES.items():
-        factory = partial(build_fleet_connector, source)
+    for source, (profile, factory) in _SOURCE_FIXTURES.items():
         ingress = profile.ingress_kinds[0]
         record = SourceRecord(
             native_type=profile.native_type,

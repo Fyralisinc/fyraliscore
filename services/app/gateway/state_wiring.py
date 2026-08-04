@@ -15,8 +15,9 @@ from services.app.gateway.settings import GatewaySettings
 log = get_logger("gateway")
 
 
-_PROVIDER_INSTALLATIONS_PROBE = "SELECT 1 FROM provider_installations LIMIT 1"
-_TENANT_FLAGS_PROBE = "SELECT 1 FROM tenant_flags LIMIT 1"
+_CONNECTOR_INSTALLATIONS_PROBE = (
+    "SELECT 1 FROM source_connector_installations LIMIT 1"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,7 +27,6 @@ class IntegrationRuntimeState:
     pool: asyncpg.Pool
     secret_store: object
     tenant_resolver: object
-    tenant_flags: object
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +37,6 @@ class IntegrationRuntimeWiring:
     pool_alias_created: bool
     secret_store_created: bool
     tenant_resolver_created: bool
-    tenant_flags_created: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,18 +136,6 @@ def wire_tenant_resolver(app_: FastAPI, pool: asyncpg.Pool) -> tuple[object, boo
     return tenant_resolver, True
 
 
-def wire_tenant_flags(app_: FastAPI, pool: asyncpg.Pool) -> tuple[object, bool]:
-    """Attach or reuse the tenant-scoped ingestion feature-flag reader."""
-    from services.ingest.ingestion.feature_flags import TenantFlags
-
-    existing = getattr(app_.state, "tenant_flags", None)
-    if existing is not None:
-        return existing, False
-    tenant_flags = TenantFlags(pool)
-    app_.state.tenant_flags = tenant_flags
-    return tenant_flags, True
-
-
 def attach_integration_runtime_state(
     app_: FastAPI,
     runtime: IntegrationRuntimeState,
@@ -160,7 +147,7 @@ def attach_integration_runtime_state(
             raise RuntimeError(
                 "app.state.integration_runtime is wired to a different pool"
             )
-        for name in ("secret_store", "tenant_resolver", "tenant_flags"):
+        for name in ("secret_store", "tenant_resolver"):
             if getattr(existing_runtime, name, None) is not getattr(runtime, name):
                 raise RuntimeError(
                     "app.state.integration_runtime has drifted "
@@ -171,7 +158,6 @@ def attach_integration_runtime_state(
         ("pool", runtime.pool),
         ("secret_store", runtime.secret_store),
         ("tenant_resolver", runtime.tenant_resolver),
-        ("tenant_flags", runtime.tenant_flags),
     ):
         existing = getattr(app_.state, name, None)
         if existing is not None and existing is not value:
@@ -214,7 +200,6 @@ def wire_integration_runtime_state(
             pool_alias_created=False,
             secret_store_created=False,
             tenant_resolver_created=False,
-            tenant_flags_created=False,
         )
 
     try:
@@ -240,19 +225,10 @@ def wire_integration_runtime_state(
             "integration_state.tenant_resolver",
             exc,
         ) from exc
-    try:
-        tenant_flags, tenant_flags_created = wire_tenant_flags(app_, pool)
-    except Exception as exc:  # noqa: BLE001
-        raise IntegrationRuntimeWiringError(
-            "integration_state.tenant_flags",
-            exc,
-        ) from exc
-
     runtime = IntegrationRuntimeState(
         pool=pool,
         secret_store=secret_store,
         tenant_resolver=tenant_resolver,
-        tenant_flags=tenant_flags,
     )
     try:
         attach_integration_runtime_state(app_, runtime)
@@ -266,7 +242,6 @@ def wire_integration_runtime_state(
         pool_alias_created=pool_alias_created,
         secret_store_created=secret_store_created,
         tenant_resolver_created=tenant_resolver_created,
-        tenant_flags_created=tenant_flags_created,
     )
 
 
@@ -310,12 +285,8 @@ async def probe_integration_runtime_state(
 
     return (
         await _probe(
-            "integration_state.schema.provider_installations",
-            _PROVIDER_INSTALLATIONS_PROBE,
-        ),
-        await _probe(
-            "integration_state.schema.tenant_flags",
-            _TENANT_FLAGS_PROBE,
+            "integration_state.schema.source_connector_installations",
+            _CONNECTOR_INSTALLATIONS_PROBE,
         ),
     )
 
@@ -468,7 +439,6 @@ __all__ = [
     "validate_integration_runtime_state",
     "wire_pool_alias",
     "wire_secret_store",
-    "wire_tenant_flags",
     "wire_tenant_resolver",
     "wire_ingestion_data_plane",
     "close_ingestion_data_plane",

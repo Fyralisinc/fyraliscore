@@ -4,157 +4,157 @@
     {
       "connectorId": "fyralis/ashby",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "87787de8a2c06961a4ac1c171f2c1e057b8fd996931d1048c5cd2f30a1453e17",
+      "structuralFingerprint": "25bab2835bc4592fb65f24f899faf9eff3e5e24306f1d93e567f76e9e2ec2c0a",
       "behavioralFingerprint": "782cdcd05ba7b7917f8992426ecef1cdb27002cb8a9ed1904f541d0e5e5730fa"
     },
     {
       "connectorId": "fyralis/aws",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "cf09abbd84d320fbdf1b38f0dbc2c47ebcfc9d198c713b403eeaba07dab3978a",
+      "structuralFingerprint": "9c2d50b4b984100405c639570fd2bb4c1f37a4c6e7a22b444e01d0705e34546e",
       "behavioralFingerprint": "01b23ad29490349e43fe2f69a87f5f759ad2fcb7d3eeb0993ecce140d916e89a"
     },
     {
       "connectorId": "fyralis/brex",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "e847f783fb8c54542cbb7c454b737b9c4d5a9b00aff7ff8582301808f69fec2a",
+      "structuralFingerprint": "7d052dbe5f84f439e4a1c157d06c5252faad64575ef8962750b2b0de434e5089",
       "behavioralFingerprint": "fe3d2846c65f683289a472ae79d0997e6917673dfb39d20160409f50fec3e391"
     },
     {
       "connectorId": "fyralis/carta",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "993089ba97dcd743691b851c6bf83902235f72394452cc830029bac807a03138",
+      "structuralFingerprint": "ef5fa4dd0f4cde5c284a82d864fa431be2c3a60dbb369957b3faa366d12c9c45",
       "behavioralFingerprint": "4ad41fc90a87478c8cccca9dae7f8ff40a63f3c8a6343989aa3427f103869ae2"
     },
     {
       "connectorId": "fyralis/deel",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "1cabeaca077697765e4f0468be0c8ebd621bf40bd3e55db371826c1433a1649b",
+      "structuralFingerprint": "6d7e92d2d86d4462d89ebeaee1f89808b62014ac502117ffb1a969a6ab74cbb1",
       "behavioralFingerprint": "d956ec69ad80c297aa1eb14502aa608bd8b74511b215dec0e4547f5656c1e0d2"
     },
     {
       "connectorId": "fyralis/discord",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "d5272a1b34a734650d31f50edd132000a6212d446156d06f65a035f4d604bb5e",
+      "structuralFingerprint": "018129dbb773cea56efeab0e911a5d2d5f0072df7d8118c77ca6c41590541e5c",
       "behavioralFingerprint": "8abc6b7210dab921263cf8aa7015167a42d526b9420b7171cafc50f3940de43b"
     },
     {
       "connectorId": "fyralis/figma",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "468dafc54b537db369c8800fe38efcb621c70af0c8a299d22211ff1aa4881a9b",
+      "structuralFingerprint": "a48b557974f8b3099a53d8891279531071ba5aa5deb85f6743c5367aa24a36d8",
       "behavioralFingerprint": "e3d503798eb105b5b2a7c294be07c5e079d5b876853bdaff2514b4eb0108b2c5"
     },
     {
       "connectorId": "fyralis/fireflies",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "bc797750ce3fbe66b1b3ba24b77e25f043487e9444304f10381da574cb9bcd50",
+      "structuralFingerprint": "2e27e53296024c01d5dc3b347c15fef36350f30cd52f23ef6f9b4419f76616e3",
       "behavioralFingerprint": "1fe452ea746c5376aed125eed1ecefd42f4cd06b326a06b13307dfbfc0dcf755"
     },
     {
       "connectorId": "fyralis/github",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "a9f5c0245e0ee080538f1b0069519d6ff2eb66c982f8e177dfdcd7db3d0fc70f",
+      "structuralFingerprint": "48b3102a379c28502cd8c9d01189954f321bb55888a46382860fe1f17cd22c8d",
       "behavioralFingerprint": "1f0a17c30c39832652a9a8542412fd7ddf5201b73a14a876eba24e500b42425c"
     },
     {
       "connectorId": "fyralis/gmail",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "c358e65c69561ba957431e19b530a3e0783075ab5b101e3660d53ebcf89b97b3",
+      "structuralFingerprint": "8b2de27ec0184ec62528134f91f4e6cba75125fd673b5b4973067158b3a0cbdb",
       "behavioralFingerprint": "c233edffb3260bd674f4e242051d9d324d5bd596abfa40acac97d701689e0c7f"
     },
     {
       "connectorId": "fyralis/google_calendar",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "e627f0f173e310560ab8b108b3459597983664085c3db1998a5f72c1c59f48d3",
+      "structuralFingerprint": "08c1a2ba86dbd8ea120a85e2430c858adf60f894ea7f7a225ff14f685906d5c5",
       "behavioralFingerprint": "ef28bbba6c753ea075fec220aab2f84551e5da2ad1e3b63eb1442a6bc6cb60e5"
     },
     {
       "connectorId": "fyralis/google_drive",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "d7e4313912448d46fda893f59d2e69b1e16c3938aad2a9df64130aa635528874",
+      "structuralFingerprint": "e081e46cbeb94fe6b128931db69c3edd16d9d473f9cbd6ba18c0c5f86697473b",
       "behavioralFingerprint": "6e1c58b433a36cd36dbeda63b60a9fb89745baf2b08540b99373d3eb851142a9"
     },
     {
       "connectorId": "fyralis/grafana",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "d859c03f9d2005301c30481bf28f1a4edcaf5849257ec7d1958d414e8fb73caf",
+      "structuralFingerprint": "2fd9587150c0a3508700ee2c47a35e5796f442b502a0ffcc7f04f4754d8ebdde",
       "behavioralFingerprint": "56a570b97b0a93aea77a7339e76e7d0bb54bbba0b78fc01115ba35e5b45c8c2e"
     },
     {
       "connectorId": "fyralis/gusto",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "72b11eb0aa66488bc33f5729aceefa6949cd9b5888fa13cde23932661436be1c",
+      "structuralFingerprint": "f9598cf3fb8dd38e0bef9a55dc3fdd0fb0ac84379839362d4bd2be9742c5a4f5",
       "behavioralFingerprint": "6250b9df3c35b7fbf62b74fbb03a29a8b67c6a9c150dd44d91b6edb6e406b95d"
     },
     {
       "connectorId": "fyralis/hibob",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "c415167c3ef1a23760f2283d853e811605a9ce27400f9dcd3f8cffa67ad224d3",
+      "structuralFingerprint": "bf26b955385dc3df1ee4a91c1c561d2131768de6a27ce7dbfcfbbf6b8d6560a0",
       "behavioralFingerprint": "b2726b9f43ec7ddca03dcbba4db345e16877558d1643d78a9b28ae79dd8904d4"
     },
     {
       "connectorId": "fyralis/jira",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "23951a99a19ca33b334b7157ccbff25c732ba14a8b3f4517289e03108cb0f945",
+      "structuralFingerprint": "3a63200395b2984dc7ff6c467bd5776a8782cbf15322051f246c9eb4ed2a0a79",
       "behavioralFingerprint": "b5dee2cb720d75dfb2e8b9a002e15252deef8641a68a696afe2fd63b3ee59ebf"
     },
     {
       "connectorId": "fyralis/linkedin",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "585d4f77fb57ad75a01aa1647bb1a2b55f4e7ef7b456e3e5261333582fa29349",
+      "structuralFingerprint": "50a92a498c2a067e09bf04b54ed12773ce213ad4d6ab5c0fbebdb952d7400dc2",
       "behavioralFingerprint": "30fde17b5e36357b9e3824cae7422d43f111193f957e227456623975f46eb8cb"
     },
     {
       "connectorId": "fyralis/mercury",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "8235ead630a2c6a58a73fbb76493bb9d921e4d448b6be0021305795b44970f5f",
+      "structuralFingerprint": "0106b6a0c1e5ca3f4eb3a1b54719edbff6af221f65843b74977c5c2bd17c55c6",
       "behavioralFingerprint": "2b763828c8b1e73c90f84744dbe80f1a4605f3ef631b831e921e48d9bd16d1ba"
     },
     {
       "connectorId": "fyralis/miro",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "c3a59dcab4be9e819ce9a48c1fc076827f4bf9b3509e2bbd631ad54746bff219",
+      "structuralFingerprint": "ea99159207b50e952184154a6db596705dcd99d64fec39f1df06ed933fa86216",
       "behavioralFingerprint": "f39c2e64f31670abde131c61cb8538e654f0fa6c3e0ea5fcc03bb9531b3266ec"
     },
     {
       "connectorId": "fyralis/notion",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "2878f506dd3b63368cf7df4d9e929d1e285e7668e8b5ac657c9d055b2242f7a2",
+      "structuralFingerprint": "e6613890259edc503bb2f325012f031412fe5188a354b231d1a47e926ed71f18",
       "behavioralFingerprint": "0dd328a7cf1ebd4c971c6c49612fcfaa2745f8c06b38ddf3b485b28608eb5e65"
     },
     {
       "connectorId": "fyralis/quickbooks",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "f0d4c5fc2c7035636f7f8f2b63e3c415a58c13e432392d2a0108af2d5082c7fa",
+      "structuralFingerprint": "82326a3596402d55683a45be645df9c035eb96c6582108d388a9fd598557ddd0",
       "behavioralFingerprint": "c046437a6286313343f0221376dc1101377ec7658d58e8d1a3e5366ee56d40bb"
     },
     {
       "connectorId": "fyralis/ramp",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "25ca00b9408a53358e55400acb5ff7d9361d5174fde330b9d3a4d15577ad0993",
+      "structuralFingerprint": "77d78fe0b7b6a72317be4a9782b94974121dc9bb748785c4b1d1d5c95ab26163",
       "behavioralFingerprint": "acc3df41bc0ec0d8e072b4854f596349c4bcedff04378aed7fb4998052a5966c"
     },
     {
       "connectorId": "fyralis/signal",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "1d5dc69f2cb0b8c2643521e8cf25b1ac77ff2c94639c5d04e72ff8c53e8a332b",
+      "structuralFingerprint": "c04a8b6a470d090daccb73b8b4c988887cbce4f30717deff2b21bb1d744da24c",
       "behavioralFingerprint": "50127a3a9ce91ec4cb0a0166e69f46958b4025454f0d652bf59a0708b206e66a"
     },
     {
       "connectorId": "fyralis/slack",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "21330495d66cd114b84dc10cb4020b4bc79847311c23fd80c84b1cc45209a2af",
+      "structuralFingerprint": "7b25e75271e3da48b24637ea435ec44ed7e729ef8faf8487716a241717da4cd7",
       "behavioralFingerprint": "30af69baacdb4d03549fc68e25f4b2ef207950d6b92f9ef314c8ecd4d08063d9"
     },
     {
       "connectorId": "fyralis/telegram",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "1a7da4a6d7278d3db8ef3555dcf1f205120cdbf64c12a3b96b5854e6a6dc5174",
+      "structuralFingerprint": "75439407bd475bcc4447ba7273db2a9298352c46823f15f472cdfb4dfbfe7028",
       "behavioralFingerprint": "c651dcee33aa5e43d3f7ef659d53cd3cc5926ffb705c75e303ad562eb1d72153"
     },
     {
       "connectorId": "fyralis/whatsapp",
       "connectorVersion": "1.0.0",
-      "structuralFingerprint": "b32657d9e65db5aba621e96231408a955346574bd9f9c25ffeb6a3bf7d12a4f5",
+      "structuralFingerprint": "2e382fff47fb90fdf5ace623934d2c61fb440559cd8477c2a8036e6f3968c1d6",
       "behavioralFingerprint": "2bfaccba399805fab94cd7faa80c975b6149394d29d0ae83fe735ad834f760c3"
     }
   ]

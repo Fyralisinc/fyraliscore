@@ -56,10 +56,6 @@ from services.app.gateway.state_wiring import (
 )
 from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
-from services.ingest.integrations.github.gateway_wiring import (
-    close_github_gateway_state,
-    wire_github_gateway_state,
-)
 from services.ingest.connector_platform.startup import (
     wire_source_connector_runtime,
 )
@@ -252,26 +248,8 @@ async def _close_owned_pool_for_lifespan(
         app_,
         "secret_store",
         "tenant_resolver",
-        "tenant_flags",
         "gateway_runtime",
     )
-
-
-def _prepare_existing_github_cleanup(
-    app_: FastAPI,
-    stack: contextlib.AsyncExitStack,
-) -> object | None:
-    if not bool(getattr(app_.state, "gateway_owns_github_client", False)):
-        return None
-    existing_github_client = getattr(app_.state, "github_client", None)
-    if existing_github_client is None:
-        return None
-    stack.push_async_callback(
-        close_github_gateway_state,
-        app_,
-        client=existing_github_client,
-    )
-    return existing_github_client
 
 
 async def _start_gateway_deps(
@@ -498,11 +476,6 @@ async def _start_integration_runtime(
         required=True,
         detail="created" if wiring.tenant_resolver_created else "reused",
     )
-    startup_status.ok(
-        "integration_state.tenant_flags",
-        required=True,
-        detail="created" if wiring.tenant_flags_created else "reused",
-    )
 
     try:
         probe_results = await validate_integration_runtime_state(
@@ -527,62 +500,6 @@ async def _start_integration_runtime(
         startup_status.ok(result.component, required=True)
     startup_status.ok("integration_state", required=True)
     return wiring
-
-
-async def _start_github_gateway_state(
-    app_: FastAPI,
-    stack: contextlib.AsyncExitStack,
-    *,
-    pool: asyncpg.Pool,
-    startup_status: StartupStatus,
-    settings: GatewaySettings,
-    cleanup_client: object | None,
-) -> object | None:
-    try:
-        github_wiring = wire_github_gateway_state(
-            app_,
-            pool=pool,
-            tenant_resolver=getattr(app_.state, "tenant_resolver", None),
-        )
-        github_client = getattr(app_.state, "github_client", None)
-        if github_wiring.owns_client and github_client is not cleanup_client:
-            cleanup_client = github_client
-            stack.push_async_callback(
-                close_github_gateway_state,
-                app_,
-                client=github_client,
-            )
-        startup_status.ok(
-            "github_gateway_state",
-            required=settings.require_github_integration,
-        )
-    except Exception as exc:  # noqa: BLE001
-        partial_client = getattr(app_.state, "github_client", None)
-        if (
-            partial_client is not None
-            and partial_client is not cleanup_client
-            and bool(getattr(app_.state, "gateway_owns_github_client", False))
-        ):
-            await close_github_gateway_state(app_, client=partial_client)
-        if settings.require_github_integration:
-            startup_status.failed_component(
-                "github_gateway_state",
-                required=True,
-                exc=exc,
-            )
-            raise
-        startup_status.degraded(
-            "github_gateway_state",
-            required=False,
-            detail="optional startup failed",
-            exc=exc,
-        )
-        log.warning(
-            "github_gateway_state_degraded",
-            error=str(exc),
-            error_type=type(exc).__name__,
-        )
-    return cleanup_client
 
 
 def _start_oauth_sweeper(
@@ -799,7 +716,6 @@ def build_app(
 
         async with contextlib.AsyncExitStack() as stack:
             stack.callback(startup_status.mark_stopped)
-            github_cleanup_client = _prepare_existing_github_cleanup(app_, stack)
             runtime = await _start_gateway_deps(
                 app_,
                 stack,
@@ -870,14 +786,6 @@ def build_app(
                 startup_status=startup_status,
                 settings=settings,
             )
-            github_cleanup_client = await _start_github_gateway_state(
-                app_,
-                stack,
-                pool=runtime.pool,
-                startup_status=startup_status,
-                settings=settings,
-                cleanup_client=github_cleanup_client,
-            )
             _start_oauth_sweeper(
                 app_,
                 stack,
@@ -940,30 +848,6 @@ def build_app(
         )
         app.state.gateway_runtime = _GatewayRuntime(pool=pool, deps=deps)
         wire_integration_runtime_state(app, pool)
-        try:
-            github_wiring = wire_github_gateway_state(
-                app,
-                pool=pool,
-                tenant_resolver=getattr(app.state, "tenant_resolver", None),
-            )
-            if github_wiring.owns_client:
-                app.state.gateway_owns_github_client = True
-        except Exception as exc:  # noqa: BLE001
-            _clear_app_state(app, "github_client", "github_replay_cache")
-            app.state.gateway_owns_github_client = False
-            if settings.require_github_integration:
-                raise
-            app.state.startup_status.degraded(
-                "github_gateway_state",
-                required=False,
-                detail="optional pre-lifespan wiring failed",
-                exc=exc,
-            )
-            log.warning(
-                "github_gateway_state_prewire_degraded",
-                error=str(exc),
-                error_type=type(exc).__name__,
-            )
 
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(BearerAuthMiddleware)

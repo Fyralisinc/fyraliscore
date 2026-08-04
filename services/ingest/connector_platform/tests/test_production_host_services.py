@@ -116,7 +116,7 @@ async def test_production_host_services_scope_secrets_cas_and_callbacks() -> Non
 
         callback = await services.subscription_callbacks.allocate("events")
         assert callback.callback_url.startswith(
-            "https://gateway.fyralis.test/connectors/fyralis/notion/webhook/"
+            "https://gateway.fyralis.test/webhooks/notion/callback/"
         )
         assert callback.verification_nonce.reveal_text()
 

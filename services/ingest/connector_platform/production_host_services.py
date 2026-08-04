@@ -22,7 +22,7 @@ from services.ingest.connector_runtime.host_services import (
 )
 from services.ingest.ingestion.kafka.flush_batcher import coalesced_flush
 from services.ingest.ingestion.raw_tier.s3 import compute_content_hash
-from services.ingest.ingestion.shadow_write import shadow_write_raw
+from services.ingest.ingestion.raw_emission import emit_raw
 from services.ingest.source_contract.errors import (
     PermissionDeniedError,
     StateIncompatibleError,
@@ -211,7 +211,7 @@ def build_production_host_services_factory(
         return int(row["generation"])
 
     async def raw_publisher(
-        installation_id: UUID, record: SourceRecord
+        installation_id: UUID, record: SourceRecord, ingress_kind: str
     ) -> PublicationReceipt:
         if backends.s3_raw_client is None or backends.kafka_producer is None:
             raise PermissionDeniedError("durable raw publication is unavailable")
@@ -223,10 +223,10 @@ def build_production_host_services_factory(
         )
         acknowledged_at = datetime.now(timezone.utc)
         source = str(install["connector_id"]).removeprefix("fyralis/")
-        raw_key = await shadow_write_raw(
+        raw_key = await emit_raw(
             tenant_id=install["tenant_id"],
             source=source,  # type: ignore[arg-type]
-            ingress_kind="gateway",
+            ingress_kind=ingress_kind,  # type: ignore[arg-type]
             connector_installation_id=installation_id,
             raw_body=raw_body,
             s3_client=backends.s3_raw_client,
@@ -273,8 +273,9 @@ def build_production_host_services_factory(
         )
         return CallbackAllocation(
             callback_url=(
-                f"{backends.callback_base_url.rstrip('/')}/connectors/"
-                f"{install['connector_id']}/webhook/{endpoint_id}"
+                f"{backends.callback_base_url.rstrip('/')}/webhooks/"
+                f"{str(install['connector_id']).removeprefix('fyralis/')}/"
+                f"callback/{endpoint_id}"
             ),
             endpoint_id=str(endpoint_id),
             verification_nonce=SecretValue.from_text(nonce),

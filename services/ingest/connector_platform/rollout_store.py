@@ -20,14 +20,9 @@ def _thresholds(value: Mapping[str, Any] | None) -> RolloutThresholds:
     return RolloutThresholds(
         minimum_executions=int(data.get("minimum_executions", 100)),
         maximum_error_rate=float(data.get("maximum_error_rate", 0.02)),
-        maximum_parity_mismatch_rate=float(
-            data.get("maximum_parity_mismatch_rate", 0.001)
-        ),
-        maximum_p95_regression_ratio=float(
-            data.get("maximum_p95_regression_ratio", 1.25)
-        ),
+        maximum_p95_ms=float(data.get("maximum_p95_ms", 30_000)),
         maximum_lifecycle_failures=int(data.get("maximum_lifecycle_failures", 0)),
-        maximum_dlq_rate_delta=float(data.get("maximum_dlq_rate_delta", 0.001)),
+        maximum_dlq_rate=float(data.get("maximum_dlq_rate", 0.001)),
     )
 
 
@@ -35,10 +30,9 @@ def _threshold_values(value: RolloutThresholds) -> dict[str, int | float]:
     return {
         "minimum_executions": value.minimum_executions,
         "maximum_error_rate": value.maximum_error_rate,
-        "maximum_parity_mismatch_rate": value.maximum_parity_mismatch_rate,
-        "maximum_p95_regression_ratio": value.maximum_p95_regression_ratio,
+        "maximum_p95_ms": value.maximum_p95_ms,
         "maximum_lifecycle_failures": value.maximum_lifecycle_failures,
-        "maximum_dlq_rate_delta": value.maximum_dlq_rate_delta,
+        "maximum_dlq_rate": value.maximum_dlq_rate,
     }
 
 
@@ -79,25 +73,12 @@ class PostgresRolloutRepository:
                          AND implementation = 'connector'
                          AND outcome = 'failed'
                    ) AS failures,
-                   count(*) FILTER (
-                       WHERE event_type = 'parity'
-                   ) AS parity_samples,
-                   count(*) FILTER (
-                       WHERE event_type = 'parity'
-                         AND parity_matches = FALSE
-                   ) AS parity_mismatches,
                    COALESCE(percentile_cont(0.95) WITHIN GROUP (
                        ORDER BY duration_ms
                    ) FILTER (
                        WHERE event_type = 'duration'
                          AND implementation = 'connector'
                    ), 0) AS connector_p95_ms,
-                   COALESCE(percentile_cont(0.95) WITHIN GROUP (
-                       ORDER BY duration_ms
-                   ) FILTER (
-                       WHERE event_type = 'duration'
-                         AND implementation = 'legacy'
-                   ), 0) AS legacy_p95_ms,
                    count(*) FILTER (
                        WHERE event_type = 'lifecycle' AND outcome = 'failed'
                    ) AS lifecycle_failures,
@@ -109,16 +90,7 @@ class PostgresRolloutRepository:
                            WHERE event_type = 'execution'
                              AND implementation = 'connector'
                        ), 1
-                   ) AS connector_dlq_rate,
-                   count(*) FILTER (
-                       WHERE event_type = 'dlq'
-                         AND implementation = 'legacy'
-                   )::double precision / GREATEST(
-                       count(*) FILTER (
-                           WHERE event_type = 'execution'
-                             AND implementation = 'legacy'
-                       ), 1
-                   ) AS baseline_dlq_rate
+                   ) AS connector_dlq_rate
               FROM source_connector_rollout_events
              WHERE revision = $1
                AND occurred_at >= now() - interval '30 minutes'
@@ -128,13 +100,9 @@ class PostgresRolloutRepository:
         return RolloutMetrics(
             executions=int(row["executions"]),
             failures=int(row["failures"]),
-            parity_samples=int(row["parity_samples"]),
-            parity_mismatches=int(row["parity_mismatches"]),
             connector_p95_ms=float(row["connector_p95_ms"]),
-            legacy_p95_ms=float(row["legacy_p95_ms"]),
             lifecycle_failures=int(row["lifecycle_failures"]),
             connector_dlq_rate=float(row["connector_dlq_rate"]),
-            baseline_dlq_rate=float(row["baseline_dlq_rate"]),
         )
 
     async def prune_evidence(self, *, retention_hours: int = 24) -> None:
@@ -221,7 +189,7 @@ class PostgresRolloutRepository:
                     reason=reason,
                 )
 
-    async def rollback_to_legacy(
+    async def rollback_to_previous(
         self,
         failed_revision: int,
         *,
@@ -241,12 +209,27 @@ class PostgresRolloutRepository:
                 )
                 if current is None or int(current["revision"]) != failed_revision:
                     raise RuntimeError("active rollout changed before rollback")
+                previous = await connection.fetchrow(
+                    """
+                    SELECT policy, cohort, rollback_thresholds
+                      FROM source_connector_routing_revisions
+                     WHERE revision < $1
+                     ORDER BY revision DESC
+                     LIMIT 1
+                    """,
+                    failed_revision,
+                )
+                if previous is None:
+                    raise RuntimeError("no previous connector artifact revision exists")
                 next_revision = int(
                     await connection.fetchval(
                         "SELECT COALESCE(max(revision), 0) + 1 FROM source_connector_routing_revisions"
                     )
                 )
-                policy = {"revision": next_revision, "global": "legacy"}
+                policy = {"revision": next_revision, "global": "connector"}
+                cohort = dict(previous["cohort"] or {})
+                cohort["stage"] = "full"
+                cohort["tenant_ids"] = []
                 await connection.execute(
                     """
                     UPDATE source_connector_routing_revisions
@@ -267,13 +250,13 @@ class PostgresRolloutRepository:
                     """,
                     next_revision,
                     json.dumps(policy),
-                    json.dumps({"stage": "full", "tenant_ids": []}),
+                    json.dumps(cohort),
                     actor,
                 )
                 await self._audit_with(
                     connection,
                     failed_revision,
-                    action="automatic_rollback",
+                    action="artifact_rollback",
                     actor=actor,
                     reason=reason,
                     metrics=metrics,

@@ -78,12 +78,10 @@ class CapabilityTelemetry:
         *,
         failure_code: str,
         retryable: bool,
-        shadow: bool = False,
     ) -> None:
         attributes = fields.attributes() + (
             ("failure_code", failure_code),
             ("retryable", str(retryable).lower()),
-            ("shadow", str(shadow).lower()),
         )
         self._services.metrics.increment(
             "source_connector.capability.failed", attributes=attributes
@@ -98,7 +96,6 @@ class CapabilityTelemetry:
             **fields.fields(),
             failure_code=failure_code,
             retryable=retryable,
-            shadow=shadow,
         )
 
 

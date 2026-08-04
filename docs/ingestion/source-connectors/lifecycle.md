@@ -67,8 +67,9 @@ phases reconcile more frequently. Removed installations are no longer due.
 
 Connector capability execution is available only in `Ready` and `Degraded`.
 Paused, maintenance, failed, uninstalling, and removed installations fail before
-the provider operation. Legacy fallback is a routing decision, not a way to
-bypass durable tenant authority for native execution.
+the provider operation. Cleanup is the sole exception during uninstall/removal
+reconciliation. There is no alternate source path that can bypass durable tenant
+authority.
 
 ## Health and degradation
 

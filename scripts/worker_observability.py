@@ -1,17 +1,12 @@
-"""Shared health/metrics wiring for script-launched workers.
+"""Shared health, metrics, pool, and signal wiring for script workers."""
 
-`python scripts/foo.py` puts `scripts/` on `sys.path`, not necessarily the
-repo root. Importing this helper first bootstraps the root and gives launchers
-one small API for process liveness, shared-registry metrics, DB pool gauges,
-and SIGTERM/SIGINT handling.
-"""
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 import pathlib
 import signal
 import sys
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 
@@ -51,14 +46,6 @@ def start_worker_health(
     *,
     render_metrics: Callable[[], str] | None = None,
 ) -> Callable[[], Awaitable[None]]:
-    """Start `/healthz` + `/metrics` and return an async shutdown callback."""
-    # Register the per-source integration collector when available; failures
-    # are ignored so a missing optional integration never breaks liveness.
-    try:
-        import services.ingest.integrations.metrics_export  # noqa: F401
-    except Exception:  # noqa: BLE001
-        pass
-
     heartbeat = Heartbeat()
     health = start_health_server(
         worker_name=worker_name,

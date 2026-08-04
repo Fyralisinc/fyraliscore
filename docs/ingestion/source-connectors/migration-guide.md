@@ -1,95 +1,91 @@
-# Source connector migration guide
+# Source connector contract-only migration record
 
-This guide moves an existing source from direct dispatch to native connector
-execution without weakening ingestion guarantees.
+## Status
 
-## Current migration boundary
+The repository migration is complete. All 26 source families use stable-v1
+manifests, first-party connector factories, common installations, durable
+authority, registry-resolved capabilities, and generic runtime owners. The old
+source planner/fetcher/reconciler/handler/integration trees and source-specific
+webhook/gateway/poller launchers have been removed.
 
-The manifest-derived immutable catalog contains all 26 source families. Every
-entry is a stable-v1 connector-local first-party candidate with structural and
-behavioral release evidence. Connector execution is the fleet default, subject
-to durable authority and signed-artifact admission. Compatibility candidate
-generation no longer exists.
+Because Fyralis is not in production, the final cutover deliberately chose a
+single runtime over availability-preserving dual execution. There is no
+legacy/shadow route and no source-specific fallback.
 
-Native catalog authority is not permission to delete rollback code. Physical
-legacy removal remains source-scoped and evidence-gated even after every
-planner, fetcher, poller, webhook/gateway, reconciler, normalizer, handler,
-installation, and lifecycle owner resolves through the connector runtime.
+## Migration 0190
 
-## Migration sequence
+`0190_source_connector_contract_only.sql` is the final schema cutover. It:
 
-1. Inventory every ingress owner and dispatch entry for the source. Record
-   planner, fetcher, reconciler, live ingress, normalizer, OAuth, installation,
-   cleanup, metrics, retry, breaker, and DLQ behavior.
-2. Capture parity fixtures and operational baselines: output identities,
-   pagination, checkpoints, retry classifications, p95 latency, error and DLQ
-   rates, lifecycle failures, and reconciliation repairs.
-3. Add or verify the source in `source-index.json` and its stable-v1 manifest.
-   The catalog is derived and must not be edited as a second registry.
-4. Implement a native connector root and native capabilities. Existing source
-   clients may be reused behind capability facets; do not call mutable dispatch
-   maps from a native candidate.
-5. Backfill the common installation, authority, credential-reference, and
-   provenance records. Keep provider-specific tables only as extension storage
-   where they still carry provider-specific data.
-6. Route installation and OAuth through connector capabilities. Validate
-   granted scopes against the manifest before persisting current credentials.
-7. Integrate each ingress owner through registry resolution and the capability
-   executor. Keep S3-first publication, Kafka ordering, acknowledgements, and
-   checkpoints in the host.
-8. Pass fleet wiring, static conformance, and behavioral conformance. Update the
-   independently reviewed release-evidence record. Sign the measured artifact
-   and enable its attestation. Startup and continuous quarantine must be clear.
-9. Roll out in stages: shadow, canary tenants, bounded cohort, then full.
-10. Hold full routing while gathering production evidence across backfill,
-    incremental/live ingress, reconciliation, lifecycle, and uninstall.
-11. Exercise configuration-only rollback and artifact quarantine.
-12. Record one `source_connector_retirement_evidence` row for every legacy
-    surface, then remove those dispatch entries only after the retirement
-    criteria below are satisfied.
+- adds installation-scoped callback linkage to onboarding;
+- backfills common connector installation IDs from old onboarding references;
+- removes the old generic/dedicated onboarding installation columns and indexes;
+- moves remaining Google/AWS configuration into namespaced common installation
+  data;
+- places incompatible imported gateway/AWS rows in `Maintenance` for explicit
+  credential/configuration repair;
+- rewrites active routing policies to `{global: connector}` and adds database
+  constraints rejecting source overrides and legacy/shadow modes;
+- removes parity/legacy rollout data and the dual-runtime retirement-evidence
+  table;
+- updates operator audit admissibility for the common lifecycle CLI.
 
-## Invariants to compare
+The migration intentionally does not claim that imported credentials are valid.
+Only current secret references configure provider capabilities; incomplete rows
+remain unavailable.
 
-| Area | Required parity evidence |
+## Preserved invariants
+
+| Invariant | Contract-only owner |
 | --- | --- |
-| Envelopes | Equal source, tenant, installation, native identity, and metadata semantics |
-| Durability | S3 acknowledgement precedes Kafka publication and checkpoint advancement |
-| Pagination | Same terminal behavior; cursor is monotonic and advances after durable success |
-| Idempotency | Stable keys and replay behavior under duplicate delivery |
-| Reconciliation | Equivalent missing-shard detection and repair requests |
-| Failure policy | Equivalent retryability, throttling, breaker, timeout, cancellation, and DLQ behavior |
-| Trust | Same or stricter trust ceiling and content classification |
-| Lifecycle | Install, health degradation/recovery, pause, maintenance, cleanup, and removal parity |
-| Tenancy | No cross-tenant authority, secret, state, callback, or publication access |
-| Telemetry | Connector labels added without losing existing operational signals |
+| Canonical source identity | `source-index.json` and manifest validation |
+| Tenant and installation identity | common installation + authority binding |
+| Raw durability | host raw-emission port writes S3 before Kafka |
+| Checkpoint/resume ordering | generic execution router commits state after emission |
+| Idempotency and envelopes | existing versioned raw/normalized data-plane contracts |
+| Provider retry meaning | typed connector error classification |
+| Webhook trust | connector verification after installation-scoped callback lookup |
+| Poll/watch/gateway state | namespaced CAS installation data |
+| Pause/maintenance/removal | continuous common lifecycle controller |
+| Operator audit | common lifecycle CLI and `operator_action_log` |
 
-## Rollback points
+## Source family cutover
 
-- A routing revision can restore global or connector-scoped `legacy` mode.
-- Threshold breaches create and activate a durable legacy revision.
-- Artifact admission quarantine overrides any routing revision in process.
-- The legacy implementation remains callable until retirement evidence is
-  accepted.
+- REST/API sources moved to explicit first-party factories backed by governed
+  HTTP, provider-owned auth semantics, identity, normalization and webhook/poll
+  capabilities.
+- Slack, Notion and QuickBooks retain connector-owned OAuth authorization and
+  lifecycle facets; other token/API-key sources use the common configuration
+  facet.
+- Gmail, Google Calendar and Google Drive moved to Google-specific watch,
+  Pub/Sub/callback and cursor capabilities.
+- Discord, Telegram and Signal moved to the gateway/session capability and one
+  generic supervisor.
+- AWS moved to a connector-owned CloudTrail SigV4 implementation with
+  manifest-declared regional egress and namespaced region configuration.
 
-Rollback does not undo already acknowledged raw publication. Resume from the
-host-owned durable checkpoint and preserve idempotency keys.
+## Runtime owners removed
 
-## Legacy retirement criteria
+The migration removed direct source client builders, central endpoint dispatch,
+mutable planner/fetcher/reconciler registries, source handler and channel maps,
+source-specific webhook verifiers/resolvers, source sandbox workers, dedicated
+installation CLIs, and source-specific poll/watch/gateway launchers.
 
-Retire a source path only when all are true:
+Non-source product webhooks such as Linear and Stripe billing remain in the
+application webhook subsystem. They are not Fyralis ingestion source families
+and therefore are intentionally outside this migration.
 
-- every declared ingress kind is native and registry-resolved;
-- installation and lifecycle authority are in the common control plane;
-- OAuth/credential rotation and cleanup are connector-owned where applicable;
-- conformance and parity suites are green;
-- signed artifact admission is green in the target environment;
-- production metrics meet thresholds for the agreed observation window;
-- rollback has been exercised without checkpoint or publication drift;
-- the owning team accepts removal of the source-specific dispatch entries.
-- resilience evidence is current for the exact connector version and target
-  region, including disaster-recovery replay and multi-region failover;
-- every retired surface has a durable evidence reference and named rollback
-  owner.
+## Rollback after cutover
 
-Until then, legacy code is intentional rollback infrastructure, not definition
-or registration authority and not dead code.
+Rollback means reverting an artifact revision, repairing configuration, pausing
+an installation, or reverting the deployment/database change before data is
+accepted. It never invokes a second source implementation. Already acknowledged
+raw objects and Kafka envelopes remain authoritative and resume through the
+host-owned checkpoint/idempotency model.
+
+## Deployment prerequisites
+
+Repository completion does not manufacture live-provider evidence. Before a
+production launch, apply migration `0190` to a staging clone, reauthorize rows in
+`Maintenance`, configure signed artifact admission, exercise provider sandboxes,
+and validate Kafka/S3/checkpoint behavior under the target infrastructure. These
+are deployment certification tasks, not missing legacy migration work.

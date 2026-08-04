@@ -10,8 +10,8 @@ from __future__ import annotations
 import pytest
 
 from services.app.webhooks import metrics
-from services.app.webhooks.signatures.github import verifier as github_verifier
-from services.app.webhooks.tests.conftest import github_sign
+from services.app.webhooks.signatures.stripe import verifier as stripe_verifier
+from services.app.webhooks.tests.conftest import stripe_sign
 from services.app.webhooks.verifier import Secret, WebhookVerificationError
 
 
@@ -21,17 +21,19 @@ async def test_metric_per_provider_reason_increments_via_router_path() -> None:
     recorded by the router. Simulate the router's contract: when a
     WebhookVerificationError is caught, record_failure is called."""
     body = b"{}"
-    sig = github_sign("right", body)
+    now = 1_700_000_000
+    sig = stripe_sign("right", body, now)
     try:
-        await github_verifier.verify(
+        await stripe_verifier.verify(
             body=b"different-body",
-            headers={"X-Hub-Signature-256": sig},
-            secrets=[Secret("github", "right")],
+            headers={"Stripe-Signature": sig},
+            secrets=[Secret("stripe", "right")],
+            now=now,
         )
     except WebhookVerificationError as e:
         metrics.record_failure(e.provider, e.reason)
 
-    assert metrics.get_count("github", "signature_mismatch") == 1
+    assert metrics.get_count("stripe", "signature_mismatch") == 1
 
 
 @pytest.mark.asyncio

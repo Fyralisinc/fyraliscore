@@ -1,4 +1,4 @@
-"""services/ingest/ingestion/handlers/__init__.py — handler registry.
+"""Handler registry for direct, non-source ingestion channels.
 
 BUILD-PLAN §3 Prompt 2.A:
     "services/ingest/ingestion/handlers/__init__.py:
@@ -35,21 +35,13 @@ from lib.shared.errors import CompanyOSError
 from lib.shared.types import ObservationKind, TrustTierValue
 
 
-# ARCHITECTURE §14 CHANNEL_TRUST_MAP — authoritative mapping.
-# Only the four Wave 2-A channels are listed here. Agent 2-B will
-# extend via `register()` when those handlers land.
+# External data sources are normalized by Source Connector capabilities and
+# deliberately do not register handlers here.
 CHANNEL_TRUST_MAP: dict[str, str] = {
-    "slack:message": "attested_agent",
     "email:inbound": "attested_agent",
-    "gmail:": "attested_agent",
     "linear:webhook": "authoritative",
-    "github:webhook": "authoritative",
     "calendar:sync": "authoritative",
     "stripe:webhook": "authoritative",
-    "discord:webhook": "attested_agent",
-    "discord:interaction": "attested_agent",
-    "discord:message": "attested_agent",
-    "jira:issue": "authoritative",
     "journal:ui": "authoritative",
     "agent:attested": "attested_agent",
     "news:rss": "reputable",
@@ -60,18 +52,6 @@ CHANNEL_TRUST_MAP: dict[str, str] = {
     "regulatory:api": "authoritative_external",
     "analyst:report": "reputable",
     "ui:contestation": "authoritative",
-    # IN-PEOPLE (sources 23-25): HiBob (HR), Ashby (ATS), LinkedIn (recruiting).
-    # First-party source-of-record systems → authoritative, mirroring the other
-    # entity-model sources (gusto/carta).
-    "hibob:object": "authoritative",
-    "ashby:object": "authoritative",
-    "linkedin:object": "authoritative",
-    # WhatsApp (Cloud API webhook — live). ONE channel/many-event-types
-    # (like github:webhook): inbound customer messages are customer-authored
-    # content via a Meta-signed webhook → attested_agent (Slack/email posture),
-    # while outbound delivery-status callbacks are Meta-asserted facts and the
-    # handler OVERRIDES trust to authoritative + kind=state_change for those.
-    "whatsapp:message": "attested_agent",
     # Internal channels used by system-originated observations; these
     # carry the highest trust and never enter through a signature-
     # verified webhook.
@@ -168,34 +148,10 @@ def _clear_registry_for_tests() -> None:
 # for error messages (first to import wins uniqueness check). These
 # imports intentionally come after _HANDLERS is defined above.
 from services.ingest.ingestion.handlers import system  # noqa: E402,F401
-from services.ingest.ingestion.handlers import slack  # noqa: E402,F401
-from services.ingest.ingestion.handlers import github  # noqa: E402,F401
 from services.ingest.ingestion.handlers import linear  # noqa: E402,F401
 from services.ingest.ingestion.handlers import stripe  # noqa: E402,F401
-from services.ingest.ingestion.handlers import discord  # noqa: E402,F401
-from services.ingest.ingestion.handlers import gmail  # noqa: E402,F401
-from services.ingest.ingestion.handlers import notion  # noqa: E402,F401
-from services.ingest.ingestion.handlers import google_calendar  # noqa: E402,F401
-from services.ingest.ingestion.handlers import google_drive  # noqa: E402,F401
-from services.ingest.ingestion.handlers import jira  # noqa: E402,F401
-from services.ingest.ingestion.handlers import mercury  # noqa: E402,F401
-from services.ingest.ingestion.handlers import quickbooks  # noqa: E402,F401
-from services.ingest.ingestion.handlers import grafana  # noqa: E402,F401
-from services.ingest.ingestion.handlers import telegram  # noqa: E402,F401
-from services.ingest.ingestion.handlers import brex  # noqa: E402,F401
-from services.ingest.ingestion.handlers import ramp  # noqa: E402,F401
-from services.ingest.ingestion.handlers import gusto  # noqa: E402,F401
-from services.ingest.ingestion.handlers import deel  # noqa: E402,F401
-from services.ingest.ingestion.handlers import fireflies  # noqa: E402,F401
-from services.ingest.ingestion.handlers import signal  # noqa: E402,F401
-from services.ingest.ingestion.handlers import aws  # noqa: E402,F401
-from services.ingest.ingestion.handlers import miro  # noqa: E402,F401
-from services.ingest.ingestion.handlers import figma  # noqa: E402,F401
-from services.ingest.ingestion.handlers import carta  # noqa: E402,F401
-from services.ingest.ingestion.handlers import hibob  # noqa: E402,F401
-from services.ingest.ingestion.handlers import ashby  # noqa: E402,F401
-from services.ingest.ingestion.handlers import linkedin  # noqa: E402,F401
-from services.ingest.ingestion.handlers import whatsapp  # noqa: E402,F401
+from services.ingest.ingestion.handlers import email  # noqa: E402,F401
+from services.ingest.ingestion.handlers import calendar  # noqa: E402,F401
 
 
 __all__ = [

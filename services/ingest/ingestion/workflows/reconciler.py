@@ -19,7 +19,7 @@ and emits `source_onboarding_completed` directly to TenantOnboarding.
 
 M6.2b flow (this commit): SourceOnboarding emits
 `source_shards_completed` to THIS Reconciler service's inbox.
-Reconciler calls `RECONCILER_DISPATCH[source]` to decide clean vs.
+Reconciler calls the registry-resolved reconciliation capability to decide clean vs.
 re-share. CLEAN → emit `source_onboarding_completed` to
 TenantOnboarding (preserving the M6.1 consumer contract). RE-SHARE
 → create new shards with `parent_shard_id` linkage and emit
@@ -113,10 +113,8 @@ PATTERN-ALIGNMENT MAPPING
     (re-share). All via the substrate.
 
   Rule 5 (no cross-workflow shared state):
-    No module-level mutable state in this file. `RECONCILER_DISPATCH`
-    in `services/ingest/ingestion/reconcilers/__init__.py` is ALL_CAPS
-    (constant-style) and outside the analyzer's
-    `services/ingest/ingestion/workflows/*.py` scope.
+    No module-level mutable source registry exists. The immutable connector
+    router is injected into the service composition.
 """
 
 from __future__ import annotations
@@ -140,8 +138,7 @@ from services.ingest.ingestion.progress.events import (
     SourceOnboardingComplete,
 )
 from services.ingest.ingestion.progress.publisher import publish_progress_events
-from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
+from services.ingest.connector_platform.workflow_models import (
     ReconciliationDecision,
     ResharedShard,
 )
@@ -165,14 +162,14 @@ log = logging.getLogger(__name__)
 WORKFLOW_KIND = "reconciler"
 WORKFLOW_ID_INBOX = "reconciler"  # per A13: workflow_id = inbox
 
-# The per-source reconciler dispatch runs a best-effort gap-check that may
-# make source-API calls (real HTTP in production / against the spammer).
+# The connector reconciliation capability runs a best-effort gap check that may
+# make governed source-API calls.
 # Bound it so one slow/wedged API call can't hold the claim transaction —
 # and thus freeze the reconciler's single-loop tick — indefinitely. A
 # timed-out check is treated as "clean" (no gaps): the run completes, and a
 # genuine gap would be re-detected on a later pass. Configurable for tests.
-RECONCILER_DISPATCH_TIMEOUT_S = float(
-    os.environ.get("RECONCILER_DISPATCH_TIMEOUT_SEC", "30"),
+CONNECTOR_RECONCILE_TIMEOUT_S = float(
+    os.environ.get("CONNECTOR_RECONCILE_TIMEOUT_SEC", "30"),
 )
 WORKFLOW_ID_DEFAULT = "default"
 
@@ -189,14 +186,6 @@ SHARD_FETCH_INBOX_ID = "shard_fetch"
 
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
-
-_LOAD_PILOT_INSTALL_SQL = """
-SELECT id, tenant_id, provider, installation_id, enabled
-  FROM provider_installations
- WHERE tenant_id = $1 AND provider = $2 AND enabled = TRUE
- LIMIT 1
-"""
-
 
 # ---------------------------------------------------------------------
 # SQL.
@@ -241,7 +230,7 @@ UPDATE source_onboarding_runs
    AND reconciled_at IS NULL
 """
 
-# Dispatch-failure path (per A19): when RECONCILER_DISPATCH[source]
+# Capability-failure path (per A19): when connector reconciliation
 # raises, mark the run failed and emit source_onboarding_completed
 # with the failure reason. When the reconciler's dispatch fires, the
 # run's status is typically 'completed' (SourceOnboarding's rollup
@@ -560,7 +549,7 @@ class Reconciler(LongRunningService):
           - Load source_onboarding_runs row.
           - Idempotency check on reconciled_at.
           - Load all shards for (run, source).
-          - Call RECONCILER_DISPATCH[source](shards, run).
+          - Invoke the installation-bound reconciliation capability.
           - Clean path: stamp reconciled_at + emit source_onboarding_completed.
           - Re-share path: increment pass_count, transition status,
             mark originals resharded, INSERT new shards, emit
@@ -612,28 +601,34 @@ class Reconciler(LongRunningService):
         # facing "not yet implemented" distinction); control flow is
         # identical.
         try:
-            install = None
-            if self._connector_router is not None and self._connector_router.supports(
-                source
-            ):
-                install = await conn.fetchrow(
-                    _LOAD_PILOT_INSTALL_SQL,
-                    run["tenant_id"],
-                    source,
-                )
-            dispatch = (
-                self._connector_router.reconcile(
-                    source,
-                    install,
-                    shards,
-                    run,
-                )
-                if install is not None
-                else RECONCILER_DISPATCH[source](shards, run)
+            if self._connector_router is None:
+                raise RuntimeError("source connector router is unavailable")
+            install = await conn.fetchrow(
+                """
+                SELECT id, tenant_id, connector_id,
+                       external_installation_id AS installation_id,
+                       desired_state, observed_phase, TRUE AS enabled
+                  FROM source_connector_installations
+                 WHERE tenant_id = $1 AND connector_id = $2
+                   AND desired_state = 'Ready'
+                   AND observed_phase IN ('Ready', 'Degraded')
+                 ORDER BY updated_at DESC
+                 LIMIT 1
+                """,
+                run["tenant_id"],
+                f"fyralis/{source}",
+            )
+            if install is None:
+                raise RuntimeError("source connector installation is unavailable")
+            dispatch = self._connector_router.reconcile(
+                source,
+                install,
+                shards,
+                run,
             )
             decision = await asyncio.wait_for(
                 dispatch,
-                timeout=RECONCILER_DISPATCH_TIMEOUT_S,
+                timeout=CONNECTOR_RECONCILE_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
             # Best-effort gap-check exceeded its bound (slow / wedged source
@@ -646,7 +641,7 @@ class Reconciler(LongRunningService):
                 extra={
                     "source": source,
                     "run_id": str(run_id),
-                    "timeout_s": RECONCILER_DISPATCH_TIMEOUT_S,
+                    "timeout_s": CONNECTOR_RECONCILE_TIMEOUT_S,
                 },
             )
             decision = ReconciliationDecision(has_gaps=False)
@@ -878,17 +873,6 @@ async def _run_service() -> None:
     await producer.start()
     connector_wiring = build_workflow_connector_wiring(pool=pool)
     await connector_wiring.refresh_routing()
-    # M6.3: per-source reconcilers may need pool access for auxiliary reads
-    # (e.g., Gmail reads workflow_states for each shard's final_history_id).
-    # Register the pool with every per-source module via the shared helper —
-    # derived from RECONCILER_DISPATCH so this service and the
-    # PeriodicReconciler register the SAME source set and cannot drift (a
-    # per-source module raises an explicit error if its pool isn't registered
-    # when called).
-    from services.ingest.ingestion.reconcilers import register_pool_provider
-
-    register_pool_provider(pool)
-
     config = ReconcilerConfig(
         tick_interval_seconds=float(
             os.environ.get("RECONCILER_TICK_SEC", "5.0"),
@@ -953,7 +937,7 @@ if __name__ == "__main__":
 __all__ = [
     "DEFAULT_MAX_SIGNALS_PER_TICK",
     "DEFAULT_TICK_INTERVAL_SECONDS",
-    "RECONCILER_DISPATCH_TIMEOUT_S",
+    "CONNECTOR_RECONCILE_TIMEOUT_S",
     "Reconciler",
     "ReconcilerConfig",
     "apply_reshare",

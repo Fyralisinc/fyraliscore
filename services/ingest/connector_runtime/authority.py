@@ -30,22 +30,16 @@ def scope_authority(
     manifest: ConnectorManifest,
     granted: GrantedAuthority,
 ) -> GrantedAuthority:
-    """Validate a grant and reduce it to the manifest's requested authority."""
+    """Validate a grant and reduce it to the manifest's permission ceiling.
+
+    Grants are intentionally partial and name only current credential-backed
+    slots. Installation/configuration and pure normalization can bind before
+    provider credentials exist. Capability factories expose only operations
+    configured by the resulting scoped slots, while host ports enforce the same
+    reduced hosts, scopes, and secrets.
+    """
 
     requested = manifest.spec.permissions
-    missing_secrets = set(requested.secret_slots) - set(granted.secret_slots)
-    missing_hosts = set(requested.outbound_hosts) - set(granted.outbound_hosts)
-    missing_scopes = set(requested.requested_scopes) - set(granted.scopes)
-    if missing_secrets or missing_hosts or missing_scopes:
-        raise BindingError(
-            "binding authority does not satisfy connector manifest permissions",
-            details={
-                "connector_id": manifest.connector_id,
-                "missing_secret_slots": tuple(sorted(missing_secrets)),
-                "missing_outbound_hosts": tuple(sorted(missing_hosts)),
-                "missing_scopes": tuple(sorted(missing_scopes)),
-            },
-        )
     manifest_trust = manifest.spec.trust.maximum_tier
     if (
         manifest_trust not in _TRUST_RANK
@@ -60,9 +54,9 @@ def scope_authority(
         key=_TRUST_RANK.__getitem__,
     )
     return GrantedAuthority(
-        secret_slots=frozenset(requested.secret_slots),
-        outbound_hosts=frozenset(requested.outbound_hosts),
-        scopes=frozenset(requested.requested_scopes),
+        secret_slots=frozenset(requested.secret_slots) & granted.secret_slots,
+        outbound_hosts=frozenset(requested.outbound_hosts) & granted.outbound_hosts,
+        scopes=frozenset(requested.requested_scopes) & granted.scopes,
         maximum_trust_tier=trust_ceiling,
     )
 

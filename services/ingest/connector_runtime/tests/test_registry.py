@@ -386,7 +386,7 @@ def test_factory_activation_is_deterministic() -> None:
     assert activation_order == ["fyralis/alpha", "fyralis/zeta"]
 
 
-def test_binding_validates_authority_before_connector_activation() -> None:
+def test_binding_accepts_manifest_scoped_partial_authority() -> None:
     candidate, connector = make_candidate()
     registry = ConnectorRegistryBuilder().add(candidate).build()
     context = make_binding_context(
@@ -394,11 +394,10 @@ def test_binding_validates_authority_before_connector_activation() -> None:
         authority=GrantedAuthority(),
     )
 
-    with pytest.raises(BindingError) as captured:
-        registry.resolve_for_install(context)
+    binding = registry.resolve_for_install(context)
 
-    assert connector.bind_calls == 0
-    assert captured.value.details["missing_secret_slots"] == ("api_token",)
+    assert connector.bind_calls == 1
+    assert binding.capability(IDENTITY_V1) is not None
 
 
 def test_binding_validates_installation_and_capability_shape() -> None:

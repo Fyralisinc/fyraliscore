@@ -7,7 +7,9 @@ from uuid import uuid4
 import orjson
 import pytest
 
-from services.ingest.ingestion.handlers import get_handler
+from services.ingest.connector_platform.workflow_wiring import (
+    build_workflow_connector_wiring,
+)
 from services.ingest.ingestion.normalizer.worker import _normalize_one_with_envelope
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
 
@@ -26,27 +28,6 @@ class _Producer:
 
     async def produce(self, **message: Any) -> None:
         self.messages.append(message)
-
-
-class _RegistryRouter:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def supports(self, source: str) -> bool:
-        return source == "slack"
-
-    def is_native(self, source: str) -> bool:
-        return source == "slack"
-
-    async def normalize(self, source, install, request, legacy_call):
-        assert source == "slack"
-        assert install["tenant_id"]
-        assert request.ingress_kind == "webhook"
-        self.calls += 1
-        return await get_handler("slack:message")(
-            dict(request.record.payload),
-            {str(key): str(value) for key, value in request.ingress_metadata.items()},
-        )
 
 
 @pytest.mark.asyncio
@@ -77,18 +58,18 @@ async def test_migrated_source_normalization_resolves_through_registry_router() 
         ingress_kind="webhook",
     )
     producer = _Producer()
-    router = _RegistryRouter()
+    wiring = build_workflow_connector_wiring()
 
     parsed, produced = await _normalize_one_with_envelope(
         orjson.dumps(envelope.model_dump(mode="json")),
         _S3(orjson.dumps(payload)),  # type: ignore[arg-type]
         producer,  # type: ignore[arg-type]
-        connector_router=router,
+        connector_router=wiring.router,
     )
+    await wiring.close()
 
     assert parsed == envelope
     assert produced is True
-    assert router.calls == 1
     assert orjson.loads(producer.messages[0]["value"])["external_id"] == (
         "C1:1747483200.001000"
     )

@@ -1,9 +1,8 @@
 """First-party source connector roots and factories.
 
-Pilot capability implementations live beside their provider wire semantics and
-depend only on the source contract.  Legacy adapters remain in
-``connector_platform`` as explicit rollback implementations; no ambient legacy
-binding is required to invoke any connector declared here.
+Capability implementations live beside their provider wire semantics and
+depend only on the source contract. Every source operation binds one of these
+roots; no source-local fallback or ambient dispatch registry remains.
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ from typing import Any
 from services.ingest.connectors.notion import (
     NotionIngestion,
     NotionNormalization,
+    NotionWebhook,
     notion_external_id,
 )
 from services.ingest.connectors.oauth import (
@@ -29,12 +29,15 @@ from services.ingest.connectors.slack import (
     slack_external_id,
 )
 from services.ingest.connectors.whatsapp import (
+    WhatsAppConfiguration,
     WhatsAppNormalization,
+    WhatsAppSecretRotation,
     WhatsAppWebhook,
     whatsapp_external_id,
 )
 from services.ingest.source_contract.capabilities import (
     CLEANUP_V1,
+    CONFIGURATION_V1,
     HEALTH_PROBE_V1,
     HISTORICAL_PULL_V1,
     IDENTITY_V1,
@@ -43,10 +46,15 @@ from services.ingest.source_contract.capabilities import (
     OAUTH2_LIFECYCLE_V1,
     OAUTH2_V1,
     RECONCILIATION_V1,
+    SECRET_ROTATION_V1,
     WEBHOOK_V1,
 )
 from services.ingest.source_contract.capabilities.installation import (
+    ConfigurationIssue,
+    ConfigurationValidation,
     OAuthRevokeRequest,
+    SecretRotationRequest,
+    SecretRotationVerification,
 )
 from services.ingest.source_contract.capabilities.lifecycle import (
     CleanupRequest,
@@ -169,6 +177,51 @@ class LocalCredentialCleanup:
         )
 
 
+class BasicConfiguration:
+    async def validate_configuration(
+        self,
+        configuration: dict[str, Any],
+        context: OperationContext,
+    ) -> ConfigurationValidation:
+        del context
+        external_id = configuration.get("external_installation_id")
+        if isinstance(external_id, str) and external_id.strip():
+            return ConfigurationValidation(valid=True)
+        return ConfigurationValidation(
+            valid=False,
+            issues=(
+                ConfigurationIssue(
+                    field="external_installation_id",
+                    code="required",
+                    message="a provider installation identifier is required",
+                ),
+            ),
+        )
+
+
+class DeclaredSecretRotation:
+    def __init__(self, slots: tuple[str, ...]) -> None:
+        self._slots = frozenset(slots)
+
+    async def verify_candidate(
+        self,
+        request: SecretRotationRequest,
+        context: OperationContext,
+    ) -> SecretRotationVerification:
+        del context
+        if str(request.slot) not in self._slots:
+            return SecretRotationVerification(
+                valid=False,
+                reason_code="slot_not_declared",
+                message="the candidate targets a slot outside the manifest",
+            )
+        return SecretRotationVerification(
+            valid=True,
+            reason_code="candidate_handle_accepted",
+            message="the host may atomically promote the declared secret handle",
+        )
+
+
 def _manifest(source: str) -> ConnectorManifest:
     return load_connector_manifest(_MANIFEST_DIRECTORY / f"{source}.json")
 
@@ -200,6 +253,10 @@ def build_notion_connector() -> NativeSourceConnector:
     return NativeSourceConnector(
         _manifest("notion"),
         {
+            CONFIGURATION_V1.ref: lambda _context: BasicConfiguration(),
+            SECRET_ROTATION_V1.ref: lambda _context: DeclaredSecretRotation(
+                ("oauth_access_token", "webhook_verification_token")
+            ),
             OAUTH2_V1.ref: NotionOAuthCapability,
             OAUTH2_LIFECYCLE_V1.ref: NotionOAuthCapability,
             HEALTH_PROBE_V1.ref: lambda context: CredentialHealthProbe(
@@ -210,6 +267,7 @@ def build_notion_connector() -> NativeSourceConnector:
             ),
             HISTORICAL_PULL_V1.ref: NotionIngestion,
             INCREMENTAL_POLL_V1.ref: NotionIngestion,
+            WEBHOOK_V1.ref: NotionWebhook,
             RECONCILIATION_V1.ref: NotionIngestion,
             IDENTITY_V1.ref: lambda _context: NativeIdentity(notion_external_id),
             NORMALIZATION_V1.ref: lambda _context: NotionNormalization(),
@@ -223,6 +281,8 @@ def build_whatsapp_connector() -> NativeSourceConnector:
     return NativeSourceConnector(
         _manifest("whatsapp"),
         {
+            CONFIGURATION_V1.ref: lambda _context: WhatsAppConfiguration(),
+            SECRET_ROTATION_V1.ref: lambda _context: WhatsAppSecretRotation(),
             HEALTH_PROBE_V1.ref: lambda context: CredentialHealthProbe(
                 context, ("app_secret",)
             ),
@@ -235,7 +295,9 @@ def build_whatsapp_connector() -> NativeSourceConnector:
 
 
 __all__ = [
+    "BasicConfiguration",
     "CredentialHealthProbe",
+    "DeclaredSecretRotation",
     "LocalCredentialCleanup",
     "NativeIdentity",
     "NativeSourceConnector",

@@ -1,4 +1,4 @@
-"""Gateway/service startup wiring for the side-by-side connector runtime."""
+"""Gateway/service startup wiring for the contract-only connector runtime."""
 
 from __future__ import annotations
 
@@ -17,10 +17,10 @@ from services.ingest.connector_platform.deployment import (
 from services.ingest.connector_platform.operational_health import (
     PostgresConnectorHealthReader,
 )
-from services.ingest.connector_platform.pilots import (
-    build_fleet_candidates,
-    build_fleet_composition,
-    default_migrated_routing_policy,
+from services.ingest.connector_platform.catalog import (
+    build_connector_runtime,
+    build_runtime_candidates,
+    default_routing_policy,
 )
 from services.ingest.connector_platform.rollout_evidence import (
     PostgresRolloutEvidenceSink,
@@ -81,7 +81,7 @@ def wire_source_connector_runtime(
     pool: object | None = None,
     actor: str = "gateway",
 ) -> SourceConnectorRuntimeWiring:
-    """Construct and publish one immutable snapshot alongside legacy state."""
+    """Construct and publish the immutable source-connector snapshot."""
 
     raw_config = (
         os.environ.get(ROUTING_CONFIG_ENV) if routing_config is None else routing_config
@@ -89,9 +89,9 @@ def wire_source_connector_runtime(
     policy = (
         parse_routing_policy(raw_config)
         if raw_config
-        else default_migrated_routing_policy()
+        else default_routing_policy()
     )
-    composition = build_fleet_composition(policy)
+    composition = build_connector_runtime(policy)
     controller = RoutingConfigurationController(composition.routing)
     rollout = None
     artifact_admission = None
@@ -112,7 +112,7 @@ def wire_source_connector_runtime(
         artifact_admission = ArtifactAdmissionController(
             PostgresArtifactRepository(pool),
             composition.routing,
-            build_fleet_candidates(),
+            build_runtime_candidates(),
             ArtifactAdmissionSettings.from_env(),
         )
     wiring = SourceConnectorRuntimeWiring(

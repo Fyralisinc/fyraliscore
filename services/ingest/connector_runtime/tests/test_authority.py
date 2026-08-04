@@ -78,6 +78,8 @@ def test_authority_is_reduced_to_manifest_permissions_and_trust_ceiling() -> Non
     assert scoped.maximum_trust_tier == manifest.spec.trust.maximum_tier
 
 
-def test_authority_scope_rejects_missing_permissions() -> None:
-    with pytest.raises(BindingError, match="does not satisfy"):
-        scope_authority(make_manifest(), GrantedAuthority())
+def test_authority_scope_allows_partial_installation_grants() -> None:
+    scoped = scope_authority(make_manifest(), GrantedAuthority())
+    assert scoped.secret_slots == frozenset()
+    assert scoped.outbound_hosts == frozenset()
+    assert scoped.scopes == frozenset()

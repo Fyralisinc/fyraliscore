@@ -175,6 +175,14 @@ class ContinuousInstallationController:
                     "ArtifactQuarantined: connector artifact is not admitted"
                 )
             )
+        # Paused and maintenance installations are intentionally unavailable;
+        # advancing those observed phases must not require provider access or
+        # complete credentials. Removal still binds so connector cleanup runs.
+        if lifecycle.desired in {
+            DesiredInstallationState.PAUSED,
+            DesiredInstallationState.MAINTENANCE,
+        }:
+            return LifecycleEvidence()
         installation = InstallationRef(
             id=lifecycle.installation_id,
             tenant_id=lifecycle.tenant_id,

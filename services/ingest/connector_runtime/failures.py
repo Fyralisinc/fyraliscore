@@ -109,10 +109,10 @@ def classify_failure(exc: BaseException) -> TranslatedFailure:
         )
     if bool(getattr(exc, "recoverable", False)):
         return TranslatedFailure(
-            str(getattr(exc, "code", "legacy_recoverable_failure")),
+            str(getattr(exc, "code", "provider_recoverable_failure")),
             True,
             RuntimeFailureAction.RETRY,
-            "legacy_recoverable",
+            "provider_recoverable",
         )
     return TranslatedFailure(
         "connector_unexpected_failure",

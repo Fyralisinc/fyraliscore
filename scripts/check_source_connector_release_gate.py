@@ -6,20 +6,20 @@ from __future__ import annotations
 import asyncio
 from uuid import UUID
 
-from services.ingest.connector_platform.catalog import CONNECTOR_CATALOG
-from services.ingest.connector_platform.fleet_validation import validate_native_fleet
-from services.ingest.connector_platform.pilots import (
-    build_fleet_candidates,
-    default_migrated_routing_policy,
+from services.ingest.connector_platform.catalog import (
+    CONNECTOR_CATALOG,
+    build_runtime_candidates,
+    default_routing_policy,
     release_evidence_catalog,
 )
+from services.ingest.connector_platform.fleet_validation import validate_native_fleet
 from services.ingest.connector_runtime.artifacts import connector_artifact_sha256
 from services.ingest.connector_runtime.policy import ExecutionMode, RouteRequest
 from services.ingest.connectors.behavior import run_fleet_behavioral_conformance
 
 
 def main() -> int:
-    candidates = build_fleet_candidates()
+    candidates = build_runtime_candidates()
     expected_ids = {entry.connector_id for entry in CONNECTOR_CATALOG}
     actual_ids = {candidate.manifest.connector_id for candidate in candidates}
     if actual_ids != expected_ids or len(candidates) != len(CONNECTOR_CATALOG):
@@ -38,7 +38,7 @@ def main() -> int:
                 f"behavioral release evidence drifted for {connector_id}: "
                 f"expected {evidence.behavioral_fingerprint}, got {report.fingerprint}"
             )
-    policy = default_migrated_routing_policy()
+    policy = default_routing_policy()
     for candidate in candidates:
         manifest = candidate.manifest
         connector_artifact_sha256(manifest)

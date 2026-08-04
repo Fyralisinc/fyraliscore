@@ -50,19 +50,14 @@ Emits from the orchestrator:
     consumption inbox (Bridge implementation is out of M6.1 scope).
 
 ============================================================
-SOURCE APPLICABILITY (the Phase 2 design moment)
+SOURCE APPLICABILITY
 ============================================================
-Per the M6.1 Phase 2 design decision:
+Ready or Degraded rows in `source_connector_installations` are the
+only source of truth for which sources apply to a tenant. The
+`onboarding_runs.sources_enabled[]` value is an audit snapshot, not
+a second routing authority.
 
-  `provider_installations` (for slack/github/discord) +
-  `gmail_installations` (for gmail), filtered to ACTIVE rows at
-  orchestrator-tick-time, IS the source of truth for which sources
-  apply to a tenant's onboarding.
-
-  `onboarding_runs.sources_enabled[]` is a SNAPSHOT artifact for
-  audit, NOT a controlling input.
-
-Rationale: provider_installations reflects current reality. If a
+The common connector control plane reflects current reality. If a
 tenant installs slack at t=0 (trigger fires), then installs gmail
 at t=5s (another trigger fires), then the orchestrator picks up the
 slack-trigger run at t=10s, it sees BOTH active installs. The slack
@@ -129,7 +124,6 @@ from uuid import UUID
 
 import asyncpg
 
-from services.ingest.ingestion.feature_flags.client import KAFKA_PATH_ENABLED
 from services.ingest.ingestion.progress.events import (
     ProgressEvent,
     TenantOnboardingComplete,
@@ -191,119 +185,13 @@ SELECT id, tenant_id, status, sources_enabled
  WHERE id = $1
 """
 
-# Source applicability: active installs at tick-time per A13's
-# "provider_installations is the source of truth" decision.
+# Source applicability comes only from the common connector control plane.
 _LOAD_ACTIVE_SOURCES_SQL = """
-SELECT provider AS source
-  FROM provider_installations
+SELECT regexp_replace(connector_id, '^fyralis/', '') AS source
+  FROM source_connector_installations
  WHERE tenant_id = $1
-   AND enabled = TRUE
-   AND provider IN ('slack', 'github', 'discord', 'notion')
-UNION
-SELECT 'gmail' AS source
-  FROM gmail_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'google_calendar' AS source
-  FROM google_calendar_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'google_drive' AS source
-  FROM google_drive_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'jira' AS source
-  FROM jira_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'mercury' AS source
-  FROM mercury_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'quickbooks' AS source
-  FROM quickbooks_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'grafana' AS source
-  FROM grafana_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'telegram' AS source
-  FROM telegram_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'brex' AS source
-  FROM brex_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'ramp' AS source
-  FROM ramp_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'gusto' AS source
-  FROM gusto_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'deel' AS source
-  FROM deel_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'fireflies' AS source
-  FROM fireflies_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'signal' AS source
-  FROM signal_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'aws' AS source
-  FROM aws_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'miro' AS source
-  FROM miro_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'figma' AS source
-  FROM figma_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'carta' AS source
-  FROM carta_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'hibob' AS source
-  FROM hibob_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'ashby' AS source
-  FROM ashby_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
-UNION
-SELECT 'linkedin' AS source
-  FROM linkedin_installations
- WHERE tenant_id = $1
-   AND disabled_at IS NULL
+   AND desired_state = 'Ready'
+   AND observed_phase IN ('Ready', 'Degraded')
 """
 
 # ON CONFLICT DO NOTHING: defensive against concurrent claims racing
@@ -320,21 +208,6 @@ _MARK_RUN_RUNNING_SQL = """
 UPDATE onboarding_runs
    SET status = 'running'
  WHERE id = $1 AND status = 'pending'
-"""
-
-# Default a freshly-onboarded tenant onto the full Kafka pipeline so
-# its data-plane envelopes are persisted (not dropped as shadow-only).
-# ON CONFLICT DO NOTHING: only establishes the default on first
-# onboarding — it never clobbers an explicit later decision, in
-# particular the circuit breaker's `auto:circuit_breaker` trip-off
-# (which sets the flag FALSE under sustained consumer lag) or an
-# operator who deliberately seeded the tenant FALSE.
-_ENABLE_KAFKA_PATH_SQL = """
-INSERT INTO tenant_flags
-    (tenant_id, flag_name, flag_value, set_by, note, set_at)
-VALUES ($1, $2, TRUE, 'auto:tenant_onboarding',
-        'enabled by default at tenant onboarding', now())
-ON CONFLICT (tenant_id, flag_name) DO NOTHING
 """
 
 _MARK_SOURCE_COMPLETED_SQL = """
@@ -419,9 +292,7 @@ async def _determine_applicable_sources(
     conn: asyncpg.Connection,
     tenant_id: UUID,
 ) -> list[str]:
-    """Query provider_installations + gmail_installations at
-    tick-time. Returns the list of sources that are CURRENTLY
-    active for this tenant.
+    """Query common connector installations at tick-time.
 
     Per A13: this is the source of truth for source applicability.
     The trigger's source (recorded in onboarding_runs.sources_enabled
@@ -446,19 +317,6 @@ async def _insert_source_row(
         source,
         tenant_id,
     )
-
-
-async def _enable_kafka_path(
-    conn: asyncpg.Connection,
-    tenant_id: UUID,
-) -> None:
-    """Set `ingestion.kafka_path_enabled=TRUE` for the tenant if unset.
-
-    Idempotent (ON CONFLICT DO NOTHING) and runs inside the
-    run-created transaction, so it commits atomically with the
-    'running' transition — the flag is TRUE before any backfill
-    envelope reaches the observation writer."""
-    await conn.execute(_ENABLE_KAFKA_PATH_SQL, tenant_id, KAFKA_PATH_ENABLED)
 
 
 async def _mark_source_completed(
@@ -614,9 +472,7 @@ class TenantOnboardingOrchestrator(LongRunningService):
         conn: asyncpg.Connection,
         sig: WorkflowSignal,
     ) -> list[ProgressEvent]:
-        """New-runs phase. Source-applicability determined by
-        provider_installations + gmail_installations at tick-time
-        (A13 / Phase 2 decision).
+        """New-runs phase using common connector installation state.
 
         Returns `[TenantOnboardingStarted]` on the pending→running
         transition (the moment tenant onboarding actually begins);
@@ -669,12 +525,6 @@ class TenantOnboardingOrchestrator(LongRunningService):
                     "source": source,
                 },
             )
-
-        # Default this tenant onto the full Kafka pipeline so its
-        # observations persist (idempotent; never overrides a later
-        # operator/circuit-breaker FALSE). Same transaction as the
-        # 'running' transition below.
-        await _enable_kafka_path(conn, tenant_id)
 
         await conn.execute(_MARK_RUN_RUNNING_SQL, run_id)
 

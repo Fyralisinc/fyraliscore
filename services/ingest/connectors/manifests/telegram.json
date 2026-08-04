@@ -10,10 +10,11 @@
   },
   "spec": {
     "contract": ">=1.0,<2.0",
-    "implementation": "services.ingest.connectors.fleet:build_telegram_connector",
+    "implementation": "services.ingest.connectors.gateway_sources:build_telegram_connector",
     "artifactModules": [
-      "services.ingest.connectors.native",
-      "services.ingest.connectors.profiles"
+      "services.ingest.connectors.fleet",
+      "services.ingest.connectors.gateway_sources",
+      "services.ingest.connectors.provider_spec"
     ],
     "maturity": "stable",
     "capabilities": [

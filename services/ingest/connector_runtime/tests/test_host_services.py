@@ -71,5 +71,6 @@ async def test_default_mutating_ports_fail_closed() -> None:
 
         with pytest.raises(PermissionDeniedError):
             await services.raw_emission.emit(
-                SourceRecord(native_type="test", payload={})
+                SourceRecord(native_type="test", payload={}),
+                ingress_kind="poll",
             )

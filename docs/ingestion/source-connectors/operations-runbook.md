@@ -1,133 +1,82 @@
 # Source connector operations runbook
 
-## Readiness checks
+## Inventory
 
-Before enabling connector routing:
+Run:
 
-1. Apply migrations through
-   `db/migrations/0189_source_connector_stable_v1.sql` on a fresh or
-   correctly versioned database.
-2. Confirm the process reports a 26-connector registry and the expected
-   registry fingerprint.
-3. Confirm installation and authority rows exist for the target tenant.
-4. Confirm required credential slots are current and authority is not revoked.
-5. Confirm the installation lifecycle is `Ready` or intentionally `Degraded`.
-6. Confirm the connector artifact is enabled, signed by a trusted key, built by
-   an allowed builder, matches the digest measured from the running module and
-   exact manifest, and is not quarantined.
-7. Confirm an active routing revision exists and
-   `source_connector_rollout_events` is receiving bounded execution, duration,
-   parity, lifecycle, and DLQ evidence for that revision.
+```bash
+.venv/bin/python scripts/check_source_connector_release_gate.py
+.venv/bin/python scripts/check_source_lifecycle_contract.py
+```
 
-## Runtime configuration
+The expected inventory is 26 stable-v1 native connectors and one common
+lifecycle command surface.
 
-| Variable | Meaning |
-| --- | --- |
-| `SOURCE_CONNECTOR_ROUTING_JSON` | Process bootstrap routing policy; durable active revisions supersede it when newer |
-| `SOURCE_CONNECTOR_REQUIRE_SIGNED_ARTIFACTS` | Require an attestation for every connector candidate; production forces this on |
-| `SOURCE_CONNECTOR_TRUSTED_SIGNERS_JSON` | JSON map of signer key ID to base64 raw Ed25519 public key |
-| `SOURCE_CONNECTOR_ALLOWED_BUILDERS` | Comma-separated artifact builder allowlist |
-| `CONNECTOR_CALLBACK_BASE_URL` | Base URL used for host-allocated callbacks |
-| `CONNECTOR_LIFECYCLE_INTERVAL_SECONDS` | Continuous lifecycle idle interval |
+## Installation status and control
 
-Never place private signing keys or provider tokens in routing configuration.
+```bash
+.venv/bin/python scripts/manage_source_installations.py status \
+  --tenant TENANT_UUID --operator-actor ACTOR_UUID --source slack
 
-## Health interpretation
+.venv/bin/python scripts/manage_source_installations.py pause \
+  --tenant TENANT_UUID --operator-actor ACTOR_UUID \
+  --installation-id INSTALLATION_UUID --reason "provider incident"
+```
 
-The connector health snapshot includes registry status and fingerprint, active
-routing revision, lifecycle phase counts, persisted artifact statuses, and the
-process-local runtime quarantine map. Overall status is degraded when an
-installation is failed/degraded or an artifact is quarantined.
+`resume`, `maintenance`, and `uninstall` use the same shape. Mutations are
+generation fenced, auditable, and reconciled by the common lifecycle worker.
 
-Startup diagnostics separately report registry size/fingerprint and artifact
-admission counts. A quarantined connector always resolves to legacy mode even
-if fleet rollout later applies a connector override.
+## Failure triage
 
-Stateless owners that cannot consume durable authority and artifact admission
-must remain legacy in signed-production mode. Do not disable signed-artifact
-requirements to promote them; provision an audited distribution path first.
+1. Confirm the installation is `Ready` or `Degraded` and its observed generation
+   has caught up with the desired generation.
+2. Confirm an active authority grant matches tenant, connector and generation.
+3. Confirm every capability's `configuredBy` slots have current credential
+   references.
+4. Confirm the artifact version is admitted and not quarantined.
+5. Check the generic owner for the capability: poll worker, subscription
+   scheduler, gateway worker, webhook edge or onboarding workflow.
+6. Classify the typed failure: authentication, rate limit, transient provider,
+   payload, state incompatibility, deadline/cancellation, binding, or admission.
 
-## Fleet service levels and ownership
+Move an installation to `Maintenance` while repairing credentials or provider
+configuration. Do not create a source-specific bypass.
 
-The fleet objective is at least 99.9% successful eligible executions per
-connector over 30 days, no acknowledged checkpoint before S3-first durable
-publication, p95 connector latency no worse than 1.25 times its accepted
-baseline, parity mismatch at most 0.1%, and DLQ-rate regression at most 0.1
-percentage points. Disaster-recovery objectives are RPO 0 for acknowledged raw
-objects and RTO 60 minutes for resumed ingestion. These are rollout gates, not
-claims about an environment that has not supplied metrics.
+## Webhooks and watches
 
-The ingestion platform team owns the contract, registry, host services,
-release gate, lifecycle controller, and global rollback. Each manifest owner
-owns provider semantics, scopes, runbooks, capacity envelope, and first response
-to source-specific incidents. Security owns trusted signers and deployment
-policy. SRE owns alert delivery, capacity review, multi-region drills, and DR
-acceptance. A connector cannot be retired without named rollback ownership in
-`source_connector_retirement_evidence`.
+Source webhooks must target
+`/webhooks/{source}/callback/{endpoint_id}`. A bare source webhook route is
+rejected. Confirm the callback is active, belongs to the installation and has
+the expected purpose. Google Calendar/Drive callbacks also validate channel ID
+and nonce. Gmail Pub/Sub validates the configured Google OIDC audience and
+service-account email before resolving a common Gmail installation.
 
-## Common incidents
+## Poll and gateway state
 
-### Artifact quarantined
+Poll cursors live in `source_connector_installation_data` under `poll.cursor`.
+Gateway resume state uses `gateway.resume`; subscription state uses
+`subscription.state`. Generation changes use compare-and-set. Never edit these
+values while a worker owns the installation; pause first, repair with an audited
+operation, then resume.
 
-Inspect the reason: missing attestation, disabled/quarantined status, identity or
-version mismatch, missing/mismatched running-artifact measurement, manifest
-digest mismatch, missing/mismatched conformance, builder rejection, unknown
-signer, or invalid signature. Keep legacy routing.
-Build and sign a new artifact; do not edit digests to match an existing binary.
-Enable it through the artifact release process, then restart or refresh
-admission.
+## Artifact incident
 
-### Lifecycle failed or degraded
+Quarantine the faulty artifact or activate a previously admitted revision. The
+source becomes unavailable until a valid connector artifact is active. There is
+no second source runtime. Preserve raw/checkpoint state and verify compatibility
+before resuming.
 
-Read sanitized conditions and connector telemetry. Validate authority
-generation, current credential slots, provider access, outbound-host grants,
-and remote health. Correct the cause and allow reconciliation to retry. Do not
-manually mark an unhealthy installation ready.
+## Removal
 
-### Parity mismatch
+Uninstall sets desired state `Removed`. The lifecycle controller binds the
+cleanup capability, revokes remote resources when supported, retires credential
+references, revokes authority, and advances to observed `Removed`. Repeated
+cleanup is idempotent.
 
-Stop promotion. Compare canonical identity, cursor, publication, normalization,
-and state projections. Route the affected connector or cohort to legacy. Repair
-native behavior before collecting a new clean evidence window.
+## Required alerts
 
-### Elevated failures, latency, or DLQ delta
-
-The rollout controller automatically creates a legacy revision when configured
-thresholds are breached. Verify the audit record, preserve raw objects and
-checkpoints, and investigate provider throttling, retry classification, host
-capacity, and connector regressions.
-
-### Credential rotation failure
-
-Keep the existing current credential. Candidate credentials remain pending or
-become rejected until verified. Check requested/granted scopes and secret-store
-access. Never copy raw token values into tickets or logs.
-
-## Emergency rollback
-
-Activate a newer routing revision whose global mode is `legacy`, or use the
-runtime configuration rollback where durable rollout control is unavailable.
-Verify every process has propagated the revision through rollout audit records.
-Artifact quarantine is an additional fail-closed control, not a replacement for
-an audited fleet rollback.
-
-After rollback, verify S3/Kafka publication and checkpoint continuity. Do not
-rewind checkpoints unless the source-specific recovery procedure requires it.
-
-## Uninstall
-
-Set desired state to `Removed`. The lifecycle controller binds the cleanup
-facet, retries it idempotently, retires credentials, revokes durable authority,
-and records `Removed`. Do not delete the installation row to force completion.
-
-## Audit queries
-
-Operators should inspect these control-plane relations through approved admin
-tools: `source_connector_installations`, `source_connector_authority_grants`,
-`source_connector_credentials`, `source_connector_artifacts`,
-`source_connector_routing_revisions`, `source_connector_rollout_audit`, and
-`source_connector_rollout_events`. Fleet certification additionally uses
-`source_connector_resilience_evidence` and
-`source_connector_retirement_evidence`. Tenant-scoped tables enforce fail-closed
-RLS; use the normal tenant context rather than bypassing it for routine
-diagnostics.
+Monitor connector execution failures/duration, DLQ rate, artifact quarantine,
+lifecycle failures, stalled generation reconciliation, callback authentication,
+poll lag, gateway reconnects/lease heartbeats, S3/Kafka publication errors and
+database pool health. Labels must remain bounded by connector, capability,
+version and outcome.

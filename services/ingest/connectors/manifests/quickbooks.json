@@ -10,13 +10,25 @@
   },
   "spec": {
     "contract": ">=1.0,<2.0",
-    "implementation": "services.ingest.connectors.fleet:build_quickbooks_connector",
+    "implementation": "services.ingest.connectors.rest_sources:build_quickbooks_connector",
     "artifactModules": [
-      "services.ingest.connectors.native",
-      "services.ingest.connectors.profiles"
+      "services.ingest.connectors.fleet",
+      "services.ingest.connectors.provider_spec",
+      "services.ingest.connectors.rest_sources",
+      "services.ingest.connectors.standard_oauth"
     ],
     "maturity": "stable",
     "capabilities": [
+      {
+        "id": "installation.oauth2",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "installation.oauth2_lifecycle",
+        "version": 1,
+        "required": true
+      },
       {
         "id": "installation.configure",
         "version": 1,
@@ -89,12 +101,16 @@
     "permissions": {
       "secretSlots": [
         "oauth_access_token",
+        "oauth_refresh_token",
         "webhook_signing_secret"
       ],
       "outboundHosts": [
-        "quickbooks.api.intuit.com"
+        "quickbooks.api.intuit.com",
+        "oauth.platform.intuit.com"
       ],
-      "requestedScopes": []
+      "requestedScopes": [
+        "com.intuit.quickbooks.accounting"
+      ]
     },
     "trust": {
       "maximumTier": "authoritative"

@@ -1,46 +1,62 @@
 # Fyralis Source Connector Contract
 
-> Implementation status (completion Phases 1–3, 2026-08-03): all 26 source
-> families have stable-v1 manifests and connector-local first-party candidates.
-> The manifest-derived catalog is the definition authority; connector execution
-> is the normal default and remains fenced by durable installation authority,
-> signed-artifact admission, and quarantine. Compatibility candidate generation
-> has been removed. The callable legacy path is retained only for emergency
-> rollback until production retirement evidence permits deletion. See the
-> [runtime architecture](../ingestion/source-connectors/runtime-architecture.md),
-> [development guide](../ingestion/source-connectors/development-guide.md), and
-> [migration guide](../ingestion/source-connectors/migration-guide.md). The
-> completion evidence in `SOURCE_CONNECTOR_FINAL_SUMMARY.md` and
-> `PHASE_3_IMPLEMENTATION_REPORT.md`.
-
-Status: **Stable v1 repository implementation complete; controlled rollout required**<br>
+Status: **Stable v1; contract-only repository cutover complete**<br>
 Audience: ingestion, platform, security, and product engineers<br>
-Last reviewed: 2026-08-03
+Last reviewed: 2026-08-04
 
-This document defines the architecture for making a data source a first-class
-Fyralis primitive. The in-process first-party contract is stable v1. Runtime
-admission is behavioral, artifact-measured, signed, installation-scoped, and
-least-authority. Live-provider rollout and the eventual physical deletion of
-the rollback implementation remain operational acceptance steps.
+## Current implementation status
 
-## 1. Executive summary
+All 26 Fyralis source families execute exclusively through the Source Connector
+Contract. The manifest-derived catalog, immutable registry, durable installation
+authority, and registry-resolved capabilities are the only source definition and
+execution path. There is no legacy or shadow source routing mode, compatibility
+candidate, source-specific planner/fetcher/reconciler registry, central source
+handler dispatch, or source webhook signature registry left in production code.
 
-Fyralis already has a sophisticated ingestion pipeline. Its raw and normalized
-envelopes are explicit and versioned; its planner, fetcher, reconciler, and
-handler contracts are reusable; its Kafka lanes are isolated by source; S3 is
-the raw-data authority; and cursor advancement is tied to durable publication.
-Those are valuable platform invariants and should remain.
+The implemented source families are grouped by execution archetype:
 
-What Fyralis does not have is one architectural object that represents a source.
-Today a source is assembled by convention from a `SourceLiteral`, several
-mutable dispatch maps, static import side effects, a channel mapping, webhook
-tables, install storage, lifecycle scripts, database constraints, client
-builders, migrations, and worker configuration. The engine therefore knows
-about source-specific pieces directly. A source can be locally complete while
-still being globally miswired.
+- REST and OAuth connectors use governed HTTP, contract-owned authentication,
+  configuration/OAuth capabilities, typed pagination, identity, normalization,
+  webhook verification, and reconciliation.
+- Gmail, Google Calendar, and Google Drive use connector-owned watch/subscription
+  and incremental cursor semantics. Gmail Pub/Sub is OIDC authenticated; Calendar
+  and Drive callbacks are installation scoped and nonce authenticated.
+- Discord, Telegram, and Signal use the gateway capability, host-owned connection
+  and lease ports, resumable state, and one generic session worker.
+- AWS CloudTrail owns SigV4 request construction behind least-authority secret and
+  governed-HTTP ports. Other API-key, token, Basic, passcode, and session-token
+  sources enter through the same configuration contract.
 
-The recommendation is a **Fyralis Source Connector Contract** with five defining
-properties:
+Every install is stored in `source_connector_installations`, with authority,
+credential references, installation data, callbacks, lifecycle, and audit state
+in the common control plane. OAuth installs use
+`GET /integrations/{source}/install` and
+`GET /integrations/{source}/callback`; non-redirect installs use
+`POST /integrations/{source}/configure`. Source webhooks use only installation-
+scoped `/webhooks/{source}/callback/{endpoint_id}` URLs. Incomplete migrated or
+OAuth installations remain in `Maintenance` and cannot execute provider
+capabilities.
+
+Migration `0190_source_connector_contract_only.sql` performs the destructive
+pre-production cutover: it imports remaining extension configuration, removes
+old onboarding installation references, makes routing revisions connector-only,
+rejects legacy/shadow policy JSON, removes parity/legacy rollout fields, and
+drops retirement evidence that applied only to a dual-runtime period.
+
+Artifact admission and quarantine still fail closed. Quarantine means the source
+is unavailable; it never invokes a second implementation. This is intentional
+because the repository is not yet in production and availability continuity was
+explicitly not a migration constraint.
+
+The detailed material below records the research and design evolution that led
+to stable v1. Sections describing pilots, compatibility adapters, shadowing, or
+future legacy removal are historical roadmap context and are superseded by this
+status section plus the current runtime, development, migration, operations, and
+rollout guides.
+
+## 1. Executive summary (original design rationale)
+
+The Source Connector Contract was selected with five defining properties:
 
 1. A connector is one first-class aggregate with stable identity, metadata,
    declared permissions, compatibility requirements, and capability facets.
