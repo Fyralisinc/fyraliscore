@@ -1,8 +1,4 @@
-"""Contracts at the perception-to-episode boundary.
-
-The package does not construct episodes. It defines durable intake and the
-immutable values that a future constructor must emit.
-"""
+"""Durable topic routing, episode construction, snapshots, and handoff."""
 
 from .contracts import (
     EpisodeConstitution,
@@ -15,6 +11,7 @@ from .intake import EpisodeIntakeRepository, PerceptionOutboxRow
 from .repo import EpisodeMembershipRow, EpisodeRoutingRepository, EpisodeTopicRow
 from .construction import EpisodeConstructionService
 from .handoff import EpisodeSnapshotOutboxRepository, EpisodeSnapshotOutboxRow
+from .handoff_worker import EpisodeReasoningHandoffWorker
 from .lifecycle import EpisodeLifecycleRepository
 from .query import QueryEpisodeResult, QueryEpisodeService
 from .read import EpisodeReadService, EpisodeSnapshotDiff
@@ -31,6 +28,7 @@ __all__ = [
     "EpisodeConstructorWorker",
     "EpisodeMembershipRow",
     "EpisodeReadService",
+    "EpisodeReasoningHandoffWorker",
     "EpisodeReasoningBatch",
     "EpisodeReasoningInputService",
     "EpisodeRoutingRepository",

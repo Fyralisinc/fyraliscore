@@ -14,6 +14,7 @@ from services.domain.episodes.service import EpisodeRoutingService
 from services.domain.evidence.repo import SourceEvidenceRepository
 from services.domain.identity.intake import IdentityIntakeRepository
 from services.domain.identity.worker import IdentityResolutionWorker
+from services.domain.perception.knowledge import PerceptionKnowledgeWorker
 
 
 pytestmark = pytest.mark.integration
@@ -96,6 +97,9 @@ async def test_cross_source_observations_route_to_one_episode_and_replay(
     assert await IdentityResolutionWorker(fresh_db).run_once(
         worker_id="identity", batch_size=10
     ) == 2
+    assert await PerceptionKnowledgeWorker(fresh_db).run_once(
+        worker_id="knowledge", batch_size=10
+    ) >= 2
     intake = EpisodeIntakeRepository()
     async with fresh_db.acquire() as conn:
         items = await intake.claim(
@@ -137,6 +141,9 @@ async def test_conflicting_stable_anchor_creates_distinct_episode(
         await IdentityIntakeRepository().enqueue_observation_ready(security, conn=conn)
         await IdentityIntakeRepository().enqueue_observation_ready(marketing, conn=conn)
     await IdentityResolutionWorker(fresh_db).run_once(worker_id="identity", batch_size=10)
+    await PerceptionKnowledgeWorker(fresh_db).run_once(
+        worker_id="knowledge", batch_size=10
+    )
     async with fresh_db.acquire() as conn:
         items = await EpisodeIntakeRepository().claim(
             worker_id="constructor", batch_size=10, lease_seconds=60, conn=conn

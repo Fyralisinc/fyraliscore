@@ -128,13 +128,15 @@ class QueryEpisodeService:
                 )
                 SELECT l.*,p.id AS outbox_id,p.event_kind,p.aggregate_type,p.aggregate_id,
                        p.identity_snapshot_hash,p.identity_resolution_status,
+                       p.knowledge_snapshot_id,p.knowledge_snapshot_hash,p.claim_set_hash,
                        p.contract_version,p.dedupe_key,p.payload,p.status AS outbox_status,
                        p.available_at,p.attempt_count,p.lease_owner,p.lease_expires_at,
                        p.last_error,p.completed_at,p.created_at AS outbox_created_at,
                        p.updated_at AS outbox_updated_at
                   FROM latest l JOIN perception_outbox p
-                    ON p.tenant_id=l.tenant_id AND p.observation_id=l.observation_id
+                   ON p.tenant_id=l.tenant_id AND p.observation_id=l.observation_id
                    AND p.identity_snapshot_id=l.identity_snapshot_id
+                   AND p.knowledge_snapshot_id=l.knowledge_snapshot_id
                  WHERE l.decision='include'
                  ORDER BY l.observation_occurred_at,l.observation_id
                 """,
@@ -159,6 +161,9 @@ class QueryEpisodeService:
                         "identity_snapshot_id": source["identity_snapshot_id"],
                         "identity_snapshot_hash": source["identity_snapshot_hash"],
                         "identity_resolution_status": source["identity_resolution_status"],
+                        "knowledge_snapshot_id": source["knowledge_snapshot_id"],
+                        "knowledge_snapshot_hash": source["knowledge_snapshot_hash"],
+                        "claim_set_hash": source["claim_set_hash"],
                         "contract_version": source["contract_version"],
                         "dedupe_key": source["dedupe_key"],
                         "payload": _json(source["payload"]),
@@ -183,6 +188,9 @@ class QueryEpisodeService:
                     observation_occurred_at=item.observation_occurred_at,
                     evidence_id=item.evidence_id,
                     identity_snapshot_id=item.identity_snapshot_id,
+                    knowledge_snapshot_id=item.knowledge_snapshot_id,
+                    knowledge_snapshot_hash=item.knowledge_snapshot_hash,
+                    claim_set_hash=item.claim_set_hash,
                     input_hash=run_hash, router_name=self.router_name,
                     router_version=self.router_version,
                     feature_schema_version=self.feature_schema_version, conn=conn,

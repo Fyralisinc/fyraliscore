@@ -12,6 +12,7 @@ from services.domain.episodes.reasoning import EpisodeReasoningInputService
 from services.domain.episodes.worker import EpisodeConstructorWorker, EpisodeSettlementWorker
 from services.domain.identity.intake import IdentityIntakeRepository
 from services.domain.identity.worker import IdentityResolutionWorker
+from services.domain.perception.knowledge import PerceptionKnowledgeWorker
 
 from .test_lifecycle_snapshot import _claim
 from .test_routing_repo import _seed
@@ -66,6 +67,9 @@ async def test_alpen_audit_week_cross_source_episode_end_to_end(
     assert await IdentityResolutionWorker(fresh_db).run_once(
         worker_id="identity",batch_size=20
     ) == 5
+    assert await PerceptionKnowledgeWorker(fresh_db).run_once(
+        worker_id="knowledge",batch_size=20
+    ) >= 5
     assert await EpisodeConstructorWorker(fresh_db).run_once(
         worker_id="constructor",batch_size=20
     ) == 5

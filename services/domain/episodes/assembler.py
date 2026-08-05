@@ -46,17 +46,27 @@ class EpisodeSignalAssembler:
             SELECT o.ingested_at, o.content, o.content_text, o.entities_mentioned,
                    e.source, e.installation_scope, e.thread_id, e.parent_ref,
                    e.container_ref, e.source_object_type, e.source_object_id,
-                   s.manifest
+                   s.manifest,
+                   k.claim_ids AS settled_claim_ids,
+                   k.snapshot_hash AS settled_knowledge_snapshot_hash,
+                   k.claim_set_hash AS settled_claim_set_hash
               FROM observations o
               JOIN source_evidence e
                 ON e.tenant_id=o.tenant_id AND e.id=o.evidence_id
               JOIN identity_resolution_snapshots s
                 ON s.tenant_id=o.tenant_id AND s.id=$4
-             WHERE o.tenant_id=$1 AND o.id=$2 AND o.occurred_at=$3
+              JOIN perception_knowledge_snapshots k
+                ON k.tenant_id=o.tenant_id AND k.id=$6
+               AND k.observation_id=o.id
+               AND k.observation_occurred_at=o.occurred_at
+               AND k.evidence_id=o.evidence_id
+               AND k.identity_snapshot_id=s.id
+              WHERE o.tenant_id=$1 AND o.id=$2 AND o.occurred_at=$3
                AND o.evidence_id=$5
             """,
             item.tenant_id, item.observation_id, item.observation_occurred_at,
             item.identity_snapshot_id, item.evidence_id,
+            item.knowledge_snapshot_id,
         )
         if row is None:
             raise ValueError("episode intake lineage is stale or incomplete")
@@ -102,14 +112,22 @@ class EpisodeSignalAssembler:
             if isinstance(phrase, str) and _TOPIC_WORDS.search(phrase):
                 anchors.append({"type": "topic_phrase", "id": _normalize_phrase(phrase)})
 
+        if (
+            row["settled_knowledge_snapshot_hash"] != item.knowledge_snapshot_hash
+            or row["settled_claim_set_hash"] != item.claim_set_hash
+        ):
+            raise ValueError("episode intake knowledge snapshot lineage is stale")
+        settled_claim_ids = tuple(row["settled_claim_ids"])
         claim_rows = await conn.fetch(
             """
             SELECT id, subject_ref, predicate FROM perception_claims
-             WHERE tenant_id=$1 AND observation_id=$2 AND status='active'
-             ORDER BY created_at, id
+             WHERE tenant_id=$1 AND id=ANY($2::uuid[])
+             ORDER BY id
             """,
-            item.tenant_id, item.observation_id,
+            item.tenant_id, list(settled_claim_ids),
         )
+        if len(claim_rows) != len(settled_claim_ids):
+            raise ValueError("knowledge snapshot references missing claims")
         claim_ids = tuple(record["id"] for record in claim_rows)
         predicates = tuple(sorted({str(record["predicate"]) for record in claim_rows}))
         for claim in claim_rows:
@@ -153,6 +171,9 @@ class EpisodeSignalAssembler:
             observation_id=item.observation_id,
             evidence_id=item.evidence_id,
             identity_snapshot_id=item.identity_snapshot_id,
+            knowledge_snapshot_id=item.knowledge_snapshot_id,
+            knowledge_snapshot_hash=item.knowledge_snapshot_hash,
+            claim_set_hash=item.claim_set_hash,
             occurred_at=item.observation_occurred_at,
             ingested_at=row["ingested_at"],
             source=str(row["source"]),

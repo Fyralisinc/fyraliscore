@@ -82,6 +82,31 @@ groups:
       - record: fyralis:kafka_worst_group_lag
         expr: max by (consumergroup) (kafka_consumergroup_lag_sum)
 
+  - name: fyralis-perception-pipeline
+    interval: 30s
+    rules:
+      - alert: PerceptionPipelineDeadLetteredWork
+        expr: >
+          max({__name__=~"(identity_resolution|perception_knowledge|episode_constructor|episode_handoff)_queue_dead_letter"}) > 0
+        for: 5m
+        labels:
+          severity: critical
+          owner: perception
+        annotations:
+          summary: Durable perception pipeline work is dead-lettered
+          runbook: docs/operations/perception-pipeline-runbook.md
+
+      - alert: PerceptionPipelineWorkerDown
+        expr: >
+          up{job="fyralis-workers",worker=~"identity_resolution_worker|perception_knowledge_worker|episode_constructor_worker|episode_settlement_worker|episode_handoff_worker"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          owner: perception
+        annotations:
+          summary: A required perception pipeline worker is unavailable
+          runbook: docs/operations/perception-pipeline-runbook.md
+
   - name: fyralis-source-connectors
     interval: 30s
     rules:

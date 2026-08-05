@@ -51,6 +51,16 @@ scrape_configs:
         labels: { worker: anomaly_processor_worker }
       - targets: ["entity_resolver_worker:9300"]
         labels: { worker: entity_resolver_worker }
+      - targets: ["identity_resolution_worker:9300"]
+        labels: { worker: identity_resolution_worker }
+      - targets: ["perception_knowledge_worker:9300"]
+        labels: { worker: perception_knowledge_worker }
+      - targets: ["episode_constructor_worker:9300"]
+        labels: { worker: episode_constructor_worker }
+      - targets: ["episode_settlement_worker:9300"]
+        labels: { worker: episode_settlement_worker }
+      - targets: ["episode_handoff_worker:9300"]
+        labels: { worker: episode_handoff_worker }
       - targets: ["schema_drift_monitor:9300"]
         labels: { worker: schema_drift_monitor }
       - targets: ["shard_fetch:9300"]

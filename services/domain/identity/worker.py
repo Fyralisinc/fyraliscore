@@ -9,9 +9,9 @@ from typing import Any
 import asyncpg
 
 from lib.shared.errors import ValidationError
-from services.domain.episodes.intake import EpisodeIntakeRepository
 from services.domain.evidence.repo import SourceEvidenceRepository
 from services.domain.observations.repo import ObservationRepository
+from services.domain.perception.knowledge import PerceptionKnowledgeIntakeRepository
 
 from .capabilities import capability_snapshot
 from .foundation import ResolutionRunCreate
@@ -107,7 +107,7 @@ class IdentityResolutionWorker:
                         result_hash=snapshot.snapshot_hash,
                         conn=conn,
                     )
-                await EpisodeIntakeRepository().enqueue_identity_resolved(
+                await PerceptionKnowledgeIntakeRepository().enqueue_identity_resolved(
                     observation, snapshot, conn=conn
                 )
                 await conn.execute(

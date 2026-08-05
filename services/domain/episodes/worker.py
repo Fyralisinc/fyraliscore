@@ -40,6 +40,11 @@ class EpisodeConstructorWorker:
                             episode_id,tenant_id=item.tenant_id,
                             membership_id=membership.id,conn=conn,
                         )
+                    elif state == "dormant":
+                        await self._construction.reactivate_from_dormant(
+                            episode_id, tenant_id=item.tenant_id,
+                            membership_id=membership.id, conn=conn,
+                        )
                     else:
                         await self._construction.ensure_opened(
                             episode_id,tenant_id=item.tenant_id,conn=conn,

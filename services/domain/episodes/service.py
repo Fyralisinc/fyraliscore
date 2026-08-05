@@ -34,12 +34,15 @@ class EpisodeRoutingService:
         self, item: PerceptionOutboxRow, *, conn: asyncpg.Connection
     ) -> list[EpisodeMembershipRow]:
         if (
-            item.contract_version < 2
+            item.contract_version < 3
             or item.identity_snapshot_id is None
             or item.identity_snapshot_hash is None
             or item.identity_resolution_status is None
+            or item.knowledge_snapshot_id is None
+            or item.knowledge_snapshot_hash is None
+            or item.claim_set_hash is None
         ):
-            raise ValidationError("episode routing requires identity-grounded intake v2")
+            raise ValidationError("episode routing requires knowledge-grounded intake v3")
         identity_snapshot_id = item.identity_snapshot_id
         input_hash = hashlib.sha256(
             json.dumps(
@@ -49,6 +52,8 @@ class EpisodeRoutingService:
                     "observation_id": str(item.observation_id),
                     "evidence_id": str(item.evidence_id),
                     "identity_snapshot_hash": item.identity_snapshot_hash,
+                    "knowledge_snapshot_hash": item.knowledge_snapshot_hash,
+                    "claim_set_hash": item.claim_set_hash,
                     "router_version": self.router_version,
                 },
                 sort_keys=True,
@@ -62,6 +67,9 @@ class EpisodeRoutingService:
             observation_occurred_at=item.observation_occurred_at,
             evidence_id=item.evidence_id,
             identity_snapshot_id=identity_snapshot_id,
+            knowledge_snapshot_id=item.knowledge_snapshot_id,
+            knowledge_snapshot_hash=item.knowledge_snapshot_hash,
+            claim_set_hash=item.claim_set_hash,
             input_hash=input_hash,
             router_name=self.router_name,
             router_version=self.router_version,

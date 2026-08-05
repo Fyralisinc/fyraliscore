@@ -63,6 +63,9 @@ class EpisodeRouterRunRow(_Row):
     observation_occurred_at: datetime
     evidence_id: UUID
     identity_snapshot_id: UUID
+    knowledge_snapshot_id: UUID | None
+    knowledge_snapshot_hash: str | None
+    claim_set_hash: str | None
     input_hash: str
     router_name: str
     router_version: str
@@ -84,6 +87,9 @@ class EpisodeMembershipRow(_Row):
     observation_occurred_at: datetime
     evidence_id: UUID
     identity_snapshot_id: UUID
+    knowledge_snapshot_id: UUID | None
+    knowledge_snapshot_hash: str | None
+    claim_set_hash: str | None
     claim_ids: tuple[UUID, ...]
     identity_assertion_ids: tuple[UUID, ...]
     decision: Literal["include", "exclude", "hold"]
@@ -143,13 +149,15 @@ _EPISODE_COLUMNS = (
 _RUN_COLUMNS = (
     "id", "tenant_id", "perception_outbox_id", "observation_id",
     "observation_occurred_at", "evidence_id", "identity_snapshot_id",
+    "knowledge_snapshot_id", "knowledge_snapshot_hash", "claim_set_hash",
     "input_hash", "router_name", "router_version", "feature_schema_version",
     "status", "result_hash", "failure", "started_at", "completed_at",
 )
 _MEMBERSHIP_COLUMNS = (
     "id", "tenant_id", "topic_id", "episode_id", "router_run_id",
     "observation_id", "observation_occurred_at", "evidence_id",
-    "identity_snapshot_id", "claim_ids", "identity_assertion_ids", "decision",
+    "identity_snapshot_id", "knowledge_snapshot_id", "knowledge_snapshot_hash",
+    "claim_set_hash", "claim_ids", "identity_assertion_ids", "decision",
     "score", "reasons", "feature_snapshot", "router_name", "router_version",
     "feature_schema_version", "decision_key", "status",
     "supersedes_assertion_id", "created_at",
@@ -166,6 +174,9 @@ class EpisodeRoutingRepository:
         observation_occurred_at: datetime,
         evidence_id: UUID,
         identity_snapshot_id: UUID,
+        knowledge_snapshot_id: UUID,
+        knowledge_snapshot_hash: str,
+        claim_set_hash: str,
         input_hash: str,
         router_name: str,
         router_version: str,
@@ -177,14 +188,16 @@ class EpisodeRoutingRepository:
             INSERT INTO episode_router_runs (
               id, tenant_id, perception_outbox_id, observation_id,
               observation_occurred_at, evidence_id, identity_snapshot_id,
+              knowledge_snapshot_id, knowledge_snapshot_hash, claim_set_hash,
               input_hash, router_name, router_version, feature_schema_version
-            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
             ON CONFLICT (tenant_id, input_hash, router_name, router_version)
             DO UPDATE SET input_hash = episode_router_runs.input_hash
             RETURNING {', '.join(_RUN_COLUMNS)}
             """,
             uuid7(), tenant_id, perception_outbox_id, observation_id,
             observation_occurred_at, evidence_id, identity_snapshot_id,
+            knowledge_snapshot_id, knowledge_snapshot_hash, claim_set_hash,
             input_hash, router_name, router_version, feature_schema_version,
         )
         assert row is not None
@@ -344,6 +357,8 @@ class EpisodeRoutingRepository:
             "episode_id": str(decision.episode_id),
             "observation_id": str(signal.observation_id),
             "identity_snapshot_id": str(signal.identity_snapshot_id),
+            "knowledge_snapshot_hash": signal.knowledge_snapshot_hash,
+            "claim_set_hash": signal.claim_set_hash,
             "decision": decision.decision, "router_name": router_name,
             "router_version": router_version,
             "feature_schema_version": feature_schema_version,
@@ -357,19 +372,23 @@ class EpisodeRoutingRepository:
             INSERT INTO episode_membership_assertions (
               id, tenant_id, topic_id, episode_id, router_run_id,
               observation_id, observation_occurred_at, evidence_id,
-              identity_snapshot_id, claim_ids, identity_assertion_ids, decision,
+              identity_snapshot_id, knowledge_snapshot_id,
+              knowledge_snapshot_hash, claim_set_hash,
+              claim_ids, identity_assertion_ids, decision,
               score, reasons, feature_snapshot, router_name, router_version,
               feature_schema_version, decision_key
             ) VALUES (
-              $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15::jsonb,
-              $16,$17,$18,$19
+              $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,
+              $17::jsonb,$18::jsonb,$19,$20,$21,$22
             ) ON CONFLICT (tenant_id, decision_key) DO NOTHING
             RETURNING {', '.join(_MEMBERSHIP_COLUMNS)}
             """,
             uuid7(), signal.tenant_id, decision.topic_id, decision.episode_id,
             run.id, signal.observation_id, signal.occurred_at, signal.evidence_id,
-            signal.identity_snapshot_id, list(signal.claim_ids),
-            list(signal.identity_assertion_ids), decision.decision, decision.score,
+            signal.identity_snapshot_id, signal.knowledge_snapshot_id,
+            signal.knowledge_snapshot_hash, signal.claim_set_hash,
+            list(signal.claim_ids), list(signal.identity_assertion_ids),
+            decision.decision, decision.score,
             json.dumps([reason.model_dump(mode="json") for reason in decision.reasons], sort_keys=True),
             json.dumps(decision.feature_snapshot, sort_keys=True), router_name,
             router_version, feature_schema_version, key,

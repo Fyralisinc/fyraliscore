@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import asyncpg
 import pytest
@@ -10,6 +10,7 @@ from services.domain.episodes.construction import EpisodeConstructionService
 from services.domain.episodes.intake import EpisodeIntakeRepository
 from services.domain.episodes.read import EpisodeReadService
 from services.domain.episodes.service import EpisodeRoutingService
+from services.domain.episodes.worker import EpisodeConstructorWorker
 from services.domain.identity.intake import IdentityIntakeRepository
 from services.domain.identity.worker import IdentityResolutionWorker
 from services.domain.perception.claims import (
@@ -17,6 +18,7 @@ from services.domain.perception.claims import (
     PerceptionClaimRepository,
     span_for_text,
 )
+from services.domain.perception.knowledge import PerceptionKnowledgeWorker
 
 from .test_routing_repo import _seed
 
@@ -46,6 +48,9 @@ async def _claim(conn, observation, *, value: str, polarity: str):
 
 async def _route_all(pool: asyncpg.Pool):
     await IdentityResolutionWorker(pool).run_once(worker_id="identity", batch_size=20)
+    await PerceptionKnowledgeWorker(pool).run_once(
+        worker_id="knowledge", batch_size=20
+    )
     async with pool.acquire() as conn:
         items = await EpisodeIntakeRepository().claim(
             worker_id="constructor", batch_size=20, lease_seconds=60, conn=conn
@@ -124,3 +129,68 @@ async def test_settlement_preserves_contradictions_and_late_evidence_reopens(
             "SELECT count(*) FROM episode_snapshots WHERE tenant_id=$1 AND episode_id=$2",
             tenant_id, episode_id,
         ) == 2
+
+
+async def test_late_claim_reprocesses_exact_knowledge_and_reactivates_lifecycle(
+    fresh_db: asyncpg.Pool,
+) -> None:
+    tenant_id = uuid7()
+    async with fresh_db.acquire() as conn:
+        observation = await _seed(
+            conn, tenant_id=tenant_id, source="notion", scope="notion:alpen",
+            object_id="audit-map", anchor_id="security-audit",
+            text="Security audit scope includes authentication.",
+        )
+        await IdentityIntakeRepository().enqueue_observation_ready(observation, conn=conn)
+    await IdentityResolutionWorker(fresh_db).run_once(worker_id="identity", batch_size=10)
+    await PerceptionKnowledgeWorker(fresh_db).run_once(
+        worker_id="knowledge-initial", batch_size=10
+    )
+    await EpisodeConstructorWorker(fresh_db).run_once(
+        worker_id="constructor-initial", batch_size=10
+    )
+    construction = EpisodeConstructionService()
+    async with fresh_db.acquire() as conn:
+        episode_id = await conn.fetchval(
+            "SELECT id FROM episodes WHERE tenant_id=$1", tenant_id
+        )
+        assert await construction.mark_dormant(
+            episode_id, tenant_id=tenant_id, quiet_period=timedelta(0),
+            conn=conn,
+        )
+        await _claim(conn, observation, value="in_scope", polarity="positive")
+        assert await conn.fetchval(
+            "SELECT count(*) FROM perception_knowledge_outbox "
+            "WHERE tenant_id=$1 AND event_kind='claim.changed' AND status='pending'",
+            tenant_id,
+        ) == 1
+    await PerceptionKnowledgeWorker(fresh_db).run_once(
+        worker_id="knowledge-dormant", batch_size=10
+    )
+    await EpisodeConstructorWorker(fresh_db).run_once(
+        worker_id="constructor-dormant", batch_size=10
+    )
+    async with fresh_db.acquire() as conn:
+        assert await conn.fetchval(
+            "SELECT lifecycle_state FROM episodes WHERE id=$1", episode_id
+        ) == "open"
+        await construction.settle(
+            episode_id, tenant_id=tenant_id, reason="explicit_close", conn=conn
+        )
+        await _claim(conn, observation, value="expanded", polarity="positive")
+    await PerceptionKnowledgeWorker(fresh_db).run_once(
+        worker_id="knowledge-settled", batch_size=10
+    )
+    await EpisodeConstructorWorker(fresh_db).run_once(
+        worker_id="constructor-settled", batch_size=10
+    )
+    async with fresh_db.acquire() as conn:
+        assert await conn.fetchval(
+            "SELECT lifecycle_state FROM episodes WHERE id=$1", episode_id
+        ) == "reopened"
+        hashes = await conn.fetch(
+            "SELECT DISTINCT knowledge_snapshot_hash,claim_set_hash "
+            "FROM episode_membership_assertions WHERE tenant_id=$1 AND episode_id=$2",
+            tenant_id, episode_id,
+        )
+        assert len(hashes) == 3

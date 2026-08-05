@@ -6,11 +6,11 @@ import asyncpg
 import pytest
 
 from lib.shared.ids import uuid7
-from services.domain.episodes.handoff import EpisodeSnapshotOutboxRepository
-from services.domain.episodes.reasoning import EpisodeReasoningInputService
+from services.domain.episodes.handoff_worker import EpisodeReasoningHandoffWorker
 from services.domain.episodes.worker import EpisodeConstructorWorker, EpisodeSettlementWorker
 from services.domain.identity.intake import IdentityIntakeRepository
 from services.domain.identity.worker import IdentityResolutionWorker
+from services.domain.perception.knowledge import PerceptionKnowledgeWorker
 
 from .test_routing_repo import _seed
 
@@ -36,6 +36,9 @@ async def test_durable_workers_complete_intake_and_handoff_structured_snapshot(
         for observation in (notion,jira):
             await IdentityIntakeRepository().enqueue_observation_ready(observation,conn=conn)
     await IdentityResolutionWorker(fresh_db).run_once(worker_id="identity",batch_size=10)
+    await PerceptionKnowledgeWorker(fresh_db).run_once(
+        worker_id="knowledge",batch_size=10
+    )
     assert await EpisodeConstructorWorker(fresh_db).run_once(
         worker_id="constructor",batch_size=10
     ) == 2
@@ -51,20 +54,34 @@ async def test_durable_workers_complete_intake_and_handoff_structured_snapshot(
     assert await EpisodeSettlementWorker(
         fresh_db,quiet_period=timedelta(0)
     ).run_once(batch_size=10) == 1
-    outbox=EpisodeSnapshotOutboxRepository()
     async with fresh_db.acquire() as conn:
-        items=await outbox.claim(
-            worker_id="reasoning",batch_size=10,lease_seconds=60,conn=conn
+        await conn.execute(
+            "INSERT INTO reasoning_ingress_policies (tenant_id,mode,reason,updated_by) "
+            "VALUES ($1,'episode','integration_test','pytest')",
+            tenant_id,
+        )
+    assert await EpisodeReasoningHandoffWorker(fresh_db).run_once(
+        worker_id="reasoning",batch_size=10
+    ) == 1
+    async with fresh_db.acquire() as conn:
+        items=await conn.fetch(
+            "SELECT * FROM episode_snapshot_outbox WHERE tenant_id=$1",tenant_id
         )
         assert len(items) == 1
-        batch=await EpisodeReasoningInputService().load(items[0],conn=conn)
-        assert batch.reasoning_input.mode == "automatic_update"
-        assert len(batch.observations) == 2
-        assert {row["source"] for row in batch.observations} == {"notion","jira"}
-        completed=await outbox.complete(
-            items[0].id,tenant_id=tenant_id,worker_id="reasoning",conn=conn
+        assert items[0]["status"] == "completed", items[0]["last_error"]
+        trigger=await conn.fetchrow(
+            "SELECT id,trigger_kind,trigger_subkind,payload FROM think_trigger_queue "
+            "WHERE id=$1",items[0]["id"],
         )
-        assert completed.status == "completed"
+        assert trigger is not None
+        assert trigger["trigger_kind"] == "T1"
+        assert trigger["trigger_subkind"] == "episode_snapshot"
+        payload=trigger["payload"]
+        if isinstance(payload,str):
+            import json
+            payload=json.loads(payload)
+        assert set(payload["observation_ids"]) == {str(notion.id),str(jira.id)}
+        assert payload["input_contract"] == "episode-reasoning-v1"
         assert await EpisodeSettlementWorker(
             fresh_db,quiet_period=timedelta(0)
         ).run_once(batch_size=10) == 0

@@ -12,7 +12,9 @@ NOW = datetime(2026, 8, 5, tzinfo=UTC)
 def _signal(anchor, *, text="authentication audit is complete"):
     return RoutingSignal(
         tenant_id=uuid7(), observation_id=uuid7(), evidence_id=uuid7(),
-        identity_snapshot_id=uuid7(), occurred_at=NOW, ingested_at=NOW,
+        identity_snapshot_id=uuid7(), knowledge_snapshot_id=uuid7(),
+        knowledge_snapshot_hash="a" * 64, claim_set_hash="b" * 64,
+        occurred_at=NOW, ingested_at=NOW,
         source="notion", installation_scope="notion:alpen", content_text=text,
         primary_anchor=anchor, anchor_refs=(anchor,),
         lexical_terms=tuple(text.split()), topic_label="security audit",

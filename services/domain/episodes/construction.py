@@ -155,5 +155,31 @@ class EpisodeConstructionService:
         )
         return True
 
+    async def reactivate_from_dormant(
+        self,
+        episode_id: UUID,
+        *,
+        tenant_id: UUID,
+        membership_id: UUID,
+        conn: asyncpg.Connection,
+    ) -> bool:
+        row = await conn.fetchrow(
+            "SELECT lifecycle_state,last_event_at,last_ingested_at FROM episodes "
+            "WHERE id=$1 AND tenant_id=$2",
+            episode_id, tenant_id,
+        )
+        if row is None or row["lifecycle_state"] != "dormant":
+            return False
+        await self._lifecycle.transition(
+            episode_id, tenant_id=tenant_id, to_state="open", event_kind="opened",
+            event_time_watermark=row["last_event_at"],
+            ingestion_time_watermark=row["last_ingested_at"],
+            rule_name="new_evidence_after_dormancy",
+            rule_version=self.settlement_rule_version,
+            cause_ref={"kind": "episode_membership", "id": str(membership_id)},
+            conn=conn,
+        )
+        return True
+
 
 __all__ = ["EpisodeConstructionService"]

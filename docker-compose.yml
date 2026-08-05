@@ -45,6 +45,9 @@ x-app-env: &app-env
   REDIS_URL: redis://redis:6379/0
   # Consumers expose /healthz + /metrics on this port (per container).
   INGESTION_HEALTH_PORT: "9300"
+  # Production reasoning authority starts only after a settled episode snapshot.
+  # Set to direct for the explicit rollback path.
+  REASONING_INGRESS_MODE: episode
 
 # Liveness probe for the Kafka consumers: /healthz is 503 if the worker
 # has not made progress recently (hung loop), so a wedged consumer is
@@ -414,6 +417,31 @@ services:
       ENTITY_RESOLVER_POLL_INTERVAL_S: "30"
       ENTITY_RESOLVER_BATCH_SIZE: "50"
       ENTITY_RESOLVER_LLM_BUDGET_PER_MIN: "30"
+
+  identity_resolution_worker:
+    <<: *worker
+    command: python scripts/run_perception_pipeline_worker.py --role identity
+    healthcheck: *consumer-healthcheck
+
+  perception_knowledge_worker:
+    <<: *worker
+    command: python scripts/run_perception_pipeline_worker.py --role knowledge
+    healthcheck: *consumer-healthcheck
+
+  episode_constructor_worker:
+    <<: *worker
+    command: python scripts/run_perception_pipeline_worker.py --role episode
+    healthcheck: *consumer-healthcheck
+
+  episode_settlement_worker:
+    <<: *worker
+    command: python scripts/run_perception_pipeline_worker.py --role settlement
+    healthcheck: *consumer-healthcheck
+
+  episode_handoff_worker:
+    <<: *worker
+    command: python scripts/run_perception_pipeline_worker.py --role handoff
+    healthcheck: *consumer-healthcheck
 
   schema_drift_monitor:
     <<: *worker

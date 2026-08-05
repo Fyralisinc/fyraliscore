@@ -18,6 +18,7 @@ from services.domain.identity import (
     extract_query_mentions,
 )
 from services.domain.identity.worker import IdentityResolutionWorker
+from services.domain.perception.knowledge import PerceptionKnowledgeWorker
 
 
 pytestmark = pytest.mark.integration
@@ -118,6 +119,10 @@ async def test_audit_week_flows_through_identity_before_episode_and_can_reproces
         worker_id="identity-1", batch_size=10
     ) == 1
 
+    assert await PerceptionKnowledgeWorker(fresh_db).run_once(
+        worker_id="knowledge-1", batch_size=10
+    ) >= 1
+
     async with fresh_db.acquire() as conn:
         completed = await conn.fetchrow(
             "SELECT status FROM identity_resolution_outbox WHERE id = $1", item.id
@@ -134,7 +139,7 @@ async def test_audit_week_flows_through_identity_before_episode_and_can_reproces
         )
         assert completed["status"] == "completed"
         assert episode_handoff is not None
-        assert episode_handoff["contract_version"] == 2
+        assert episode_handoff["contract_version"] == 3
         assert episode_handoff["identity_snapshot_id"] is not None
         assert episode_handoff["identity_resolution_status"] == "partial"
         assert len(episode_handoff["identity_snapshot_hash"]) == 64
@@ -164,6 +169,9 @@ async def test_audit_week_flows_through_identity_before_episode_and_can_reproces
     assert await IdentityResolutionWorker(fresh_db).run_once(
         worker_id="identity-2", batch_size=10
     ) == 1
+    assert await PerceptionKnowledgeWorker(fresh_db).run_once(
+        worker_id="knowledge-2", batch_size=10
+    ) >= 1
     async with fresh_db.acquire() as conn:
         deliveries = await conn.fetchval(
             "SELECT count(*) FROM perception_outbox WHERE tenant_id = $1 "

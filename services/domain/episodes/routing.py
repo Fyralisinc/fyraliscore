@@ -38,6 +38,9 @@ class RoutingSignal(_Frozen):
     observation_id: UUID
     evidence_id: UUID
     identity_snapshot_id: UUID
+    knowledge_snapshot_id: UUID
+    knowledge_snapshot_hash: str
+    claim_set_hash: str
     occurred_at: datetime
     ingested_at: datetime
     source: str

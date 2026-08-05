@@ -64,6 +64,7 @@ from services.domain.actors.repo import ActorRepo
 from services.domain.clarifications import open_clarification_request
 from services.domain.entity_aliases.repo import EntityAliasRepo, normalize_phrase
 from services.domain.identity.intake import IdentityIntakeRepository
+from services.domain.reasoning_ingress import reasoning_ingress_mode
 from services.domain.evidence.repo import SourceEvidenceRepository
 from services.domain.triggers import enqueue_trigger as enqueue_think_trigger
 from services.ingest.ingestion.handlers import (
@@ -792,7 +793,10 @@ async def _insert_observation_and_maybe_enqueue_trigger(
                         else None
                     ),
                 )
-                if enqueue_trigger:
+                if (
+                    enqueue_trigger
+                    and await reasoning_ingress_mode(conn, tenant_id=tenant_id) == "direct"
+                ):
                     trigger_queue_id = await _enqueue_event_arrival_trigger(
                         conn,
                         tenant_id=tenant_id,

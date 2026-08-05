@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 import asyncpg
@@ -13,7 +13,9 @@ from pydantic import BaseModel, ConfigDict
 from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.types import ObservationRow
-from services.domain.identity.resolution import IdentityResolutionSnapshot
+
+if TYPE_CHECKING:
+    from services.domain.perception.knowledge import PerceptionKnowledgeSnapshot
 
 
 class PerceptionOutboxRow(BaseModel):
@@ -30,6 +32,9 @@ class PerceptionOutboxRow(BaseModel):
     identity_snapshot_id: UUID | None = None
     identity_snapshot_hash: str | None = None
     identity_resolution_status: Literal["complete", "partial"] | None = None
+    knowledge_snapshot_id: UUID | None = None
+    knowledge_snapshot_hash: str | None = None
+    claim_set_hash: str | None = None
     contract_version: int
     dedupe_key: str
     payload: dict[str, Any]
@@ -48,6 +53,7 @@ _COLUMNS = (
     "id", "tenant_id", "event_kind", "aggregate_type", "aggregate_id",
     "observation_id", "observation_occurred_at", "evidence_id",
     "identity_snapshot_id", "identity_snapshot_hash", "identity_resolution_status",
+    "knowledge_snapshot_id", "knowledge_snapshot_hash", "claim_set_hash",
     "contract_version", "dedupe_key", "payload", "status", "available_at",
     "attempt_count", "lease_owner", "lease_expires_at", "last_error",
     "completed_at", "created_at", "updated_at",
@@ -63,22 +69,26 @@ def _hydrate(row: asyncpg.Record) -> PerceptionOutboxRow:
 
 
 class EpisodeIntakeRepository:
-    contract_version = 2
+    contract_version = 3
 
-    async def enqueue_identity_resolved(
+    async def enqueue_knowledge_settled(
         self,
         observation: ObservationRow,
-        identity_snapshot: IdentityResolutionSnapshot,
+        knowledge_snapshot: PerceptionKnowledgeSnapshot,
         *,
         conn: asyncpg.Connection,
     ) -> PerceptionOutboxRow:
         if observation.evidence_id is None:
             raise ValidationError("episode intake requires immutable evidence")
         if (
-            identity_snapshot.tenant_id != observation.tenant_id
-            or identity_snapshot.observation_id != observation.id
+            knowledge_snapshot.tenant_id != observation.tenant_id
+            or knowledge_snapshot.observation_id != observation.id
+            or knowledge_snapshot.observation_occurred_at != observation.occurred_at
+            or knowledge_snapshot.evidence_id != observation.evidence_id
         ):
-            raise ValidationError("identity snapshot does not belong to observation")
+            raise ValidationError(
+                "knowledge snapshot does not belong to observation evidence"
+            )
         return await self.enqueue_ready(
             tenant_id=observation.tenant_id,
             observation_id=observation.id,
@@ -88,9 +98,12 @@ class EpisodeIntakeRepository:
             kind=observation.kind,
             trust_tier=observation.trust_tier,
             actor_id=observation.actor_id,
-            identity_snapshot_id=identity_snapshot.id,
-            identity_snapshot_hash=identity_snapshot.snapshot_hash,
-            identity_resolution_status=identity_snapshot.resolution_status,
+            identity_snapshot_id=knowledge_snapshot.identity_snapshot_id,
+            identity_snapshot_hash=knowledge_snapshot.identity_snapshot_hash,
+            identity_resolution_status=knowledge_snapshot.identity_resolution_status,
+            knowledge_snapshot_id=knowledge_snapshot.id,
+            knowledge_snapshot_hash=knowledge_snapshot.snapshot_hash,
+            claim_set_hash=knowledge_snapshot.claim_set_hash,
             conn=conn,
         )
 
@@ -108,11 +121,15 @@ class EpisodeIntakeRepository:
         identity_snapshot_id: UUID,
         identity_snapshot_hash: str,
         identity_resolution_status: Literal["complete", "partial"],
+        knowledge_snapshot_id: UUID,
+        knowledge_snapshot_hash: str,
+        claim_set_hash: str,
         conn: asyncpg.Connection,
     ) -> PerceptionOutboxRow:
         dedupe_key = (
             f"{tenant_id}:observation:{observation_id}:"
-            f"identity:{identity_snapshot_hash}:v{self.contract_version}"
+            f"identity:{identity_snapshot_hash}:knowledge:{knowledge_snapshot_hash}:"
+            f"v{self.contract_version}"
         )
         payload = {
             "observation_id": str(observation_id),
@@ -125,6 +142,9 @@ class EpisodeIntakeRepository:
             "identity_snapshot_id": str(identity_snapshot_id),
             "identity_snapshot_hash": identity_snapshot_hash,
             "identity_resolution_status": identity_resolution_status,
+            "knowledge_snapshot_id": str(knowledge_snapshot_id),
+            "knowledge_snapshot_hash": knowledge_snapshot_hash,
+            "claim_set_hash": claim_set_hash,
         }
         row = await conn.fetchrow(
             f"""
@@ -132,10 +152,12 @@ class EpisodeIntakeRepository:
               id, tenant_id, event_kind, aggregate_type, aggregate_id,
               observation_id, observation_occurred_at, evidence_id,
               identity_snapshot_id, identity_snapshot_hash,
-              identity_resolution_status, contract_version, dedupe_key, payload
+              identity_resolution_status, knowledge_snapshot_id,
+              knowledge_snapshot_hash, claim_set_hash,
+              contract_version, dedupe_key, payload
             ) VALUES (
               $1, $2, 'observation.ready_for_episode', 'observation', $3,
-              $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb
+              $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb
             )
             ON CONFLICT (tenant_id, dedupe_key)
             DO UPDATE SET updated_at = perception_outbox.updated_at
@@ -149,6 +171,9 @@ class EpisodeIntakeRepository:
             identity_snapshot_id,
             identity_snapshot_hash,
             identity_resolution_status,
+            knowledge_snapshot_id,
+            knowledge_snapshot_hash,
+            claim_set_hash,
             self.contract_version,
             dedupe_key,
             json.dumps(payload, sort_keys=True),
@@ -159,6 +184,7 @@ class EpisodeIntakeRepository:
             persisted.evidence_id != evidence_id
             or persisted.observation_occurred_at != observation_occurred_at
             or persisted.identity_snapshot_id != identity_snapshot_id
+            or persisted.knowledge_snapshot_id != knowledge_snapshot_id
         ):
             raise ValidationError("episode intake dedupe key maps to different evidence")
         return persisted

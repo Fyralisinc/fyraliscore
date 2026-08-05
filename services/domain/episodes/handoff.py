@@ -119,12 +119,19 @@ class EpisodeSnapshotOutboxRepository:
             raise ValidationError("snapshot outbox claim parameters are invalid")
         rows = await conn.fetch(
             f"""
-            WITH candidates AS (
-              SELECT id FROM episode_snapshot_outbox
+            WITH ranked AS (
+              SELECT id,tenant_id,available_at,created_at,
+                     row_number() OVER (
+                       PARTITION BY tenant_id ORDER BY available_at,created_at,id
+                     ) AS tenant_rank
+                FROM episode_snapshot_outbox
                WHERE (status='pending' AND available_at<=now())
                   OR (status='leased' AND lease_expires_at<=now())
-               ORDER BY available_at,created_at,id LIMIT $1
-               FOR UPDATE SKIP LOCKED
+            ), candidates AS (
+              SELECT item.id FROM episode_snapshot_outbox item
+              JOIN ranked ON ranked.id=item.id
+              ORDER BY ranked.tenant_rank,ranked.available_at,ranked.created_at,item.id
+              LIMIT $1 FOR UPDATE OF item SKIP LOCKED
             )
             UPDATE episode_snapshot_outbox item
                SET status='leased',lease_owner=$2,

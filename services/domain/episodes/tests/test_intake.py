@@ -18,6 +18,7 @@ from services.domain.identity import (
     ResolutionRunRepository,
     capability_snapshot,
 )
+from services.domain.perception.knowledge import PerceptionKnowledgeSnapshot
 
 
 pytestmark = pytest.mark.integration
@@ -122,6 +123,43 @@ async def _identity_snapshot(
     return snapshot
 
 
+async def _knowledge_snapshot(
+    conn: asyncpg.Connection,
+    observation: ObservationRow,
+    identity: IdentityResolutionSnapshot,
+) -> PerceptionKnowledgeSnapshot:
+    claim_set_hash = hashlib.sha256(b"[]").hexdigest()
+    manifest = {
+        "observation_id": str(observation.id),
+        "identity_snapshot_hash": identity.snapshot_hash,
+        "claim_ids": [],
+        "claim_set_hash": claim_set_hash,
+    }
+    snapshot_hash = hashlib.sha256(
+        __import__("json").dumps(manifest, sort_keys=True).encode()
+    ).hexdigest()
+    row = await conn.fetchrow(
+        """
+        INSERT INTO perception_knowledge_snapshots (
+          id,tenant_id,observation_id,observation_occurred_at,evidence_id,
+          identity_snapshot_id,identity_snapshot_hash,identity_resolution_status,
+          claim_ids,claim_set_hash,extractor_name,extractor_version,manifest,snapshot_hash
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'{}'::uuid[],$9,'test','1',$10::jsonb,$11)
+        RETURNING *
+        """,
+        uuid7(), observation.tenant_id, observation.id, observation.occurred_at,
+        observation.evidence_id, identity.id, identity.snapshot_hash,
+        identity.resolution_status, claim_set_hash,
+        __import__("json").dumps(manifest), snapshot_hash,
+    )
+    assert row is not None
+    value = dict(row)
+    value["claim_ids"] = tuple(value["claim_ids"])
+    if isinstance(value["manifest"], str):
+        value["manifest"] = __import__("json").loads(value["manifest"])
+    return PerceptionKnowledgeSnapshot.model_validate(value)
+
+
 async def test_outbox_is_idempotent_leased_and_retryable(
     fresh_db: asyncpg.Pool,
 ) -> None:
@@ -130,8 +168,9 @@ async def test_outbox_is_idempotent_leased_and_retryable(
     async with fresh_db.acquire() as conn:
         observation = await _seed_observation(conn, tenant_id)
         snapshot = await _identity_snapshot(conn, observation)
-        first = await repo.enqueue_identity_resolved(observation, snapshot, conn=conn)
-        replay = await repo.enqueue_identity_resolved(observation, snapshot, conn=conn)
+        knowledge = await _knowledge_snapshot(conn, observation, snapshot)
+        first = await repo.enqueue_knowledge_settled(observation, knowledge, conn=conn)
+        replay = await repo.enqueue_knowledge_settled(observation, knowledge, conn=conn)
         assert replay.id == first.id
 
         claimed = await repo.claim(
@@ -182,10 +221,11 @@ async def test_outbox_enqueue_rolls_back_with_observation_transaction(
     async with fresh_db.acquire() as conn:
         observation = await _seed_observation(conn, tenant_id)
         snapshot = await _identity_snapshot(conn, observation)
+        knowledge = await _knowledge_snapshot(conn, observation, snapshot)
         transaction = conn.transaction()
         await transaction.start()
-        await EpisodeIntakeRepository().enqueue_identity_resolved(
-            observation, snapshot, conn=conn
+        await EpisodeIntakeRepository().enqueue_knowledge_settled(
+            observation, knowledge, conn=conn
         )
         await transaction.rollback()
         count = await conn.fetchval(
@@ -203,7 +243,8 @@ async def test_outbox_completion_requires_lease_owner(
     async with fresh_db.acquire() as conn:
         observation = await _seed_observation(conn, tenant_id)
         snapshot = await _identity_snapshot(conn, observation)
-        item = await repo.enqueue_identity_resolved(observation, snapshot, conn=conn)
+        knowledge = await _knowledge_snapshot(conn, observation, snapshot)
+        item = await repo.enqueue_knowledge_settled(observation, knowledge, conn=conn)
         await repo.claim(
             worker_id="constructor-1",
             batch_size=1,
@@ -236,6 +277,7 @@ async def test_outbox_rejects_cross_tenant_evidence(
     async with fresh_db.acquire() as conn:
         observation = await _seed_observation(conn, tenant_id)
         snapshot = await _identity_snapshot(conn, observation)
+        knowledge = await _knowledge_snapshot(conn, observation, snapshot)
         with pytest.raises(asyncpg.ForeignKeyViolationError):
             await EpisodeIntakeRepository().enqueue_ready(
                 tenant_id=uuid7(),
@@ -249,5 +291,8 @@ async def test_outbox_rejects_cross_tenant_evidence(
                 identity_snapshot_id=snapshot.id,
                 identity_snapshot_hash=snapshot.snapshot_hash,
                 identity_resolution_status=snapshot.resolution_status,
+                knowledge_snapshot_id=knowledge.id,
+                knowledge_snapshot_hash=knowledge.snapshot_hash,
+                claim_set_hash=knowledge.claim_set_hash,
                 conn=conn,
             )

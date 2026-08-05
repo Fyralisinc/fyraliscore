@@ -15,6 +15,7 @@ from aiokafka import AIOKafkaConsumer
 
 from lib.shared.db import configure_connection_timeouts
 from services.domain.identity.intake import IdentityIntakeRepository
+from services.domain.reasoning_ingress import reasoning_ingress_mode
 from services.domain.triggers import enqueue_trigger
 from services.ingest.ingestion.dlq.publish import publish_dlq
 from services.ingest.ingestion.embedding.publish import publish_embedding_request
@@ -177,24 +178,25 @@ async def _write_summary_and_enqueue(
                 cause_assertion_ids=(),
                 conn=conn,
             )
-            await enqueue_trigger(
-                conn,
-                tenant_id=env.tenant_id,
-                trigger_kind="T1",
-                trigger_subkind="event_arrival",
-                observation_id=env.observation_id,
-                payload={
-                    "source_channel": updated["source_channel"],
-                    "kind": updated["kind"],
-                    "trust_tier": updated["trust_tier"],
-                    "seed_occurred_at": updated["occurred_at"].isoformat(),
-                    "seed_natural_text": (updated["content_text"] or "")[:2000],
-                    "scope_actors": (
-                        [str(updated["actor_id"])] if updated["actor_id"] else []
-                    ),
-                    "summarized": True,
-                },
-            )
+            if await reasoning_ingress_mode(conn, tenant_id=env.tenant_id) == "direct":
+                await enqueue_trigger(
+                    conn,
+                    tenant_id=env.tenant_id,
+                    trigger_kind="T1",
+                    trigger_subkind="event_arrival",
+                    observation_id=env.observation_id,
+                    payload={
+                        "source_channel": updated["source_channel"],
+                        "kind": updated["kind"],
+                        "trust_tier": updated["trust_tier"],
+                        "seed_occurred_at": updated["occurred_at"].isoformat(),
+                        "seed_natural_text": (updated["content_text"] or "")[:2000],
+                        "scope_actors": (
+                            [str(updated["actor_id"])] if updated["actor_id"] else []
+                        ),
+                        "summarized": True,
+                    },
+                )
     _bump("summarization_worker.summaries_succeeded")
     return "summarized"
 
