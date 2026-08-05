@@ -308,6 +308,7 @@ class EpisodeRoutingRepository:
               FROM episode_topics t JOIN episodes e
                 ON e.tenant_id=t.tenant_id AND e.topic_id=t.id
              WHERE t.tenant_id=$1 AND t.status='active'
+               AND t.origin <> 'query_seeded'
                AND e.lifecycle_state IN ('open','dormant','settled','reopened')
              ORDER BY e.last_event_at DESC, t.id LIMIT 200
             """,
@@ -362,8 +363,7 @@ class EpisodeRoutingRepository:
             ) VALUES (
               $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15::jsonb,
               $16,$17,$18,$19
-            ) ON CONFLICT (tenant_id, decision_key)
-              DO UPDATE SET decision_key=episode_membership_assertions.decision_key
+            ) ON CONFLICT (tenant_id, decision_key) DO NOTHING
             RETURNING {', '.join(_MEMBERSHIP_COLUMNS)}
             """,
             uuid7(), signal.tenant_id, decision.topic_id, decision.episode_id,
@@ -374,6 +374,13 @@ class EpisodeRoutingRepository:
             json.dumps(decision.feature_snapshot, sort_keys=True), router_name,
             router_version, feature_schema_version, key,
         )
+        if row is None:
+            row = await conn.fetchrow(
+                f"SELECT {', '.join(_MEMBERSHIP_COLUMNS)} "
+                "FROM episode_membership_assertions "
+                "WHERE tenant_id=$1 AND decision_key=$2",
+                signal.tenant_id, key,
+            )
         assert row is not None
         membership = _membership(row)
         for assertion_id in signal.identity_assertion_ids:
@@ -390,17 +397,79 @@ class EpisodeRoutingRepository:
             await conn.execute(
                 """
                 UPDATE episodes
-                   SET last_event_at=greatest(last_event_at,$3),
+                   SET opened_at=least(opened_at,$3),
+                       last_event_at=greatest(last_event_at,$3),
                        last_ingested_at=greatest(last_ingested_at,$4),
-                       lifecycle_state=CASE WHEN lifecycle_state='settled'
-                                            THEN 'reopened' ELSE lifecycle_state END,
                        updated_at=now()
                  WHERE id=$1 AND tenant_id=$2
                 """,
                 decision.episode_id, signal.tenant_id, signal.occurred_at,
                 signal.ingested_at,
             )
+            await self._expand_topic(
+                topic_id=decision.topic_id, signal=signal,
+                membership_id=membership.id, conn=conn,
+            )
         return membership
+
+    async def _expand_topic(
+        self,
+        *,
+        topic_id: UUID,
+        signal: RoutingSignal,
+        membership_id: UUID,
+        conn: asyncpg.Connection,
+    ) -> None:
+        await conn.execute(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1,0))",
+            f"episode-topic-version:{signal.tenant_id}:{topic_id}",
+        )
+        row = await conn.fetchrow(
+            "SELECT head_version,primary_anchor,anchor_refs,claim_predicates,lexical_terms "
+            "FROM episode_topics WHERE id=$1 AND tenant_id=$2 FOR UPDATE",
+            topic_id, signal.tenant_id,
+        )
+        if row is None:
+            raise ValidationError("episode topic not found")
+        old_refs = tuple(_json(row["anchor_refs"]))
+        refs_by_key = {canonical_ref(value): value for value in (*old_refs, *signal.anchor_refs)}
+        refs = tuple(refs_by_key[key] for key in sorted(refs_by_key))
+        predicates = tuple(sorted(set(_json(row["claim_predicates"])).union(signal.claim_predicates)))
+        terms = tuple(sorted(set(_json(row["lexical_terms"])).union(signal.lexical_terms)))[:100]
+        if (
+            refs == old_refs
+            and predicates == tuple(_json(row["claim_predicates"]))
+            and terms == tuple(_json(row["lexical_terms"]))
+        ):
+            return
+        version = int(row["head_version"]) + 1
+        manifest = {
+            "topic_id": str(topic_id), "version": version,
+            "primary_anchor": _json(row["primary_anchor"]), "anchor_refs": refs,
+            "claim_predicates": predicates, "lexical_terms": terms,
+        }
+        manifest_hash = hashlib.sha256(
+            json.dumps(manifest, sort_keys=True, separators=(",", ":"), default=str).encode()
+        ).hexdigest()
+        await conn.execute(
+            """
+            INSERT INTO episode_topic_versions (
+              id,tenant_id,topic_id,version,primary_anchor,anchor_refs,
+              claim_predicates,lexical_terms,caused_by_membership_id,manifest_hash
+            ) VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7::jsonb,$8::jsonb,$9,$10)
+            ON CONFLICT (tenant_id,topic_id,manifest_hash) DO NOTHING
+            """,
+            uuid7(), signal.tenant_id, topic_id, version,
+            json.dumps(_json(row["primary_anchor"]), sort_keys=True),
+            json.dumps(refs, sort_keys=True), json.dumps(predicates),
+            json.dumps(terms), membership_id, manifest_hash,
+        )
+        await conn.execute(
+            "UPDATE episode_topics SET anchor_refs=$3::jsonb,claim_predicates=$4::jsonb,"
+            "lexical_terms=$5::jsonb,head_version=$6 WHERE id=$1 AND tenant_id=$2",
+            topic_id, signal.tenant_id, json.dumps(refs, sort_keys=True),
+            json.dumps(predicates), json.dumps(terms), version,
+        )
 
     async def memberships_for_run(
         self, run_id: UUID, *, tenant_id: UUID, conn: asyncpg.Connection

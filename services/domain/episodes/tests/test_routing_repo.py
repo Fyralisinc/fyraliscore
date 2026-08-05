@@ -28,6 +28,7 @@ async def _seed(
     object_id: str,
     anchor_id: str,
     text: str,
+    access_policy: dict | None = None,
 ) -> ObservationRow:
     now = datetime.now(UTC)
     evidence = await SourceEvidenceRepository().insert(
@@ -38,8 +39,8 @@ async def _seed(
             source_recorded_at=now, content_hash=hashlib.sha256(text.encode()).hexdigest(),
             raw_ingested_at=now, normalized_at=now, ingress_kind="poll",
             raw_retention_state="not_stored",
-            access_policy={"visibility": "tenant", "audience": [],
-                           "source_acl_version": f"{source}-v1"},
+            access_policy=access_policy or {"visibility": "tenant", "audience": [],
+                                            "source_acl_version": f"{source}-v1"},
         ),
         conn=conn,
     )

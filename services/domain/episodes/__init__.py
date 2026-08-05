@@ -13,12 +13,17 @@ from .contracts import (
 )
 from .intake import EpisodeIntakeRepository, PerceptionOutboxRow
 from .repo import EpisodeMembershipRow, EpisodeRoutingRepository, EpisodeTopicRow
+from .construction import EpisodeConstructionService
+from .lifecycle import EpisodeLifecycleRepository
+from .query import QueryEpisodeResult, QueryEpisodeService
 from .routing import RoutingSignal, TopicCandidate, score_membership
 from .service import EpisodeRoutingService
 
 __all__ = [
     "EpisodeConstitution",
     "EpisodeIntakeRepository",
+    "EpisodeConstructionService",
+    "EpisodeLifecycleRepository",
     "EpisodeMembershipRow",
     "EpisodeRoutingRepository",
     "EpisodeRoutingService",
@@ -26,6 +31,8 @@ __all__ = [
     "EpisodeMembershipAssertion",
     "EpisodeSnapshot",
     "PerceptionOutboxRow",
+    "QueryEpisodeResult",
+    "QueryEpisodeService",
     "RoutingSignal",
     "TopicCandidate",
     "score_membership",

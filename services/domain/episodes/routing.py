@@ -19,7 +19,8 @@ _STOP = {
     "about", "after", "also", "and", "are", "before", "been", "being",
     "but", "can", "did", "for", "from", "has", "have", "into", "its",
     "not", "now", "our", "that", "the", "their", "this", "was", "were",
-    "what", "when", "where", "which", "who", "will", "with", "would",
+    "current", "state", "status", "what", "when", "where", "which", "who",
+    "will", "with", "would",
 }
 _STRONG_TYPES = {
     "audit", "goal", "project", "workstream", "initiative", "milestone",
@@ -90,7 +91,11 @@ def topic_key(*, tenant_id: UUID, origin: str, primary_anchor: dict[str, Any]) -
 
 
 def lexical_terms(text: str, *, limit: int = 40) -> tuple[str, ...]:
-    values = {match.group(0).lower() for match in _TOKENS.finditer(text)}
+    values = {
+        (token[:-1] if token.endswith("s") and len(token) > 4 else token)
+        for match in _TOKENS.finditer(text)
+        for token in (match.group(0).lower(),)
+    }
     return tuple(sorted(values.difference(_STOP)))[:limit]
 
 

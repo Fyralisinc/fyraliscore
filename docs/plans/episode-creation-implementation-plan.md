@@ -30,7 +30,7 @@ Exit criteria:
 
 ## Phase 2 — Lifecycle, access, contradictions, and snapshots
 
-Status: **Next**.
+Status: **Completed** in Phase 2.
 
 Deliverables:
 
@@ -54,7 +54,7 @@ Exit criteria:
 
 ## Phase 3 — Durable construction and reasoning handoff
 
-Status: **Pending**.
+Status: **Next**.
 
 Deliverables:
 
