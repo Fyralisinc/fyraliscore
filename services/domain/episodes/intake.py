@@ -177,15 +177,20 @@ class EpisodeIntakeRepository:
             raise ValidationError("batch_size and lease_seconds must be positive")
         rows = await conn.fetch(
             f"""
-            WITH candidates AS (
-              SELECT id FROM perception_outbox
-               WHERE (
-                 (status = 'pending' AND available_at <= now())
-                 OR (status = 'leased' AND lease_expires_at <= now())
-               )
-               ORDER BY available_at, created_at, id
-               LIMIT $1
-               FOR UPDATE SKIP LOCKED
+            WITH ranked AS (
+              SELECT id, tenant_id, available_at, created_at,
+                     row_number() OVER (
+                       PARTITION BY tenant_id ORDER BY available_at, created_at, id
+                     ) AS tenant_rank
+                FROM perception_outbox
+               WHERE (status = 'pending' AND available_at <= now())
+                  OR (status = 'leased' AND lease_expires_at <= now())
+            ), candidates AS (
+              SELECT item.id FROM perception_outbox item
+              JOIN ranked ON ranked.id=item.id
+               ORDER BY ranked.tenant_rank, ranked.available_at,
+                        ranked.created_at, item.id
+               LIMIT $1 FOR UPDATE OF item SKIP LOCKED
             )
             UPDATE perception_outbox AS item
                SET status = 'leased', lease_owner = $2,

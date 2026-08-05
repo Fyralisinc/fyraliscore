@@ -18,6 +18,7 @@ from .assembler import EpisodeSignalAssembler
 from .construction import EpisodeConstructionService
 from .contracts import EpisodeSnapshot, MembershipReason
 from .intake import PerceptionOutboxRow
+from .handoff import EpisodeSnapshotOutboxRepository
 from .repo import EpisodeRoutingRepository
 from .routing import MembershipDecisionValue, canonical_ref, lexical_terms
 
@@ -79,6 +80,7 @@ class QueryEpisodeService:
             valid_time_start=valid_time_start, valid_time_end=valid_time_end, conn=conn,
         )
         if existing_snapshot is not None:
+            await EpisodeSnapshotOutboxRepository().enqueue(existing_snapshot, conn=conn)
             return QueryEpisodeResult(topic_id, episode_id, (), existing_snapshot)
 
         automatic_topics = await conn.fetch(

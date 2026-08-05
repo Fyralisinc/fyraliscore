@@ -54,7 +54,7 @@ Exit criteria:
 
 ## Phase 3 — Durable construction and reasoning handoff
 
-Status: **Next**.
+Status: **Completed** in Phase 3.
 
 Deliverables:
 

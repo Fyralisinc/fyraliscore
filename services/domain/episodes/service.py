@@ -7,6 +7,8 @@ import json
 
 import asyncpg
 
+from lib.shared.errors import ValidationError
+
 from .assembler import EpisodeSignalAssembler
 from .contracts import MembershipReason
 from .intake import PerceptionOutboxRow
@@ -31,6 +33,14 @@ class EpisodeRoutingService:
     async def route(
         self, item: PerceptionOutboxRow, *, conn: asyncpg.Connection
     ) -> list[EpisodeMembershipRow]:
+        if (
+            item.contract_version < 2
+            or item.identity_snapshot_id is None
+            or item.identity_snapshot_hash is None
+            or item.identity_resolution_status is None
+        ):
+            raise ValidationError("episode routing requires identity-grounded intake v2")
+        identity_snapshot_id = item.identity_snapshot_id
         input_hash = hashlib.sha256(
             json.dumps(
                 {
@@ -51,7 +61,7 @@ class EpisodeRoutingService:
             observation_id=item.observation_id,
             observation_occurred_at=item.observation_occurred_at,
             evidence_id=item.evidence_id,
-            identity_snapshot_id=item.identity_snapshot_id,
+            identity_snapshot_id=identity_snapshot_id,
             input_hash=input_hash,
             router_name=self.router_name,
             router_version=self.router_version,

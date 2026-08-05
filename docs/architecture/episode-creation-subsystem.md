@@ -1,5 +1,7 @@
 # Fyralis Episode Creation Subsystem
 
+**Status:** Implemented through durable reasoning handoff.
+
 ## Purpose and boundary
 
 An episode is a bounded, versioned, cross-source evidence batch about one

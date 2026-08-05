@@ -29,6 +29,8 @@ async def _seed(
     anchor_id: str,
     text: str,
     access_policy: dict | None = None,
+    extra_entities: list[dict] | None = None,
+    unresolved_phrases: list[str] | None = None,
 ) -> ObservationRow:
     now = datetime.now(UTC)
     evidence = await SourceEvidenceRepository().insert(
@@ -56,8 +58,14 @@ async def _seed(
           entities_mentioned, evidence_id
         """,
         uuid7(), tenant_id, now, f"{source}:object",
-        json.dumps({"_episode_topics": ["Security Audit"]}), text,
-        json.dumps([{"type": "workstream", "id": anchor_id}]),
+        json.dumps({
+            "_episode_topics": ["Security Audit"],
+            "_unresolved_phrases": unresolved_phrases or [],
+        }), text,
+        json.dumps([
+            {"type": "workstream", "id": anchor_id},
+            *(extra_entities or []),
+        ]),
         evidence.evidence.id,
     )
     value = dict(row)

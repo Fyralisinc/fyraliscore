@@ -10,6 +10,7 @@ from uuid import UUID
 import asyncpg
 
 from .contracts import EpisodeSettlement, EpisodeSnapshot
+from .handoff import EpisodeSnapshotOutboxRepository
 from .lifecycle import EpisodeLifecycleRepository
 from .snapshot import EpisodeSnapshotService
 
@@ -20,6 +21,7 @@ class EpisodeConstructionService:
     def __init__(self) -> None:
         self._lifecycle = EpisodeLifecycleRepository()
         self._snapshots = EpisodeSnapshotService()
+        self._handoff = EpisodeSnapshotOutboxRepository()
 
     async def ensure_opened(
         self, episode_id: UUID, *, tenant_id: UUID, conn: asyncpg.Connection
@@ -101,9 +103,11 @@ class EpisodeConstructionService:
                 manifest = existing["manifest"]
                 if isinstance(manifest, str):
                     manifest = json.loads(manifest)
-                return EpisodeSnapshot.model_validate(
+                snapshot = EpisodeSnapshot.model_validate(
                     {**manifest, "snapshot_hash": existing["snapshot_hash"]}
                 )
+                await self._handoff.enqueue(snapshot, conn=conn)
+                return snapshot
         if state != "settled":
             await self._lifecycle.transition(
                 episode_id, tenant_id=tenant_id, to_state="settled", event_kind="settled",
@@ -119,10 +123,12 @@ class EpisodeConstructionService:
             ingestion_time_watermark=row["last_ingested_at"],
             settled_at=now,
         )
-        return await self._snapshots.seal(
+        snapshot = await self._snapshots.seal(
             episode_id, tenant_id=tenant_id, settlement=settlement,
             conn=conn, created_at=now,
         )
+        await self._handoff.enqueue(snapshot, conn=conn)
+        return snapshot
 
     async def reopen_for_late_evidence(
         self,

@@ -8,6 +8,7 @@ import pytest
 from lib.shared.ids import uuid7
 from services.domain.episodes.construction import EpisodeConstructionService
 from services.domain.episodes.intake import EpisodeIntakeRepository
+from services.domain.episodes.read import EpisodeReadService
 from services.domain.episodes.service import EpisodeRoutingService
 from services.domain.identity.intake import IdentityIntakeRepository
 from services.domain.identity.worker import IdentityResolutionWorker
@@ -114,6 +115,11 @@ async def test_settlement_preserves_contradictions_and_late_evidence_reopens(
         assert second.version == 2
         assert second.prior_snapshot_id == first.id
         assert len(second.observation_ids) == 3
+        diff = await EpisodeReadService().diff(
+            first.id, second.id, tenant_id=tenant_id, conn=conn
+        )
+        assert diff.added_observation_ids == (jira.id,)
+        assert diff.removed_observation_ids == ()
         assert await conn.fetchval(
             "SELECT count(*) FROM episode_snapshots WHERE tenant_id=$1 AND episode_id=$2",
             tenant_id, episode_id,
