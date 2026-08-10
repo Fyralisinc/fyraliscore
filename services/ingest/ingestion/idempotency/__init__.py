@@ -363,8 +363,8 @@ def carta_entity(
     """`carta:{firm}:{kind}:{id}:{version}` — namespaced by the issuer id
     (`firm_id` holds the Carta issuer id) and discriminated by entity_kind (so
     multiple cap-table entity kinds sharing an id never collide), VERSIONED by
-    `handlers.carta.carta_version(entity)` (a content digest — Carta v1alpha1
-    entities have no revision counter) so each mutation re-observes."""
+    the Carta connector's content digest (Carta v1alpha1 entities have no
+    revision counter) so each mutation re-observes."""
     return f"carta:{firm_id}:{entity_kind}:{entity_id}:{version}"
 
 

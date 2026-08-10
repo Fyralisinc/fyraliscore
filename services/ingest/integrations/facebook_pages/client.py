@@ -1,4 +1,5 @@
 """Meta Graph API client for Facebook Page / Messenger conversations."""
+
 from __future__ import annotations
 
 import os
@@ -9,9 +10,7 @@ from uuid import UUID
 import asyncpg
 import httpx
 
-from lib.integrations.endpoints import endpoint
 from lib.shared.errors import SecretNotFoundError, SecretStoreError
-
 
 _DEFAULT_GRAPH_VERSION = "v23.0"
 FACEBOOK_PAGES_WEBHOOK_FIELDS = ("messages", "message_echoes")
@@ -23,7 +22,15 @@ def graph_api_version() -> str:
 
 
 def graph_api_base_url() -> str:
-    base = endpoint("facebook_graph_api").rstrip("/")
+    base = os.environ.get("FACEBOOK_GRAPH_API_BASE_URL", "").strip()
+    if not base:
+        synthetic_base = os.environ.get("SYNTHETIC_SOURCE_API_BASE", "").strip()
+        base = (
+            f"{synthetic_base.rstrip('/')}/facebook"
+            if synthetic_base
+            else "https://graph.facebook.com"
+        )
+    base = base.rstrip("/")
     version = graph_api_version()
     if base.rsplit("/", 1)[-1].startswith("v"):
         return base
@@ -217,7 +224,10 @@ class FacebookPagesClient:
                 ON CONFLICT (facebook_page_installation_id, conversation_id)
                 DO UPDATE SET
                     participant_ids = EXCLUDED.participant_ids,
-                    updated_time = COALESCE(EXCLUDED.updated_time, facebook_page_conversations.updated_time),
+                    updated_time = COALESCE(
+                        EXCLUDED.updated_time,
+                        facebook_page_conversations.updated_time
+                    ),
                     message_count = GREATEST(
                         facebook_page_conversations.message_count,
                         EXCLUDED.message_count

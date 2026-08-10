@@ -49,7 +49,10 @@ _PUBLIC = RouteAccessPolicy(
 )
 _BOOTSTRAP = RouteAccessPolicy(
     access=RouteAccess.SELF_AUTHENTICATED,
-    reason="session bootstrap endpoint authenticated by X-Bootstrap-Secret when configured",
+    reason=(
+        "session bootstrap endpoint authenticated by X-Bootstrap-Secret when "
+        "configured"
+    ),
     gateway_bearer_required=False,
 )
 _OAUTH_CALLBACK = RouteAccessPolicy(
@@ -69,7 +72,9 @@ _VIEW_TOKEN = RouteAccessPolicy(
 )
 _IN_PROCESS = RouteAccessPolicy(
     access=RouteAccess.INTERNAL,
-    reason="in-process/internal adapter endpoint; must be protected by deployment boundary",
+    reason=(
+        "in-process/internal adapter endpoint; must be protected by deployment boundary"
+    ),
     gateway_bearer_required=False,
 )
 _DEBUG = RouteAccessPolicy(
@@ -101,12 +106,17 @@ _PLATFORM_ONBOARDING = RouteAccessPolicy(
 )
 _INTERNAL_BEARER = RouteAccessPolicy(
     access=RouteAccess.INTERNAL,
-    reason="internal API currently protected by gateway bearer auth; deployment boundary still required",
+    reason=(
+        "internal API currently protected by gateway bearer auth; deployment boundary "
+        "still required"
+    ),
     gateway_bearer_required=True,
 )
 _ADMIN_BEARER = RouteAccessPolicy(
     access=RouteAccess.ADMIN,
-    reason="admin/operator API requires gateway bearer auth plus tenant-scoped admin role",
+    reason=(
+        "admin/operator API requires gateway bearer auth plus tenant-scoped admin role"
+    ),
     gateway_bearer_required=True,
 )
 _BEARER = RouteAccessPolicy(
@@ -172,11 +182,18 @@ GATEWAY_BEARER_BYPASS_PREFIXES = tuple(
 GATEWAY_BEARER_BYPASS_SPECIAL_PREFIXES = ("/stream",)
 
 
+def _is_connector_callback_path(path: str) -> bool:
+    parts = path.strip("/").split("/")
+    return len(parts) == 3 and parts[0] == "integrations" and parts[2] == "callback"
+
+
 def classify_gateway_route(path: str) -> RouteAccessPolicy:
     """Classify a FastAPI route path by its current transport access boundary."""
     exact = GATEWAY_BEARER_BYPASS_PATH_POLICIES.get(path)
     if exact is not None:
         return exact
+    if _is_connector_callback_path(path):
+        return _OAUTH_CALLBACK
     if path == "/debug" or path.startswith(("/debug/", "/api/debug/")):
         return _DEBUG
     if path.startswith("/api/admin/"):
@@ -189,7 +206,10 @@ def classify_gateway_route(path: str) -> RouteAccessPolicy:
     if path.startswith(GATEWAY_BEARER_BYPASS_SPECIAL_PREFIXES):
         return RouteAccessPolicy(
             access=RouteAccess.SELF_AUTHENTICATED,
-            reason="legacy realtime stream bypass; route must authenticate within the stream protocol",
+            reason=(
+                "legacy realtime stream bypass; route must authenticate within the "
+                "stream protocol"
+            ),
             gateway_bearer_required=False,
         )
     return _BEARER
@@ -199,6 +219,7 @@ def gateway_auth_bypassed(path: str, extension_prefixes: Iterable[str] = ()) -> 
     """Return whether the gateway actor-session middleware should skip a path."""
     return (
         path in GATEWAY_BEARER_BYPASS_PATHS
+        or _is_connector_callback_path(path)
         or path.startswith(GATEWAY_BEARER_BYPASS_SPECIAL_PREFIXES)
         or any(path.startswith(prefix) for prefix in GATEWAY_BEARER_BYPASS_PREFIXES)
         or any(path.startswith(prefix) for prefix in extension_prefixes)
@@ -215,8 +236,7 @@ def iter_gateway_route_inventory(app: FastAPI) -> list[RouteInventoryEntry]:
                     methods=methods,
                     path=path,
                     name=route.name,
-                    tags=inherited_tags
-                    + tuple(str(tag) for tag in (route.tags or ())),
+                    tags=inherited_tags + tuple(str(tag) for tag in (route.tags or ())),
                     policy=classify_gateway_route(path),
                 )
             )

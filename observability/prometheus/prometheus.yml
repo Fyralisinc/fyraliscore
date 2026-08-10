@@ -43,8 +43,6 @@ scrape_configs:
         labels: { worker: embedding_backlog }
       - targets: ["periodic_reconciler:9300"]
         labels: { worker: periodic_reconciler }
-      - targets: ["circuit_breaker:9300"]
-        labels: { worker: circuit_breaker }
       - targets: ["think_worker:9300"]
         labels: { worker: think_worker }
       - targets: ["think_worker_reflex:9300"]
@@ -63,6 +61,16 @@ scrape_configs:
         labels: { worker: anomaly_processor_worker }
       - targets: ["entity_resolver_worker:9300"]
         labels: { worker: entity_resolver_worker }
+      - targets: ["identity_resolution_worker:9300"]
+        labels: { worker: identity_resolution_worker }
+      - targets: ["perception_knowledge_worker:9300"]
+        labels: { worker: perception_knowledge_worker }
+      - targets: ["episode_constructor_worker:9300"]
+        labels: { worker: episode_constructor_worker }
+      - targets: ["episode_settlement_worker:9300"]
+        labels: { worker: episode_settlement_worker }
+      - targets: ["episode_handoff_worker:9300"]
+        labels: { worker: episode_handoff_worker }
       - targets: ["schema_drift_monitor:9300"]
         labels: { worker: schema_drift_monitor }
       - targets: ["deadline_resolver:9300"]
@@ -77,6 +85,8 @@ scrape_configs:
         labels: { worker: source_onboarding }
       - targets: ["reconciler:9300"]
         labels: { worker: reconciler }
+      - targets: ["source_connector_lifecycle:9300"]
+        labels: { worker: source_connector_lifecycle }
       - targets: ["extension_workers:9300"]
         labels: { worker: extension_workers }
       - targets: ["feels_onboarded_monitor:9300"]
@@ -89,12 +99,8 @@ scrape_configs:
         labels: { worker: signal_gateway_worker }
       - targets: ["gmail_watch_scheduler:9300"]
         labels: { worker: gmail_watch_scheduler }
-      - targets: ["gmail_history_poller:9300"]
-        labels: { worker: gmail_history_poller }
-      - targets: ["google_calendar_live_poller:9300"]
-        labels: { worker: google_calendar_live_poller }
-      - targets: ["google_drive_live_poller:9300"]
-        labels: { worker: google_drive_live_poller }
+      - targets: ["connector_poll_worker:9300"]
+        labels: { worker: connector_poll_worker }
       - targets: ["google_calendar_watch_scheduler:9300"]
         labels: { worker: google_calendar_watch_scheduler }
       - targets: ["google_drive_watch_scheduler:9300"]

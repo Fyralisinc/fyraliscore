@@ -31,6 +31,7 @@ not become a denial-of-service against the rest of the partition.
 The "don't get stuck on garbage" property is tested at
 `services/ingest/ingestion/normalizer/tests/test_worker_garbage_envelope.py`.
 """
+
 from __future__ import annotations
 
 import datetime as dt
@@ -58,36 +59,34 @@ _CONTENT_HASH_RE = re.compile(r"^[0-9a-f]{40}$")
 # Canonical key shape per LLD §5.1:
 #   {env}/{source}/{tenant_id}/{yyyy-mm}/{hash[:2]}/{hash}.json[.zst]
 # `env` is lowercase identifier (dev/stage/prod/...). `tenant_id` is a v4/v7
-# UUID. The `source` alternation is derived from INGESTION_SOURCES (the single
-# registry, == RawEnvelope.SourceLiteral) so it can NEVER drift behind a newly
+# UUID. The `source` alternation is derived from INGESTION_SOURCES (the
+# source-contract index) so it can NEVER drift behind a newly
 # added source. Previously this was a hardcoded list that omitted mercury,
 # quickbooks and grafana — every backfill envelope for those three sources
 # failed this invariant and was silently DLQ'd, producing zero observations
 # despite a healthy fetch. Sourcing the alternation from the registry makes
-# "add a source to SourceLiteral" sufficient.
+# "add a source to source-index.json" sufficient.
 _SOURCE_ALT = "|".join(re.escape(s) for s in INGESTION_SOURCES)
 _S3_KEY_RE = re.compile(
-    r"^[a-z0-9_-]+"                              # env
-    rf"/(?:{_SOURCE_ALT})"                       # source (from registry)
+    r"^[a-z0-9_-]+"  # env
+    rf"/(?:{_SOURCE_ALT})"  # source (from registry)
     r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"  # tenant
-    r"/[0-9]{4}-[0-9]{2}"                        # yyyy-mm
-    r"/[0-9a-f]{2}"                              # hash prefix
-    r"/[0-9a-f]{40}\.json(?:\.zst)?$"            # hash + ext
+    r"/[0-9]{4}-[0-9]{2}"  # yyyy-mm
+    r"/[0-9a-f]{2}"  # hash prefix
+    r"/[0-9a-f]{40}\.json(?:\.zst)?$"  # hash + ext
 )
 
 # Clock-skew tolerance (matches the Slack webhook handler's replay
 # window — LLD §5.1 also expects producers to stamp ingested_at
 # close to now()).
-_MAX_FUTURE_SECONDS = 3600          # 1 hour
+_MAX_FUTURE_SECONDS = 3600  # 1 hour
 _MAX_PAST_SECONDS = 30 * 24 * 3600  # 30 days
 
 
 # SC-006 compliance: raw identifiers MUST NOT land in ingress
 # metadata. The shadow path's Discord helper hashes guild_id and
 # emits `short_guild_hash`; a regression there would surface here.
-_FORBIDDEN_METADATA_KEYS: frozenset[str] = frozenset(
-    {"guild_id", "raw_guild_id"}
-)
+_FORBIDDEN_METADATA_KEYS: frozenset[str] = frozenset({"guild_id", "raw_guild_id"})
 
 
 def assert_envelope_invariants(
@@ -135,7 +134,7 @@ def assert_envelope_invariants(
         )
 
     # 4. ingested_at within a sane clock window.
-    now = now or dt.datetime.now(tz=dt.timezone.utc)
+    now = now or dt.datetime.now(tz=dt.UTC)
     delta = (envelope.ingested_at - now).total_seconds()
     if delta > _MAX_FUTURE_SECONDS:
         raise EnvelopeInvariantError(

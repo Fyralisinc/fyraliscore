@@ -20,11 +20,13 @@ Why "best-effort" extraction:
   `ingestion_failures.source` CHECK constraint forbids NULL source
   and `tenant_id` is NOT NULL FK.
 """
+
 from __future__ import annotations
 
 import datetime as dt
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 from uuid import UUID
 
 import orjson
@@ -32,15 +34,14 @@ import orjson
 from services.ingest.ingestion.dlq.models import DLQEnvelope, WireFailureKind
 from services.ingest.ingestion.kafka.topics import INGESTION_SOURCES, topic_for
 
-
 log = logging.getLogger(__name__)
 
 
 _DLQ_TOPIC = "ingestion.dlq"
-# Derived from the canonical source registry (== RawEnvelope.SourceLiteral) so a
+# Derived from the canonical source-contract index so a
 # newly added source can never be silently rejected here. Previously a hardcoded
 # set that omitted 'grafana', so grafana DLQ envelopes had no valid per-source
-# lane. Add a source to SourceLiteral and it is accepted automatically.
+# lane. Add a source to source-index.json and it is accepted automatically.
 _VALID_SOURCES = frozenset(INGESTION_SOURCES)
 
 
@@ -112,8 +113,8 @@ async def publish_dlq(
     """
     # If tenant_id / source not supplied, try best-effort extract.
     if (tenant_id is None or source is None) and msg_bytes is not None:
-        t_extracted, s_extracted, k_extracted = (
-            extract_dlq_fields_best_effort(msg_bytes)
+        t_extracted, s_extracted, k_extracted = extract_dlq_fields_best_effort(
+            msg_bytes
         )
         if tenant_id is None:
             tenant_id = t_extracted
@@ -143,7 +144,7 @@ async def publish_dlq(
             raw_s3_key=raw_s3_key,
             error_summary=error_summary[:500] if error_summary else "(empty)",
             error_context=error_context or {},
-            failed_at=dt.datetime.now(tz=dt.timezone.utc),
+            failed_at=dt.datetime.now(tz=dt.UTC),
         )
     except Exception as exc:  # noqa: BLE001
         # Programmer error (failure_kind typo, etc.). Log + skip;

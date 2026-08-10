@@ -65,13 +65,11 @@ from services.ingest.ingestion.workflows.runtime import (
 )
 from services.ingest.ingestion.raw_tier.s3 import S3Client
 from services.ingest.ingestion.workflows.shard_fetch import (
-    DEFAULT_AUTO_CONCURRENCY_LIMIT,
     DEFAULT_DIAGNOSTIC_INSTANCE as SHARD_FETCH_INSTANCE_DEFAULT,
     DEFAULT_INGESTION_ENV,
     DEFAULT_S3_BUCKET,
     ShardFetch,
     ShardFetchConfig,
-    parse_auto_parallelism,
 )
 from services.ingest.ingestion.workflows.source_onboarding import (
     SourceOnboarding,
@@ -174,8 +172,8 @@ async def _run_service(name: str) -> None:
                 tick_interval_seconds=float(
                     os.environ.get("SHARD_FETCH_TICK_SEC", "5.0"),
                 ),
-                max_signals_per_tick=parse_auto_parallelism(
-                    os.environ.get("SHARD_FETCH_BATCH"),
+                max_signals_per_tick=int(
+                    os.environ.get("SHARD_FETCH_BATCH", "10"),
                 ),
                 lease_timeout_seconds=float(
                     os.environ.get("SHARD_FETCH_LEASE_SEC", "30.0"),
@@ -190,28 +188,10 @@ async def _run_service(name: str) -> None:
                 ingestion_env=os.environ.get(
                     "INGESTION_ENV", DEFAULT_INGESTION_ENV,
                 ),
-                max_concurrent_shards=parse_auto_parallelism(
-                    os.environ.get("SHARD_FETCH_CONCURRENCY"),
-                ),
-                auto_concurrency_limit=parse_auto_parallelism(
-                    os.environ.get("SHARD_FETCH_AUTO_CONCURRENCY_MAX"),
-                    default=str(DEFAULT_AUTO_CONCURRENCY_LIMIT),
-                ),
-                s3_write_concurrency=int(
-                    os.environ.get("SHARD_FETCH_S3_WRITE_CONCURRENCY", "1"),
-                ),
             ),
             s3_client=s3_client,
         )
     elif name == "reconciler":
-        # M6.3+: per-source reconcilers may need pool access for auxiliary
-        # reads. Keep the legacy multiplexer entrypoint aligned with the
-        # dedicated reconciler entrypoints by deriving the registration set
-        # from RECONCILER_DISPATCH.
-        from services.ingest.ingestion.reconcilers import register_pool_provider
-
-        register_pool_provider(pool)
-
         service = Reconciler(
             pool,
             config=ReconcilerConfig(

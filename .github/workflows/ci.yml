@@ -414,6 +414,9 @@ jobs:
       - name: Check schema drift
         run: .venv/bin/python scripts/check_schema_drift.py --dsn "$DATABASE_URL"
 
+      - name: Check source connector release admission
+        run: .venv/bin/python scripts/check_source_connector_release_gate.py
+
       # Real-LLM tests are gated by RUN_REAL_LLM and DEEPSEEK_API_KEY (neither
       # set here, so they're skipped). Ollama-marked tests are excluded
       # because we don't spin up Ollama in PR CI — that runs nightly.

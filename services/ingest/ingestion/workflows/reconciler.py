@@ -19,7 +19,7 @@ and emits `source_onboarding_completed` directly to TenantOnboarding.
 
 M6.2b flow (this commit): SourceOnboarding emits
 `source_shards_completed` to THIS Reconciler service's inbox.
-Reconciler calls `RECONCILER_DISPATCH[source]` to decide clean vs.
+Reconciler calls the registry-resolved reconciliation capability to decide clean vs.
 re-share. CLEAN → emit `source_onboarding_completed` to
 TenantOnboarding (preserving the M6.1 consumer contract). RE-SHARE
 → create new shards with `parent_shard_id` linkage and emit
@@ -113,11 +113,10 @@ PATTERN-ALIGNMENT MAPPING
     (re-share). All via the substrate.
 
   Rule 5 (no cross-workflow shared state):
-    No module-level mutable state in this file. `RECONCILER_DISPATCH`
-    in `services/ingest/ingestion/reconcilers/__init__.py` is ALL_CAPS
-    (constant-style) and outside the analyzer's
-    `services/ingest/ingestion/workflows/*.py` scope.
+    No module-level mutable source registry exists. The immutable connector
+    router is injected into the service composition.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -132,15 +131,14 @@ import asyncpg
 import orjson
 
 from lib.shared.ids import uuid7
-from lib.shared.product_workflow_metrics import record_product_workflow_event
+from lib.observability.product_workflow_events import record_product_workflow_event
 from services.ingest.ingestion.progress.events import (
     CoverageConfidence,
     ProgressEvent,
     SourceOnboardingComplete,
 )
 from services.ingest.ingestion.progress.publisher import publish_progress_events
-from services.ingest.ingestion.reconcilers import (
-    RECONCILER_DISPATCH,
+from services.ingest.connector_platform.workflow_models import (
     ReconciliationDecision,
     ResharedShard,
 )
@@ -149,7 +147,7 @@ from services.ingest.ingestion.workflows.signals import (
     WorkflowSignal,
     claim_signals,
     emit_signal,
-    process_signal_with_serialization_retry,
+    retry_signal_serialization_conflicts,
 )
 from services.ingest.ingestion.workflows.state import (
     WorkflowState,
@@ -164,21 +162,21 @@ log = logging.getLogger(__name__)
 WORKFLOW_KIND = "reconciler"
 WORKFLOW_ID_INBOX = "reconciler"  # per A13: workflow_id = inbox
 
-# The per-source reconciler dispatch runs a best-effort gap-check that may
-# make source-API calls (real HTTP in production / against the spammer).
+# The connector reconciliation capability runs a best-effort gap check that may
+# make governed source-API calls.
 # Bound it so one slow/wedged API call can't hold the claim transaction —
 # and thus freeze the reconciler's single-loop tick — indefinitely. A
 # timed-out check is treated as "clean" (no gaps): the run completes, and a
 # genuine gap would be re-detected on a later pass. Configurable for tests.
-RECONCILER_DISPATCH_TIMEOUT_S = float(
-    os.environ.get("RECONCILER_DISPATCH_TIMEOUT_SEC", "30"),
+CONNECTOR_RECONCILE_TIMEOUT_S = float(
+    os.environ.get("CONNECTOR_RECONCILE_TIMEOUT_SEC", "30"),
 )
 WORKFLOW_ID_DEFAULT = "default"
 
 # Signal kinds.
-SIGNAL_KIND_SHARDS_COMPLETED = "source_shards_completed"   # consumed (from M6.2a)
+SIGNAL_KIND_SHARDS_COMPLETED = "source_shards_completed"  # consumed (from M6.2a)
 SIGNAL_KIND_SOURCE_COMPLETED = "source_onboarding_completed"  # emitted (to M6.1)
-SIGNAL_KIND_SHARD_REQUESTED = "shard_fetch_requested"   # emitted (to M6.2a ShardFetch)
+SIGNAL_KIND_SHARD_REQUESTED = "shard_fetch_requested"  # emitted (to M6.2a ShardFetch)
 
 # Downstream inbox addresses.
 TENANT_ONBOARDING_INBOX_KIND = "tenant_onboarding"
@@ -188,7 +186,6 @@ SHARD_FETCH_INBOX_ID = "shard_fetch"
 
 DEFAULT_TICK_INTERVAL_SECONDS = 5.0
 DEFAULT_MAX_SIGNALS_PER_TICK = 50
-
 
 # ---------------------------------------------------------------------
 # SQL.
@@ -211,12 +208,16 @@ SELECT count(*) FROM observations
 # All shards for this (run, source) — Reconciler needs the full
 # state to make a gap-detection decision.
 _LOAD_SHARDS_SQL = """
-SELECT id, onboarding_run_id, tenant_id, source, shard_kind,
-       shard_identifier, state, parent_shard_id, last_error,
+SELECT s.id, s.onboarding_run_id, s.tenant_id, s.source, s.shard_kind,
+       s.shard_identifier, s.state, s.parent_shard_id, s.last_error,
        observations_seen, pages_fetched, started_at, completed_at
-  FROM onboarding_shards
- WHERE onboarding_run_id = $1 AND source = $2
- ORDER BY created_at, id
+       , ws.state_data -> 'cursor' AS cursor
+  FROM onboarding_shards AS s
+  LEFT JOIN workflow_states AS ws
+    ON ws.workflow_kind = 'shard_fetch'
+   AND ws.workflow_id = s.id::text
+ WHERE s.onboarding_run_id = $1 AND s.source = $2
+ ORDER BY s.created_at, s.id
 """
 
 # Clean-path: stamp reconciled_at on the source_onboarding_runs row.
@@ -229,7 +230,7 @@ UPDATE source_onboarding_runs
    AND reconciled_at IS NULL
 """
 
-# Dispatch-failure path (per A19): when RECONCILER_DISPATCH[source]
+# Capability-failure path (per A19): when connector reconciliation
 # raises, mark the run failed and emit source_onboarding_completed
 # with the failure reason. When the reconciler's dispatch fires, the
 # run's status is typically 'completed' (SourceOnboarding's rollup
@@ -291,19 +292,28 @@ class ReconcilerConfig:
 # Named side-effect functions (Rule 1).
 # ---------------------------------------------------------------------
 async def _load_run(
-    conn: asyncpg.Connection, *, run_id: UUID, source: str,
+    conn: asyncpg.Connection,
+    *,
+    run_id: UUID,
+    source: str,
 ) -> asyncpg.Record | None:
     return await conn.fetchrow(_LOAD_RUN_SQL, run_id, source)
 
 
 async def _load_shards(
-    conn: asyncpg.Connection, *, run_id: UUID, source: str,
+    conn: asyncpg.Connection,
+    *,
+    run_id: UUID,
+    source: str,
 ) -> list[asyncpg.Record]:
     return await conn.fetch(_LOAD_SHARDS_SQL, run_id, source)
 
 
 async def _stamp_reconciled(
-    conn: asyncpg.Connection, *, run_id: UUID, source: str,
+    conn: asyncpg.Connection,
+    *,
+    run_id: UUID,
+    source: str,
 ) -> None:
     await conn.execute(_STAMP_RECONCILED_SQL, run_id, source)
 
@@ -328,14 +338,20 @@ def _count_reshared_shards(shards: list[asyncpg.Record]) -> int:
 
 
 async def _mark_run_failed(
-    conn: asyncpg.Connection, *,
-    run_id: UUID, source: str, failure_reason: str,
+    conn: asyncpg.Connection,
+    *,
+    run_id: UUID,
+    source: str,
+    failure_reason: str,
 ) -> None:
     await conn.execute(_MARK_RUN_FAILED_SQL, run_id, source, failure_reason)
 
 
 async def _start_reshare(
-    conn: asyncpg.Connection, *, run_id: UUID, source: str,
+    conn: asyncpg.Connection,
+    *,
+    run_id: UUID,
+    source: str,
 ) -> int:
     """Flip status back + increment pass_count. Returns the new
     pass_count for use in subsequent idempotency keys."""
@@ -343,31 +359,44 @@ async def _start_reshare(
 
 
 async def _mark_original_resharded(
-    conn: asyncpg.Connection, *, shard_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    shard_id: UUID,
 ) -> None:
     await conn.execute(_MARK_SHARD_RESHARDED_SQL, shard_id)
 
 
 async def _insert_reshared_shard(
-    conn: asyncpg.Connection, *,
-    shard_id: UUID, run_id: UUID, tenant_id: UUID, source: str,
+    conn: asyncpg.Connection,
+    *,
+    shard_id: UUID,
+    run_id: UUID,
+    tenant_id: UUID,
+    source: str,
     reshared: ResharedShard,
 ) -> None:
     """INSERT one onboarding_shards row from a ResharedShard."""
     await conn.execute(
         _INSERT_RESHARED_SHARD_SQL,
-        shard_id, run_id, tenant_id, source,
+        shard_id,
+        run_id,
+        tenant_id,
+        source,
         reshared.shard.shard_kind,
         orjson.dumps(reshared.shard.shard_identifier).decode("utf-8"),
-        reshared.shard.window_start, reshared.shard.window_end,
+        reshared.shard.window_start,
+        reshared.shard.window_end,
         reshared.shard.recency_score,
         reshared.parent_shard_id,
     )
 
 
 async def apply_reshare(
-    conn: asyncpg.Connection, *,
-    run_id: UUID, source: str, tenant_id: UUID,
+    conn: asyncpg.Connection,
+    *,
+    run_id: UUID,
+    source: str,
+    tenant_id: UUID,
     decision: ReconciliationDecision,
 ) -> None:
     """Apply a `has_gaps=True` decision: increment pass_count, flip
@@ -396,8 +425,11 @@ async def apply_reshare(
     for reshared in decision.new_shards:
         new_shard_id = uuid7()
         await _insert_reshared_shard(
-            conn, shard_id=new_shard_id,
-            run_id=run_id, tenant_id=tenant_id, source=source,
+            conn,
+            shard_id=new_shard_id,
+            run_id=run_id,
+            tenant_id=tenant_id,
+            source=source,
             reshared=reshared,
         )
         await emit_signal(
@@ -431,12 +463,14 @@ class Reconciler(LongRunningService):
         *,
         kafka_producer: Any | None = None,
         config: ReconcilerConfig | None = None,
+        connector_router: Any | None = None,
     ) -> None:
         self._pool = pool
         # OPTIONAL progress-event producer (see TenantOnboarding); None in
         # unit tests, wired by `_run_service` in production.
         self._kafka_producer = kafka_producer
         self._config = config or ReconcilerConfig()
+        self._connector_router = connector_router
 
     @property
     def tick_interval_seconds(self) -> float:
@@ -456,10 +490,11 @@ class Reconciler(LongRunningService):
     async def _process_one_signal(self) -> bool:
         """Claim + dispatch ONE signal, retrying transient serialization
         conflicts on the shared `workflow_signals` table (see
-        `process_signal_with_serialization_retry`) so a concurrent-onboarding
+        `retry_signal_serialization_conflicts`) so a concurrent-onboarding
         deadlock on the signal INSERT doesn't crash the reconciler."""
-        return await process_signal_with_serialization_retry(
-            self._process_one_signal_once, label="reconciler",
+        return await retry_signal_serialization_conflicts(
+            self._process_one_signal_once,
+            label="reconciler",
         )
 
     async def _process_one_signal_once(self) -> bool:
@@ -489,7 +524,8 @@ class Reconciler(LongRunningService):
                 sig = signals[0]
                 if sig.signal_kind == SIGNAL_KIND_SHARDS_COMPLETED:
                     events = await self._handle_source_shards_completed(
-                        conn, sig,
+                        conn,
+                        sig,
                     )
                 else:
                     log.warning(
@@ -503,7 +539,9 @@ class Reconciler(LongRunningService):
         return True
 
     async def _handle_source_shards_completed(
-        self, conn: asyncpg.Connection, sig: WorkflowSignal,
+        self,
+        conn: asyncpg.Connection,
+        sig: WorkflowSignal,
     ) -> list[ProgressEvent]:
         """Process one `source_shards_completed` signal.
 
@@ -511,7 +549,7 @@ class Reconciler(LongRunningService):
           - Load source_onboarding_runs row.
           - Idempotency check on reconciled_at.
           - Load all shards for (run, source).
-          - Call RECONCILER_DISPATCH[source](shards, run).
+          - Invoke the installation-bound reconciliation capability.
           - Clean path: stamp reconciled_at + emit source_onboarding_completed.
           - Re-share path: increment pass_count, transition status,
             mark originals resharded, INSERT new shards, emit
@@ -529,7 +567,8 @@ class Reconciler(LongRunningService):
             log.warning(
                 "reconciler.run_missing",
                 extra={
-                    "run_id": str(run_id), "source": source,
+                    "run_id": str(run_id),
+                    "source": source,
                     "signal_id": str(sig.id),
                 },
             )
@@ -543,7 +582,10 @@ class Reconciler(LongRunningService):
             # event: the `source.onboarding.complete` already fired on
             # the first clean pass.
             await self._emit_source_completed(
-                conn, run_id=run_id, source=source, failure_reason=None,
+                conn,
+                run_id=run_id,
+                source=source,
+                failure_reason=None,
             )
             return []
 
@@ -559,9 +601,34 @@ class Reconciler(LongRunningService):
         # facing "not yet implemented" distinction); control flow is
         # identical.
         try:
+            if self._connector_router is None:
+                raise RuntimeError("source connector router is unavailable")
+            install = await conn.fetchrow(
+                """
+                SELECT id, tenant_id, connector_id,
+                       external_installation_id AS installation_id,
+                       desired_state, observed_phase, TRUE AS enabled
+                  FROM source_connector_installations
+                 WHERE tenant_id = $1 AND connector_id = $2
+                   AND desired_state = 'Ready'
+                   AND observed_phase IN ('Ready', 'Degraded')
+                 ORDER BY updated_at DESC
+                 LIMIT 1
+                """,
+                run["tenant_id"],
+                f"fyralis/{source}",
+            )
+            if install is None:
+                raise RuntimeError("source connector installation is unavailable")
+            dispatch = self._connector_router.reconcile(
+                source,
+                install,
+                shards,
+                run,
+            )
             decision = await asyncio.wait_for(
-                RECONCILER_DISPATCH[source](shards, run),
-                timeout=RECONCILER_DISPATCH_TIMEOUT_S,
+                dispatch,
+                timeout=CONNECTOR_RECONCILE_TIMEOUT_S,
             )
         except asyncio.TimeoutError:
             # Best-effort gap-check exceeded its bound (slow / wedged source
@@ -571,18 +638,25 @@ class Reconciler(LongRunningService):
             # all remaining reconciliations on this single-loop worker.
             log.warning(
                 "reconciler.dispatch_timeout",
-                extra={"source": source, "run_id": str(run_id),
-                       "timeout_s": RECONCILER_DISPATCH_TIMEOUT_S},
+                extra={
+                    "source": source,
+                    "run_id": str(run_id),
+                    "timeout_s": CONNECTOR_RECONCILE_TIMEOUT_S,
+                },
             )
             decision = ReconciliationDecision(has_gaps=False)
         except NotImplementedError as exc:
             failure_reason = str(exc)
             await _mark_run_failed(
-                conn, run_id=run_id, source=source,
+                conn,
+                run_id=run_id,
+                source=source,
                 failure_reason=failure_reason,
             )
             await self._emit_source_completed(
-                conn, run_id=run_id, source=source,
+                conn,
+                run_id=run_id,
+                source=source,
                 failure_reason=failure_reason,
             )
             return []
@@ -596,28 +670,40 @@ class Reconciler(LongRunningService):
                 },
             )
             await _mark_run_failed(
-                conn, run_id=run_id, source=source,
+                conn,
+                run_id=run_id,
+                source=source,
                 failure_reason=failure_reason,
             )
             await self._emit_source_completed(
-                conn, run_id=run_id, source=source,
+                conn,
+                run_id=run_id,
+                source=source,
                 failure_reason=failure_reason,
             )
             return []
 
         if not decision.has_gaps:
             return await self._handle_clean_path(
-                conn, run=run, shards=shards,
+                conn,
+                run=run,
+                shards=shards,
             )
         await self._handle_reshare_path(
-            conn, run_id=run_id, source=source,
-            tenant_id=run["tenant_id"], decision=decision,
+            conn,
+            run_id=run_id,
+            source=source,
+            tenant_id=run["tenant_id"],
+            decision=decision,
         )
         return []
 
     async def _handle_clean_path(
-        self, conn: asyncpg.Connection, *,
-        run: asyncpg.Record, shards: list[asyncpg.Record],
+        self,
+        conn: asyncpg.Connection,
+        *,
+        run: asyncpg.Record,
+        shards: list[asyncpg.Record],
     ) -> list[ProgressEvent]:
         """Reconciler decided no gaps. Stamp reconciled_at, emit the
         source_onboarding_completed signal to TenantOnboarding, and
@@ -632,45 +718,63 @@ class Reconciler(LongRunningService):
         tenant_id = run["tenant_id"]
         await _stamp_reconciled(conn, run_id=run_id, source=source)
         await self._emit_source_completed(
-            conn, run_id=run_id, source=source, failure_reason=None,
+            conn,
+            run_id=run_id,
+            source=source,
+            failure_reason=None,
         )
 
         pass_count = int(run["reconciliation_pass_count"] or 0)
         started_at = run["started_at"]
         now = dt.datetime.now(tz=dt.timezone.utc)
         total_seconds = (
-            (now - started_at).total_seconds()
-            if started_at is not None else 0.0
+            (now - started_at).total_seconds() if started_at is not None else 0.0
         )
         total_observations = int(
             await conn.fetchval(
-                _COUNT_SOURCE_OBSERVATIONS_SQL, tenant_id, source,
-            ) or 0
+                _COUNT_SOURCE_OBSERVATIONS_SQL,
+                tenant_id,
+                source,
+            )
+            or 0
         )
-        return [SourceOnboardingComplete(
-            tenant_id=tenant_id,
-            source=source,  # type: ignore[arg-type]  # ∈ Source by construction
-            total_observations=total_observations,
-            total_seconds=total_seconds,
-            gaps_resolved=_count_reshared_shards(shards),
-            coverage_confidence=_derive_coverage_confidence(pass_count),
-        )]
+        return [
+            SourceOnboardingComplete(
+                tenant_id=tenant_id,
+                source=source,  # type: ignore[arg-type]  # ∈ Source by construction
+                total_observations=total_observations,
+                total_seconds=total_seconds,
+                gaps_resolved=_count_reshared_shards(shards),
+                coverage_confidence=_derive_coverage_confidence(pass_count),
+            )
+        ]
 
     async def _handle_reshare_path(
-        self, conn: asyncpg.Connection, *,
-        run_id: UUID, source: str, tenant_id: UUID,
+        self,
+        conn: asyncpg.Connection,
+        *,
+        run_id: UUID,
+        source: str,
+        tenant_id: UUID,
         decision: ReconciliationDecision,
     ) -> None:
         """Reconciler decided gaps exist. Delegates to the shared
         module-level `apply_reshare` (also used by PeriodicReconciler)."""
         await apply_reshare(
-            conn, run_id=run_id, source=source,
-            tenant_id=tenant_id, decision=decision,
+            conn,
+            run_id=run_id,
+            source=source,
+            tenant_id=tenant_id,
+            decision=decision,
         )
 
     async def _emit_source_completed(
-        self, conn: asyncpg.Connection, *,
-        run_id: UUID, source: str, failure_reason: str | None,
+        self,
+        conn: asyncpg.Connection,
+        *,
+        run_id: UUID,
+        source: str,
+        failure_reason: str | None,
     ) -> None:
         """Emit `source_onboarding_completed` to TenantOnboarding's
         inbox. Idempotency key matches M6.1's consumer expectation
@@ -698,11 +802,15 @@ class Reconciler(LongRunningService):
             )
 
     async def _persist_scan_state(
-        self, *, signals_processed: int,
+        self,
+        *,
+        signals_processed: int,
     ) -> None:
         """Diagnostic state row. Not load-bearing for correctness."""
         existing = await load_state(
-            self._pool, WORKFLOW_KIND, self._config.instance_name,
+            self._pool,
+            WORKFLOW_KIND,
+            self._config.instance_name,
         )
         state = WorkflowState(
             workflow_kind=WORKFLOW_KIND,
@@ -712,8 +820,11 @@ class Reconciler(LongRunningService):
                 "last_tick_at": dt.datetime.now(tz=dt.timezone.utc).isoformat(),
                 "last_signals_processed": signals_processed,
                 "lifetime_signals_processed": (
-                    (existing.state_data.get("lifetime_signals_processed", 0)
-                     if existing else 0)
+                    (
+                        existing.state_data.get("lifetime_signals_processed", 0)
+                        if existing
+                        else 0
+                    )
                     + signals_processed
                 ),
             },
@@ -744,29 +855,24 @@ async def _run_service() -> None:
         make_workflow_pool,
         start_workflow_health,
     )
+    from services.ingest.connector_platform.workflow_wiring import (
+        build_workflow_connector_wiring,
+    )
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
     # Progress-event producer for `source.onboarding.complete` (LLD §6).
-    producer = None
-    if os.environ.get("RECONCILER_DISABLE_KAFKA") != "1":
-        producer = IdempotentProducer(ProducerConfig(
+    producer = IdempotentProducer(
+        ProducerConfig(
             bootstrap_servers=os.environ.get(
-                "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
+                "KAFKA_BOOTSTRAP_SERVERS",
+                "localhost:9092",
             ),
             client_id="workflow-reconciler",
-        ))
-        await producer.start()
-    # M6.3: per-source reconcilers may need pool access for auxiliary reads
-    # (e.g., Gmail reads workflow_states for each shard's final_history_id).
-    # Register the pool with every per-source module via the shared helper —
-    # derived from RECONCILER_DISPATCH so this service and the
-    # PeriodicReconciler register the SAME source set and cannot drift (a
-    # per-source module raises an explicit error if its pool isn't registered
-    # when called).
-    from services.ingest.ingestion.reconcilers import register_pool_provider
-
-    register_pool_provider(pool)
-
+        )
+    )
+    await producer.start()
+    connector_wiring = build_workflow_connector_wiring(pool=pool)
+    await connector_wiring.refresh_routing()
     config = ReconcilerConfig(
         tick_interval_seconds=float(
             os.environ.get("RECONCILER_TICK_SEC", "5.0"),
@@ -775,28 +881,40 @@ async def _run_service() -> None:
             os.environ.get("RECONCILER_BATCH", "50"),
         ),
         instance_name=os.environ.get(
-            "RECONCILER_INSTANCE", WORKFLOW_ID_DEFAULT,
+            "RECONCILER_INSTANCE",
+            WORKFLOW_ID_DEFAULT,
         ),
     )
-    service = Reconciler(pool, kafka_producer=producer, config=config)
+    service = Reconciler(
+        pool,
+        kafka_producer=producer,
+        config=config,
+        connector_router=connector_wiring.router,
+    )
 
     stop_event = asyncio.Event()
+    rollout_task = asyncio.create_task(connector_wiring.watch_routing(stop_event))
     loop = asyncio.get_event_loop()
     for s in (sig_module.SIGTERM, sig_module.SIGINT):
         loop.add_signal_handler(s, stop_event.set)
 
-    log.info("workflow.reconciler.started", extra={
-        "instance": config.instance_name,
-    })
+    log.info(
+        "workflow.reconciler.started",
+        extra={
+            "instance": config.instance_name,
+        },
+    )
     # Liveness + metrics surface (opt-in via INGESTION_HEALTH_PORT).
     health_shutdown = start_workflow_health(stop_event)
     try:
         await service.run(stop_event=stop_event)
     finally:
         log.info("workflow.reconciler.shutting_down")
+        rollout_task.cancel()
+        await asyncio.gather(rollout_task, return_exceptions=True)
         await health_shutdown()
-        if producer is not None:
-            await producer.stop()
+        await connector_wiring.close()
+        await producer.stop()
         await pool.close()
     log.info("workflow.reconciler.exited")
 
@@ -804,6 +922,7 @@ async def _run_service() -> None:
 def main() -> None:
     import asyncio
     import os
+
     logging.basicConfig(
         level=os.environ.get("WORKFLOWS_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
@@ -818,7 +937,7 @@ if __name__ == "__main__":
 __all__ = [
     "DEFAULT_MAX_SIGNALS_PER_TICK",
     "DEFAULT_TICK_INTERVAL_SECONDS",
-    "RECONCILER_DISPATCH_TIMEOUT_S",
+    "CONNECTOR_RECONCILE_TIMEOUT_S",
     "Reconciler",
     "ReconcilerConfig",
     "apply_reshare",

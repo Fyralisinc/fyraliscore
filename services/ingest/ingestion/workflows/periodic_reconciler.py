@@ -15,8 +15,8 @@ slack / discord have no durable live watermark (unlike Gmail's
 an event AFTER onboarding completes, nothing re-fetches it. The
 operator runbook flagged this as the headline steady-state gap.
 
-This service closes it. On a schedule it re-runs the SAME per-source
-reconciler (`RECONCILER_DISPATCH[source]`) for already-reconciled
+This service closes it. On a schedule it re-runs the same registry-resolved
+reconciliation capability for already-reconciled
 runs and, when it finds new activity past the last-seen cursor,
 re-shares exactly as the at-completion path does — re-using
 `reconciler.apply_reshare` so the two services share one re-share
@@ -71,9 +71,9 @@ from services.ingest.ingestion.observability import (
     run_heartbeat_ticker,
     start_health_server,
 )
-from services.ingest.ingestion.reconcilers import RECONCILER_DISPATCH
+from services.ingest.connector_platform.workflow_models import ReconciliationDecision
 from services.ingest.ingestion.workflows.reconciler import (
-    RECONCILER_DISPATCH_TIMEOUT_S,
+    CONNECTOR_RECONCILE_TIMEOUT_S,
     _load_shards,
     apply_reshare,
 )
@@ -172,7 +172,7 @@ class PeriodicReconcilerConfig:
     tick_interval_seconds: float = DEFAULT_TICK_INTERVAL_SECONDS
     min_age_seconds: float = DEFAULT_MIN_AGE_SECONDS
     batch_size: int = DEFAULT_BATCH_SIZE
-    dispatch_timeout_seconds: float = RECONCILER_DISPATCH_TIMEOUT_S
+    dispatch_timeout_seconds: float = CONNECTOR_RECONCILE_TIMEOUT_S
     instance_name: str = WORKFLOW_ID_DEFAULT
 
 
@@ -191,9 +191,11 @@ class PeriodicReconciler(LongRunningService):
         pool: asyncpg.Pool,
         *,
         config: PeriodicReconcilerConfig | None = None,
+        connector_router: object | None = None,
     ) -> None:
         self._pool = pool
         self._config = config or PeriodicReconcilerConfig()
+        self._connector_router = connector_router
 
     @property
     def tick_interval_seconds(self) -> float:
@@ -232,7 +234,22 @@ class PeriodicReconciler(LongRunningService):
                 shards = await _load_shards(
                     conn, run_id=run_id, source=source,
                 )
-                decision = await self._gap_check(source, shards, run)
+                install = await conn.fetchrow(
+                    """
+                    SELECT id, tenant_id, connector_id,
+                           external_installation_id AS installation_id,
+                           desired_state, observed_phase, TRUE AS enabled
+                      FROM source_connector_installations
+                     WHERE tenant_id = $1 AND connector_id = $2
+                       AND desired_state = 'Ready'
+                       AND observed_phase IN ('Ready', 'Degraded')
+                     ORDER BY updated_at DESC
+                     LIMIT 1
+                    """,
+                    run["tenant_id"],
+                    f"fyralis/{source}",
+                )
+                decision = await self._gap_check(source, install, shards, run)
                 if decision is not None and decision.has_gaps:
                     await apply_reshare(
                         conn, run_id=run_id, source=source,
@@ -252,15 +269,19 @@ class PeriodicReconciler(LongRunningService):
                     )
         return True
 
-    async def _gap_check(self, source, shards, run):
+    async def _gap_check(self, source, install, shards, run):
         """Run the bounded per-source gap check. A timeout or any
         dispatch error is logged and swallowed (decision=None) — the
         watermark already advanced, so it re-checks next cycle. This
         is what makes the best-effort per-source checks self-healing
         rather than lossy."""
         try:
+            if self._connector_router is None:
+                raise RuntimeError("source connector router is unavailable")
+            if install is None:
+                raise RuntimeError("source connector installation is unavailable")
             return await asyncio.wait_for(
-                RECONCILER_DISPATCH[source](shards, run),
+                self._connector_router.reconcile(source, install, shards, run),
                 timeout=self._config.dispatch_timeout_seconds,
             )
         except asyncio.TimeoutError:
@@ -321,23 +342,13 @@ async def _run_service() -> None:
     import signal as sig_module
 
     from services.ingest.ingestion.workflows.runtime import make_workflow_pool
+    from services.ingest.connector_platform.workflow_wiring import (
+        build_workflow_connector_wiring,
+    )
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
-    # Per-source reconcilers need pool access for auxiliary reads (shard
-    # cursors, installation rows) and raise if their pool isn't registered.
-    # Register ALL sources (derived from RECONCILER_DISPATCH) — the same
-    # registration the at-completion Reconciler does. This block previously
-    # listed only 7 of 25 sources by hand, so every steady-state gap re-check
-    # of the other 18 raised RuntimeError (silently swallowed as a dispatch
-    # exception) — permanently disabling periodic gap detection for them. The
-    # shared helper keeps the two services in lockstep so the drift can't recur.
-    from services.ingest.ingestion.reconcilers import register_pool_provider
-
-    registered = register_pool_provider(pool)
-    log.info(
-        "periodic_reconciler.pool_providers_registered",
-        extra={"source_count": len(registered)},
-    )
+    connector_wiring = build_workflow_connector_wiring(pool=pool)
+    await connector_wiring.refresh_routing()
 
     config = PeriodicReconcilerConfig(
         tick_interval_seconds=float(
@@ -352,14 +363,18 @@ async def _run_service() -> None:
         dispatch_timeout_seconds=float(
             os.environ.get(
                 "PERIODIC_RECONCILE_DISPATCH_TIMEOUT_SEC",
-                str(RECONCILER_DISPATCH_TIMEOUT_S),
+                str(CONNECTOR_RECONCILE_TIMEOUT_S),
             ),
         ),
         instance_name=os.environ.get(
             "PERIODIC_RECONCILE_INSTANCE", WORKFLOW_ID_DEFAULT,
         ),
     )
-    service = PeriodicReconciler(pool, config=config)
+    service = PeriodicReconciler(
+        pool,
+        config=config,
+        connector_router=connector_wiring.router,
+    )
 
     stop_event = asyncio.Event()
     loop = asyncio.get_event_loop()
@@ -382,6 +397,7 @@ async def _run_service() -> None:
         ticker.cancel()
         if health is not None:
             health.shutdown()
+        await connector_wiring.close()
         log.info("workflow.periodic_reconciler.shutting_down")
         await pool.close()
     log.info("workflow.periodic_reconciler.exited")

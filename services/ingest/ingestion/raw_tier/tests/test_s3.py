@@ -7,6 +7,7 @@ either moto or client-level mocking, and grep showed no existing
 moto usage in the codebase. Mocking at the aioboto3 client level
 matches existing test patterns.
 """
+
 from __future__ import annotations
 
 from datetime import date
@@ -15,9 +16,6 @@ from uuid import UUID
 
 import pytest
 
-from typing import get_args
-
-from services.ingest.ingestion.raw_tier.envelope import SourceLiteral
 from services.ingest.ingestion.raw_tier.s3 import (
     RawTierIntegrityError,
     S3Client,
@@ -27,11 +25,12 @@ from services.ingest.ingestion.raw_tier.s3 import (
     raw_object_tagging,
     raw_retention_days,
 )
-
+from services.ingest.source_contract.source_catalog import source_ids
 
 # ---------------------------------------------------------------------
 # build_raw_s3_key — pure function.
 # ---------------------------------------------------------------------
+
 
 def test_build_raw_s3_key_format() -> None:
     """The key shape must match LLD §5.1 / HLD §"Raw Tier" exactly.
@@ -46,9 +45,7 @@ def test_build_raw_s3_key_format() -> None:
         ymd=date(2026, 5, 17),
         content_hash=content_hash,
     )
-    assert key == (
-        f"dev/slack/{tenant_id}/2026-05/ab/{content_hash}.json.zst"
-    )
+    assert key == (f"dev/slack/{tenant_id}/2026-05/ab/{content_hash}.json.zst")
 
 
 def test_build_raw_s3_key_rejects_unknown_source() -> None:
@@ -62,12 +59,12 @@ def test_build_raw_s3_key_rejects_unknown_source() -> None:
         )
 
 
-# Derive from the single source-of-truth `SourceLiteral` so a newly-added
+# Derive from the single source-contract index so a newly-added
 # source is exercised automatically. A hardcoded subset here is exactly how
 # the allowlist in `build_raw_s3_key` silently drifted: it omitted `grafana`,
 # so a grafana backfill blob raised `unknown source` mid-fetch, the shard
 # parked, and the tenant never completed onboarding.
-@pytest.mark.parametrize("source", sorted(get_args(SourceLiteral)))
+@pytest.mark.parametrize("source", sorted(source_ids()))
 def test_build_raw_s3_key_accepts_all_known_sources(source: str) -> None:
     key = build_raw_s3_key(
         env="prod",
@@ -82,6 +79,7 @@ def test_build_raw_s3_key_accepts_all_known_sources(source: str) -> None:
 # ---------------------------------------------------------------------
 # compute_content_hash — deterministic blake2b-160.
 # ---------------------------------------------------------------------
+
 
 def test_content_hash_deterministic() -> None:
     h1 = compute_content_hash(b"hello world")
@@ -105,6 +103,7 @@ def test_content_hash_rejects_str() -> None:
 # ---------------------------------------------------------------------
 # raw-tier retention metadata/tags.
 # ---------------------------------------------------------------------
+
 
 def test_raw_retention_days_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("S3_RAW_RETENTION_DAYS", raising=False)
@@ -142,6 +141,7 @@ def test_raw_object_metadata_and_tags() -> None:
 # S3Client.put_if_absent — aioboto3 client-level mocking.
 # ---------------------------------------------------------------------
 
+
 def _patched_client():
     """Return (client_mock, session_mock, ctx_mgr_mock) wired so that
     `aioboto3.Session().client(...)` returns an async-context-manager
@@ -166,7 +166,9 @@ async def test_put_if_absent_succeeds_on_200(monkeypatch):
     fake_aioboto3 = MagicMock()
     fake_aioboto3.Session = MagicMock(return_value=session)
     with patch.dict(
-        "sys.modules", {"aioboto3": fake_aioboto3}, clear=False,
+        "sys.modules",
+        {"aioboto3": fake_aioboto3},
+        clear=False,
     ):
         async with S3Client("test-bucket") as s3:
             await s3.put_if_absent("k/foo", b"body-bytes")
@@ -201,7 +203,9 @@ async def test_put_if_absent_idempotent_412() -> None:
     fake_aioboto3 = MagicMock()
     fake_aioboto3.Session = MagicMock(return_value=session)
     with patch.dict(
-        "sys.modules", {"aioboto3": fake_aioboto3}, clear=False,
+        "sys.modules",
+        {"aioboto3": fake_aioboto3},
+        clear=False,
     ):
         async with S3Client("test-bucket") as s3:
             # Must not raise.
@@ -226,7 +230,9 @@ async def test_put_if_absent_propagates_real_errors() -> None:
     fake_aioboto3 = MagicMock()
     fake_aioboto3.Session = MagicMock(return_value=session)
     with patch.dict(
-        "sys.modules", {"aioboto3": fake_aioboto3}, clear=False,
+        "sys.modules",
+        {"aioboto3": fake_aioboto3},
+        clear=False,
     ):
         async with S3Client("test-bucket") as s3:
             with pytest.raises(ClientError):
@@ -245,7 +251,9 @@ async def test_get_returns_body_bytes() -> None:
     fake_aioboto3 = MagicMock()
     fake_aioboto3.Session = MagicMock(return_value=session)
     with patch.dict(
-        "sys.modules", {"aioboto3": fake_aioboto3}, clear=False,
+        "sys.modules",
+        {"aioboto3": fake_aioboto3},
+        clear=False,
     ):
         async with S3Client("test-bucket") as s3:
             data = await s3.get("k/foo")
@@ -263,7 +271,9 @@ async def test_get_verified_accepts_matching_hash() -> None:
     fake_aioboto3 = MagicMock()
     fake_aioboto3.Session = MagicMock(return_value=session)
     with patch.dict(
-        "sys.modules", {"aioboto3": fake_aioboto3}, clear=False,
+        "sys.modules",
+        {"aioboto3": fake_aioboto3},
+        clear=False,
     ):
         async with S3Client("test-bucket") as s3:
             data = await s3.get_verified(
@@ -284,7 +294,9 @@ async def test_get_verified_rejects_hash_mismatch() -> None:
     fake_aioboto3 = MagicMock()
     fake_aioboto3.Session = MagicMock(return_value=session)
     with patch.dict(
-        "sys.modules", {"aioboto3": fake_aioboto3}, clear=False,
+        "sys.modules",
+        {"aioboto3": fake_aioboto3},
+        clear=False,
     ):
         async with S3Client("test-bucket") as s3:
             with pytest.raises(RawTierIntegrityError, match="hash mismatch"):

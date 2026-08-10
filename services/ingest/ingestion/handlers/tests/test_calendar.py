@@ -44,7 +44,7 @@ class _FakeActorResolver:
     def __init__(self, mapping):
         self._mapping = mapping
 
-    async def resolve_by_source_actor_ref(self, ref):
+    async def resolve_by_source_actor_ref(self, ref, tenant_id=None):
         return self._mapping.get(ref)
 
 

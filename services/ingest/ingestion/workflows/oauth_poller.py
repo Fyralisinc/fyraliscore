@@ -133,7 +133,7 @@ DEFAULT_MAX_TRIGGERS_PER_TICK = 50
 # becomes claimable again to another poller.
 _CLAIM_ONE_TRIGGER_SQL = """
 SELECT id, tenant_id, source, trigger_kind,
-       installation_row_id, gmail_installation_id, payload,
+       connector_installation_id, payload,
        consume_attempts
   FROM onboarding_triggers
  WHERE consumed_at IS NULL
@@ -204,9 +204,7 @@ async def _create_onboarding_run(
 
     `sources_enabled` is populated with the trigger's single source.
     The M6.1 TenantOnboarding orchestrator (Phase 2) uses
-    `provider_installations` as the source-applicability source of
-    truth and may fan out beyond this list per the design decision
-    documented in tenant_onboarding.py.
+    Ready common connector installations as the applicability source of truth.
     """
     run_id = uuid7()
     workflow_id = f"onboarding:{trigger['id']}"

@@ -21,37 +21,11 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from services.ingest.source_contract.source_catalog import ingestion_source_ids
 
-SourceLiteral = Literal[
-    "slack",
-    "github",
-    "discord",
-    "gmail",
-    "notion",
-    "google_calendar",
-    "google_drive",
-    "jira",
-    "mercury",
-    "quickbooks",
-    "grafana",
-    "telegram",
-    "brex",
-    "ramp",
-    "gusto",
-    "deel",
-    "fireflies",
-    "signal",
-    "aws",
-    "miro",
-    "figma",
-    "carta",
-    "hibob",
-    "ashby",
-    "linkedin",
-    "whatsapp",
-    "facebook_pages",
-    "instagram",
-]
+# Runtime-expanded compatibility alias. The values are owned by source-index.json,
+# while existing downstream envelope models retain Literal/Pydantic validation.
+SourceLiteral = Literal[*ingestion_source_ids()]
 # "poll" is the Gmail live-via-Kafka cutover ingress: the push handler /
 # history poller fetches the message resource (a real Gmail message, NOT
 # the Pub/Sub notification) and publishes it here instead of ingesting
@@ -88,6 +62,9 @@ class RawEnvelope(BaseModel):
     content_hash: str = Field(min_length=1)
     ingested_at: datetime
     ingress_kind: IngressKindLiteral
+    connector_installation_id: UUID | None = None
+    connector_version: str = Field(default="unknown", min_length=1)
+    parser_version: str = Field(default="connector-normalization-v1", min_length=1)
     ingress_metadata: dict[str, Any] = Field(default_factory=dict)
     idem_hints: dict[str, str] = Field(default_factory=dict)
 

@@ -17,7 +17,12 @@ from lib.shared.ids import uuid7
 from services.app.gateway.auth import create_session
 
 
-pytestmark = pytest.mark.integration
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skip(
+        reason="simulation gateway mount moved to the optional demo overlay"
+    ),
+]
 
 
 def _extension_contributes_simulation() -> bool:

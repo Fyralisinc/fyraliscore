@@ -119,11 +119,9 @@ def build_core_router() -> APIRouter:
         from services.app.webhooks import metrics as webhook_metrics
 
         content = webhook_metrics.render_prometheus()
-        # Shared lib.observability registry: http_request_*, db_pool_*,
-        # ollama_*, kafka_producer_*, plus the per-source integration
-        # collector (install/lifecycle counters live in this process).
+        # Shared lib.observability registry: HTTP, DB, model, Kafka, and
+        # Source Connector metrics live in the process-wide registry.
         try:
-            import services.ingest.integrations.metrics_export  # noqa: F401
             from lib.observability.metrics import render_default
 
             content += render_default()
@@ -355,7 +353,7 @@ async def _readiness_payload(request: Request) -> tuple[dict[str, Any], int]:
 
     settings = getattr(app_state, "gateway_settings", None)
 
-    for name in ("secret_store", "tenant_resolver", "tenant_flags"):
+    for name in ("secret_store", "tenant_resolver"):
         if getattr(app_state, name, None) is None:
             set_component(name, "failed", required=True, detail="missing")
         else:
@@ -377,6 +375,38 @@ async def _readiness_payload(request: Request) -> tuple[dict[str, Any], int]:
                 required=True,
                 detail=result.detail,
                 error_type=result.error_type,
+            )
+
+    connector_health_reader = getattr(
+        app_state, "source_connector_health_reader", None
+    )
+    if connector_health_reader is None:
+        set_component(
+            "source_connector_runtime",
+            "degraded",
+            required=False,
+            detail="health_reader_not_wired",
+        )
+    else:
+        try:
+            connector_health = await connector_health_reader.snapshot()
+            payload["source_connectors"] = connector_health
+            set_component(
+                "source_connector_runtime",
+                connector_health["status"],
+                required=False,
+                detail=(
+                    f"revision={connector_health['routing_revision']} "
+                    f"connectors={connector_health['registry']['connector_count']}"
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - optional diagnostics
+            set_component(
+                "source_connector_runtime",
+                "degraded",
+                required=False,
+                detail="health_snapshot_failed",
+                error_type=type(exc).__name__,
             )
 
     require_realtime = bool(getattr(settings, "require_realtime", False))

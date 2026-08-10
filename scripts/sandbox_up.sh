@@ -69,8 +69,8 @@ NEXT STEPS (see docs/ingestion/sandbox-real-api-runbook.md):
        - telegram : docker compose ... exec -it gateway python scripts/sandbox_telegram_install.py --account-label my-tg
                     then: docker compose ... restart telegram_gateway_worker
   4. Post a live message/issue → watch it land.
-  5. Check results:  docker compose -f docker-compose.yml -f docker-compose.sandbox.yml \
-                       exec gateway python scripts/sandbox_inspect.py
+  5. Inspect connector state through the common integration API or
+     scripts/manage_source_installations.py.
 
   Logs:  docker compose -f docker-compose.yml -f docker-compose.sandbox.yml logs -f gateway normalizer observation_writer
   Stop:  scripts/sandbox_down.sh          (add --volumes to wipe DB/kafka/minio)

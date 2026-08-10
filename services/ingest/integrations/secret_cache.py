@@ -1,4 +1,5 @@
-"""Short-lived in-memory cache for source secrets resolved from secret_ref."""
+"""Short-lived in-memory cache for supplemental provider secrets."""
+
 from __future__ import annotations
 
 import os
@@ -7,7 +8,6 @@ from collections.abc import Callable
 from typing import Any
 from uuid import UUID
 
-
 DEFAULT_SECRET_CACHE_TTL_SECONDS = 300.0
 SECRET_CACHE_TTL_ENV = "SOURCE_CLIENT_SECRET_CACHE_TTL_SECONDS"
 
@@ -15,7 +15,7 @@ SECRET_CACHE_TTL_ENV = "SOURCE_CLIENT_SECRET_CACHE_TTL_SECONDS"
 def secret_cache_ttl_seconds(env: dict[str, str] | None = None) -> float:
     source = os.environ if env is None else env
     raw = source.get(SECRET_CACHE_TTL_ENV)
-    if raw is None or raw == "":
+    if raw in (None, ""):
         return DEFAULT_SECRET_CACHE_TTL_SECONDS
     try:
         return max(0.0, float(raw))
@@ -25,18 +25,11 @@ def secret_cache_ttl_seconds(env: dict[str, str] | None = None) -> float:
 
 def coerce_secret_text(raw: Any) -> str:
     if isinstance(raw, (bytes, bytearray)):
-        return bytes(raw).decode("utf-8")
+        return bytes(raw).decode()
     return str(raw)
 
 
 class SecretValueCache:
-    """Cache a secret-store value for a bounded TTL.
-
-    Preset values are used for tests/spammer mode and do not expire. Values
-    loaded from a secret provider expire, so rotations are picked up by
-    long-lived clients without requiring a process restart.
-    """
-
     def __init__(
         self,
         preset: str | None = None,

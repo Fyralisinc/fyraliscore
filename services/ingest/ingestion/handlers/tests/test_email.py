@@ -54,7 +54,7 @@ class _FakeActorResolver:
         self._mapping = mapping
         self.calls: list[str] = []
 
-    async def resolve_by_source_actor_ref(self, ref: str):
+    async def resolve_by_source_actor_ref(self, ref: str, tenant_id=None):
         self.calls.append(ref)
         return self._mapping.get(ref)
 

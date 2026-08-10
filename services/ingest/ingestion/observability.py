@@ -67,7 +67,7 @@ def render_prometheus(metrics: dict[str, float], heartbeat: Heartbeat) -> str:
     """Render an in-process metric dict as Prometheus text exposition.
 
     Appends the shared lib.observability registry (ollama, db pool, kafka
-    producer, oauth, per-source integration counters) so every worker that
+    producer, oauth, connector counters) so every worker that
     serves /metrics exposes whatever shared-library instrumentation fired
     in its process — no per-worker wiring.
     """
@@ -110,14 +110,6 @@ def start_health_server(
             return None
     if stale_sec is None:
         stale_sec = float(os.environ.get("INGESTION_HEALTH_STALE_SEC", "120"))
-
-    # Register the per-source integration collector with the shared registry
-    # so this worker's /metrics carries any integration counters recorded in
-    # this process (backfill API outcomes, provision results, …).
-    try:
-        import services.ingest.integrations.metrics_export  # noqa: F401
-    except Exception:  # noqa: BLE001 — metrics exposure is best-effort
-        pass
 
     class _Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args) -> None:  # silence access logging

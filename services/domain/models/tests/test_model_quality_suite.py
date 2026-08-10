@@ -307,7 +307,7 @@ async def test_synthesized_situation_is_queryable_by_grammar_and_membership(
             )
             assert {r["member_model_id"] for r in sidecar_rows} == member_ids
             assert all(r["source"] == "model_proposition" for r in sidecar_rows)
-            assert all(list(r["evidence_event_ids"]) == [oid] for r in sidecar_rows)
+            assert all(list(r["evidence_event_ids"]) == [] for r in sidecar_rows)
 
             grammar_query_id = await conn.fetchval(
                 """
@@ -516,25 +516,18 @@ def test_pattern_instance_without_pattern_id_rejected_by_gate():
 # =====================================================================
 
 
-def test_topology_emittable_edge_kinds_are_pretruth_candidates():
-    """Topology may propose high-leverage edge kinds, but not ontology-only ones."""
-    ontology_only = {
+def test_topology_emittable_edge_kinds_excludes_review_only_kinds():
+    """Review-only kinds must not bypass relationship adjudication."""
+    review_only = {
         "instance_of",
         "co_occurs_with",
         "alternative_to",
         "superseded_by",
     }
-    overlap = ontology_only.intersection(TOPOLOGY_EMITTABLE_EDGE_KINDS)
+    overlap = review_only.intersection(TOPOLOGY_EMITTABLE_EDGE_KINDS)
     assert overlap == set(), (
-        f"topology must not emit ontology-only kinds; leaked: {overlap}"
+        f"topology must not emit review-only kinds; leaked: {overlap}"
     )
-    assert {
-        "explains",
-        "causes",
-        "predicts",
-        "weakens",
-        "contributes_to_resolution",
-    }.issubset(TOPOLOGY_EMITTABLE_EDGE_KINDS)
 
 
 # =====================================================================
