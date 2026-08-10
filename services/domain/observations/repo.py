@@ -2,8 +2,8 @@
 
 BUILD-PLAN.md §2 Prompt 1.A item 1:
     repo.py — async repository with:
-      - insert(obs) — dedup via (source_channel, external_id); returns
-        existing on conflict; computes embedding; embedding_pending=True
+      - insert(obs) — dedup via immutable source evidence id; returns
+        existing on exact-revision replay; computes embedding; embedding_pending=True
         fallback if Ollama is down.
       - get_by_id(id, tenant_id)
       - search_by_embedding(vec, tenant_id, k, filters) — cosine order
@@ -87,6 +87,7 @@ _COLUMNS = (
     "cause_id",
     "sequence_num",
     "entities_mentioned",
+    "evidence_id",
 )
 _SELECT_COLS = ", ".join(_COLUMNS)
 
@@ -195,21 +196,16 @@ class ObservationRepository:
 
         1. Compute embedding via Ollama (unless Ollama is unreachable
            — fall back to embedding_pending=True).
-        2. Dedup via UNIQUE (source_channel, external_id, occurred_at):
-           if an observation with the same (channel, external_id)
-           already exists, return the existing row rather than raising.
+        2. Dedup via immutable ``evidence_id``. Replaying one source revision
+           returns the existing row; a later revision of the same source
+           object creates a new observation.
         3. Schedule post-commit NOTIFY via `schedule_notify` (a no-op
            outside an active `notify_scope()`).
 
-        The unique constraint was widened to include `occurred_at` in
-        Wave 0 because PG requires every unique key on a partitioned
-        table to include the partition key. For dedup purposes the
-        `(source_channel, external_id)` pair is still effectively
-        unique because ingestion assigns a stable `occurred_at` per
-        external event. To handle the edge case of the same external
-        event being re-submitted at a different `occurred_at`, dedup
-        does a pre-check on `(source_channel, external_id)` ignoring
-        occurred_at.
+        The database constraint includes ``occurred_at`` because PostgreSQL
+        requires every unique key on this partitioned table to include the
+        partition key. The repository pre-check on ``evidence_id`` preserves
+        idempotency even when a replay carries a different arrival timestamp.
         """
         _validate_trust_tier(obs.trust_tier)
 
@@ -252,17 +248,16 @@ class ObservationRepository:
     ) -> ObservationRow:
         await _ensure_vector_codec(conn)
 
-        # Dedup pre-check: if external_id is NULL, skip (NULLs are
-        # never equal in the unique constraint — each insert is new).
-        if obs.external_id is not None:
+        # Evidence revisions are the idempotency authority.  A stable source
+        # object may produce many revisions; only replay of the same evidence
+        # id is a duplicate.
+        if obs.evidence_id is not None:
             existing = await conn.fetchrow(
                 f"SELECT {_SELECT_COLS} FROM observations "
-                "WHERE tenant_id = $1 AND source_channel = $2 "
-                "  AND external_id = $3 "
+                "WHERE tenant_id = $1 AND evidence_id = $2 "
                 "ORDER BY occurred_at DESC LIMIT 1",
                 obs.tenant_id,
-                obs.source_channel,
-                obs.external_id,
+                obs.evidence_id,
             )
             if existing is not None:
                 hydrated = _hydrate_row(existing)
@@ -279,16 +274,16 @@ class ObservationRepository:
                 content, content_text,
                 embedding, embedding_pending,
                 trust_tier, external_id, cause_id,
-                entities_mentioned
+                entities_mentioned, evidence_id
             ) VALUES (
                 $1, $2, $3, $4, $5,
                 $6, $7,
                 $8::jsonb, $9,
                 $10, $11,
                 $12, $13, $14,
-                $15::jsonb
+                $15::jsonb, $16
             )
-            ON CONFLICT (tenant_id, source_channel, external_id, occurred_at) DO NOTHING
+            ON CONFLICT (tenant_id, evidence_id, occurred_at) DO NOTHING
             RETURNING {_SELECT_COLS}
             """,
             obs_id,
@@ -306,44 +301,41 @@ class ObservationRepository:
             obs.external_id,
             obs.cause_id,
             json.dumps(obs.entities_mentioned),
+            obs.evidence_id,
         )
 
         if row is None:
             # ON CONFLICT DO NOTHING → fetch the existing row.
-            if obs.external_id is None:
-                # Shouldn't happen — without external_id the unique
+            if obs.evidence_id is None:
+                # Shouldn't happen — without evidence_id the unique
                 # constraint can't trigger — but be defensive.
                 raise ObservationError(
-                    "insert conflict with NULL external_id",
+                    "insert conflict with NULL evidence_id",
                     source_channel=obs.source_channel,
                     occurred_at=obs.occurred_at.isoformat(),
                 )
             existing = await conn.fetchrow(
                 f"SELECT {_SELECT_COLS} FROM observations "
-                "WHERE tenant_id = $1 AND source_channel = $2 "
-                "  AND external_id = $3 AND occurred_at = $4",
+                "WHERE tenant_id = $1 AND evidence_id = $2 "
+                "  AND occurred_at = $3",
                 obs.tenant_id,
-                obs.source_channel,
-                obs.external_id,
+                obs.evidence_id,
                 obs.occurred_at,
             )
             if existing is None:
-                # Still race: the conflict hit on a different
-                # occurred_at. Fall back to the broader dedup query.
+                # Defensive fallback for a concurrent exact-evidence replay.
                 existing = await conn.fetchrow(
                     f"SELECT {_SELECT_COLS} FROM observations "
-                    "WHERE tenant_id = $1 AND source_channel = $2 "
-                    "  AND external_id = $3 "
+                    "WHERE tenant_id = $1 AND evidence_id = $2 "
                     "ORDER BY occurred_at DESC LIMIT 1",
                     obs.tenant_id,
-                    obs.source_channel,
-                    obs.external_id,
+                    obs.evidence_id,
                 )
             if existing is None:
                 raise ObservationError(
                     "insert conflict but no existing row found",
                     source_channel=obs.source_channel,
-                    external_id=obs.external_id,
+                    evidence_id=str(obs.evidence_id),
                 )
             hydrated = _hydrate_row(existing)
             await _record_observation_authority_metadata(conn, hydrated)

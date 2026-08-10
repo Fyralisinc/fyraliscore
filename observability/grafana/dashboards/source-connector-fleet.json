@@ -1,0 +1,43 @@
+{
+  "uid": "fyralis-source-connectors",
+  "title": "Fyralis · Source Connector Fleet",
+  "tags": ["fyralis", "source-connectors"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "editable": false,
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Admitted connectors",
+      "gridPos": {"h": 7, "w": 8, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [{"refId": "A", "expr": "ingestion_source_connector_lifecycle_admitted"}],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Quarantined connectors",
+      "gridPos": {"h": 7, "w": 8, "x": 8, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [{"refId": "A", "expr": "fyralis:source_connector_quarantined"}],
+      "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []},
+      "options": {}
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Control-plane error-budget consumption",
+      "gridPos": {"h": 7, "w": 8, "x": 16, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "fyralis-prom"},
+      "targets": [{"refId": "A", "expr": "fyralis:source_connector_control_failure_ratio:10m", "legendFormat": "failure ratio"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit"}, "overrides": []},
+      "options": {}
+    }
+  ]
+}

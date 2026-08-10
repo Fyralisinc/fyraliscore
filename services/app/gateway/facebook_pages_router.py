@@ -1,4 +1,5 @@
 """Facebook Page / Messenger webhook ingress."""
+
 from __future__ import annotations
 
 import hmac
@@ -12,8 +13,12 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
 from lib.shared.env import is_prod
-from lib.shared.errors import CompanyOSError, SecretNotFoundError, SecretStoreError
-from lib.shared.errors import ValidationError
+from lib.shared.errors import (
+    CompanyOSError,
+    SecretNotFoundError,
+    SecretStoreError,
+    ValidationError,
+)
 from lib.shared.secrets import build_secret_store
 from services.app.gateway.deps import get_gateway_deps
 from services.ingest.ingestion.core import ingest
@@ -22,8 +27,7 @@ from services.ingest.ingestion.shadow_write import (
     CUTOVER_FLUSH_TIMEOUT_SEC,
     shadow_write_raw,
 )
-from services.ingest.integrations.whatsapp.signature import verify_signature
-
+from services.ingest.integrations.meta_signature import verify_signature
 
 log = structlog.get_logger("facebook_pages.webhook")
 
@@ -315,10 +319,14 @@ def build_facebook_pages_router() -> APIRouter:
                     label="app_secret",
                 )
             except SecretStoreError:
-                return JSONResponse({"status": "app_secret_unavailable"}, status_code=503)
+                return JSONResponse(
+                    {"status": "app_secret_unavailable"}, status_code=503
+                )
             app_secret = app_secret or _dev_env_secret("FACEBOOK_APP_SECRET")
             if not app_secret:
-                return JSONResponse({"status": "no_app_secret_configured"}, status_code=503)
+                return JSONResponse(
+                    {"status": "no_app_secret_configured"}, status_code=503
+                )
             if not verify_signature(
                 app_secret,
                 raw,

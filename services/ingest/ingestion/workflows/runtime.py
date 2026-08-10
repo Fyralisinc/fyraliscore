@@ -73,9 +73,7 @@ async def make_workflow_pool(
     """Construct the asyncpg pool used by M6 workflow services.
 
     `statement_cache_size=0` per the M1.3 ADR Q1 pgbouncer-transaction-
-    mode contract (same shape as
-    `services.ingest.ingestion.feature_flags.circuit_breaker.make_breaker_pool`
-    and `services.ingest.ingestion.writers.observation_writer.make_writer_pool`).
+    mode contract, matching the observation writer pool.
 
     Default sizing is small (min=1, max=5) because M6 services are
     cursor-style — at most one tick in flight per service. Per-source

@@ -4,6 +4,7 @@ The Fyralis deployment owns the Meta app credentials. A tenant admin authorizes
 their professional account through Business Login for Instagram; no browser or
 API caller ever submits an app secret or webhook verify token.
 """
+
 from __future__ import annotations
 
 import json
@@ -26,11 +27,10 @@ from lib.shared.secrets import SecretNotFoundError, load_app_secret_text_from_en
 from lib.shared.tenant_context import tenant_transaction
 from services.ingest.integrations.instagram.client import InstagramClient
 from services.ingest.integrations.instagram.onboarding import finalize_install
-from services.ingest.integrations.slack.oauth import (
+from services.ingest.integrations.oauth_state_tokens import (
     issue_state_token,
     verify_and_consume_state,
 )
-
 
 log = structlog.get_logger("integrations.instagram.oauth")
 router = APIRouter(prefix="/integrations/instagram", tags=["instagram"])
@@ -52,7 +52,11 @@ def _tenant_from_request(request: Request) -> UUID:
     auth = getattr(request.state, "auth", None)
     if auth is None or getattr(auth, "tenant_id", None) is None:
         raise HTTPException(status_code=401, detail="unauthenticated")
-    return auth.tenant_id if isinstance(auth.tenant_id, UUID) else UUID(str(auth.tenant_id))
+    return (
+        auth.tenant_id
+        if isinstance(auth.tenant_id, UUID)
+        else UUID(str(auth.tenant_id))
+    )
 
 
 def _pool(request: Request) -> asyncpg.Pool:
@@ -87,9 +91,19 @@ def _config() -> tuple[str, str, str, str]:
         raise InstagramApiError(
             "Instagram Login is not configured",
             code="instagram_api_error",
-            context={"missing_app_id": not bool(app_id), "missing_redirect_uri": not bool(redirect_uri)},
+            context={
+                "missing_app_id": not bool(app_id),
+                "missing_redirect_uri": not bool(redirect_uri),
+            },
         )
-    return app_id, app_secret, redirect_uri, os.environ.get("INSTAGRAM_API_BASE_URL", "https://graph.instagram.com").rstrip("/")
+    return (
+        app_id,
+        app_secret,
+        redirect_uri,
+        os.environ.get("INSTAGRAM_API_BASE_URL", "https://graph.instagram.com").rstrip(
+            "/"
+        ),
+    )
 
 
 def _token_expiry(body: dict[str, Any]) -> datetime | None:
@@ -125,19 +139,28 @@ async def _exchange_code(code: str) -> dict[str, Any]:
                 },
             )
     except httpx.TransportError as exc:
-        raise InstagramApiError("Instagram OAuth token exchange failed", code="instagram_api_error") from exc
+        raise InstagramApiError(
+            "Instagram OAuth token exchange failed", code="instagram_api_error"
+        ) from exc
     if response.status_code // 100 != 2:
         raise InstagramApiError(
             "Instagram rejected the authorization code",
-            code="instagram_api_unauthorized" if response.status_code in {400, 401, 403} else "instagram_api_error",
+            code="instagram_api_unauthorized"
+            if response.status_code in {400, 401, 403}
+            else "instagram_api_error",
             context={"http_status": response.status_code},
         )
     try:
         body = response.json()
     except ValueError as exc:
-        raise InstagramApiError("Instagram OAuth response was invalid", code="instagram_api_error") from exc
+        raise InstagramApiError(
+            "Instagram OAuth response was invalid", code="instagram_api_error"
+        ) from exc
     if not isinstance(body, dict) or not isinstance(body.get("access_token"), str):
-        raise InstagramApiError("Instagram OAuth response omitted an access token", code="instagram_api_error")
+        raise InstagramApiError(
+            "Instagram OAuth response omitted an access token",
+            code="instagram_api_error",
+        )
     return body
 
 
@@ -152,12 +175,19 @@ async def _discover_and_subscribe(
         account = await client.validate_account()
         account_id = str(account.get("id") or "").strip()
         if not account_id:
-            raise InstagramApiError("Instagram account discovery returned no account id")
-        await client.subscribe_webhooks(ig_business_account_id=account_id, fields=fields)
+            raise InstagramApiError(
+                "Instagram account discovery returned no account id"
+            )
+        await client.subscribe_webhooks(
+            ig_business_account_id=account_id, fields=fields
+        )
         try:
             max_pages = max(
                 1,
-                min(100, int(os.environ.get("INSTAGRAM_CONNECT_DISCOVERY_MAX_PAGES", "20"))),
+                min(
+                    100,
+                    int(os.environ.get("INSTAGRAM_CONNECT_DISCOVERY_MAX_PAGES", "20")),
+                ),
             )
         except ValueError:
             max_pages = 20
@@ -183,7 +213,9 @@ async def install_handler(request: Request) -> RedirectResponse | JSONResponse:
         app_id, _secret, redirect_uri, _base_url = _config()
         state = await issue_state_token(tenant_id, _pool(request), provider="instagram")
     except InstagramApiError as exc:
-        return JSONResponse({"ok": False, "code": exc.code, "message": exc.message}, status_code=500)
+        return JSONResponse(
+            {"ok": False, "code": exc.code, "message": exc.message}, status_code=500
+        )
     query = urlencode(
         {
             "client_id": app_id,
@@ -193,10 +225,8 @@ async def install_handler(request: Request) -> RedirectResponse | JSONResponse:
             "state": state,
         }
     )
-    return RedirectResponse(
-        url=f"{os.environ.get('INSTAGRAM_OAUTH_AUTHORIZE_URL', _AUTHORIZE_URL)}?{query}",
-        status_code=302,
-    )
+    authorize_url = os.environ.get("INSTAGRAM_OAUTH_AUTHORIZE_URL", _AUTHORIZE_URL)
+    return RedirectResponse(url=f"{authorize_url}?{query}", status_code=302)
 
 
 async def callback_handler(request: Request) -> JSONResponse:
@@ -204,7 +234,9 @@ async def callback_handler(request: Request) -> JSONResponse:
     code = request.query_params.get("code", "")
     state = request.query_params.get("state", "")
     if provider_error or not code or not state:
-        return JSONResponse({"ok": False, "code": "instagram_oauth_denied"}, status_code=400)
+        return JSONResponse(
+            {"ok": False, "code": "instagram_oauth_denied"}, status_code=400
+        )
     try:
         pool = _pool(request)
         tenant_id, _payload = await verify_and_consume_state(
@@ -220,7 +252,9 @@ async def callback_handler(request: Request) -> JSONResponse:
         )
         account_id = str(account.get("id") or "").strip()
         if not account_id:
-            raise InstagramApiError("Instagram account discovery returned no account id")
+            raise InstagramApiError(
+                "Instagram account discovery returned no account id"
+            )
         store = _secret_store(request)
         access_ref = await store.put(
             token_body["access_token"],
@@ -234,8 +268,12 @@ async def callback_handler(request: Request) -> JSONResponse:
                 base_url=base_url,
                 ig_business_account_id=account_id,
                 page_id=None,
-                instagram_username=account.get("username") if isinstance(account.get("username"), str) else None,
-                display_name=account.get("name") if isinstance(account.get("name"), str) else None,
+                instagram_username=account.get("username")
+                if isinstance(account.get("username"), str)
+                else None,
+                display_name=account.get("name")
+                if isinstance(account.get("name"), str)
+                else None,
                 app_id=app_id,
                 access_token_ref=access_ref,
                 webhook_delivery_account_id=_webhook_delivery_account_id(token_body),
@@ -253,10 +291,14 @@ async def callback_handler(request: Request) -> JSONResponse:
         return JSONResponse({"ok": False, "code": exc.code}, status_code=400)
     except InstagramApiError as exc:
         log.info("instagram.oauth.callback_failed", code=exc.code)
-        return JSONResponse({"ok": False, "code": exc.code, "message": exc.message}, status_code=400)
+        return JSONResponse(
+            {"ok": False, "code": exc.code, "message": exc.message}, status_code=400
+        )
     except Exception as exc:  # noqa: BLE001
         log.exception("instagram.oauth.callback_failed", error_type=type(exc).__name__)
-        return JSONResponse({"ok": False, "code": "instagram_install_failed"}, status_code=500)
+        return JSONResponse(
+            {"ok": False, "code": "instagram_install_failed"}, status_code=500
+        )
     return JSONResponse(
         {
             "ok": True,
@@ -339,10 +381,12 @@ async def disconnect(request: Request) -> JSONResponse:
             """,
             uuid7(),
             tenant_id,
-            json.dumps({
-                "initiated_by": "tenant_admin",
-                "instagram_installation_id": str(row["id"]),
-            }),
+            json.dumps(
+                {
+                    "initiated_by": "tenant_admin",
+                    "instagram_installation_id": str(row["id"]),
+                }
+            ),
         )
     if row["access_token_ref"]:
         try:
@@ -355,7 +399,11 @@ async def disconnect(request: Request) -> JSONResponse:
 @router.post("/connect/preflight", deprecated=True)
 async def connect_preflight() -> JSONResponse:
     return JSONResponse(
-        {"ok": False, "code": "instagram_oauth_required", "install_path": "/integrations/instagram/install"},
+        {
+            "ok": False,
+            "code": "instagram_oauth_required",
+            "install_path": "/integrations/instagram/install",
+        },
         status_code=410,
     )
 
@@ -363,7 +411,11 @@ async def connect_preflight() -> JSONResponse:
 @router.post("/connect/finalize", deprecated=True)
 async def connect_finalize() -> JSONResponse:
     return JSONResponse(
-        {"ok": False, "code": "instagram_oauth_required", "install_path": "/integrations/instagram/install"},
+        {
+            "ok": False,
+            "code": "instagram_oauth_required",
+            "install_path": "/integrations/instagram/install",
+        },
         status_code=410,
     )
 

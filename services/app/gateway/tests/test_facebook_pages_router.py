@@ -15,8 +15,7 @@ from fastapi import FastAPI
 from lib.shared.secrets import FernetSecretStore
 from services.app.gateway import facebook_pages_router
 from services.app.gateway.facebook_pages_router import build_facebook_pages_router
-from services.ingest.integrations.whatsapp.signature import sign_payload
-
+from services.ingest.integrations.meta_signature import sign_payload
 
 pytestmark = pytest.mark.integration
 

@@ -6,6 +6,7 @@ the server, verifies its hash, and streams JSON bytes back to the caller.  A
 bucket name, object key, Figma credential, or presigned URL never crosses the
 HTTP boundary.
 """
+
 from __future__ import annotations
 
 import logging
@@ -19,7 +20,6 @@ from fastapi.responses import Response
 
 from lib.shared.tenant_context import tenant_transaction
 from services.ingest.ingestion.raw_tier.s3 import S3Client, compute_content_hash
-
 
 log = logging.getLogger("integrations.figma.artifacts")
 
@@ -72,7 +72,11 @@ def _tenant_from_request(request: Request) -> UUID:
     if raw_tenant_id is None:
         raise HTTPException(status_code=401, detail="unauthenticated")
     try:
-        return raw_tenant_id if isinstance(raw_tenant_id, UUID) else UUID(str(raw_tenant_id))
+        return (
+            raw_tenant_id
+            if isinstance(raw_tenant_id, UUID)
+            else UUID(str(raw_tenant_id))
+        )
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=401, detail="unauthenticated") from exc
 
@@ -138,7 +142,12 @@ async def get_figma_snapshot_artifact(
     bucket = row["bucket"]
     object_key = row["object_key"]
     expected = _expected_hash(row["content_hash"])
-    if not isinstance(bucket, str) or not bucket or not isinstance(object_key, str) or not object_key:
+    if (
+        not isinstance(bucket, str)
+        or not bucket
+        or not isinstance(object_key, str)
+        or not object_key
+    ):
         raise HTTPException(status_code=502, detail="artifact unavailable")
     try:
         body = await _load_artifact_bytes(

@@ -2,20 +2,17 @@
 
 Pure functions, no infra — these run in the default unit lane.
 """
-from __future__ import annotations
 
-from typing import get_args
+from __future__ import annotations
 
 import pytest
 
 from services.ingest.ingestion.kafka import topics
-from services.ingest.ingestion.raw_tier.envelope import SourceLiteral
+from services.ingest.source_contract.source_catalog import ingestion_source_ids
 
 
-def test_sources_match_envelope_literal() -> None:
-    # The registry's source list MUST be exactly the envelope's literal so the
-    # two can never drift (add a source -> its topics appear automatically).
-    assert topics.INGESTION_SOURCES == tuple(get_args(SourceLiteral))
+def test_sources_match_generated_source_index() -> None:
+    assert topics.INGESTION_SOURCES == ingestion_source_ids()
 
 
 def test_topic_for_shape() -> None:

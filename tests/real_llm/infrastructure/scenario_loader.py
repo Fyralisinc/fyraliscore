@@ -323,7 +323,12 @@ async def _materialize_actors(
             },
         )
         scenario.actors[name] = row.id
-        await _add_actor_identity_mappings(actor_repo, actor_def, actor_id=row.id)
+        await _add_actor_identity_mappings(
+            actor_repo,
+            actor_def,
+            actor_id=row.id,
+            tenant_id=tenant_id,
+        )
 
 
 async def _add_actor_identity_mappings(
@@ -331,6 +336,7 @@ async def _add_actor_identity_mappings(
     actor_def: dict[str, Any],
     *,
     actor_id: UUID,
+    tenant_id: UUID,
 ) -> None:
     for alias_field in ("slack", "github", "email_alias", "linear"):
         raw_ref = actor_def.get(alias_field)
@@ -339,6 +345,7 @@ async def _add_actor_identity_mappings(
         channel, _, ref = raw_ref.partition(":")
         await actor_repo.add_identity_mapping(
             actor_id=actor_id,
+            tenant_id=tenant_id,
             source_channel=channel,
             source_actor_ref=ref,
         )

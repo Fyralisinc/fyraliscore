@@ -1,0 +1,78 @@
+{
+  "apiVersion": "sources.fyralis.io/v1",
+  "kind": "SourceConnector",
+  "metadata": {
+    "id": "fyralis/whatsapp",
+    "source": "whatsapp",
+    "displayName": "WhatsApp",
+    "version": "1.0.0",
+    "owner": "ingestion"
+  },
+  "spec": {
+    "contract": ">=1.0,<2.0",
+    "implementation": "services.ingest.connectors.native:build_whatsapp_connector",
+    "artifactModules": [
+      "services.ingest.connectors.whatsapp"
+    ],
+    "maturity": "stable",
+    "capabilities": [
+      {
+        "id": "installation.configure",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "installation.secret_rotation",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "health.probe",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "app_secret"
+        ]
+      },
+      {
+        "id": "lifecycle.cleanup",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "ingestion.webhook",
+        "version": 1,
+        "required": true,
+        "configuredBy": [
+          "app_secret"
+        ]
+      },
+      {
+        "id": "semantic.identity",
+        "version": 1,
+        "required": true
+      },
+      {
+        "id": "semantic.normalization",
+        "version": 1,
+        "required": true
+      }
+    ],
+    "ingressKinds": [
+      "webhook"
+    ],
+    "permissions": {
+      "secretSlots": [
+        "app_secret"
+      ],
+      "outboundHosts": [],
+      "requestedScopes": []
+    },
+    "trust": {
+      "maximumTier": "attested_agent"
+    },
+    "runtime": {
+      "isolation": "in_process_trusted"
+    }
+  }
+}

@@ -176,7 +176,7 @@ _SIGNAL_TXN_MAX_ATTEMPTS = 5
 _SIGNAL_TXN_BACKOFF_SEC = 0.05
 
 
-async def retry_process_signal_serialization_conflicts(
+async def retry_signal_serialization_conflicts(
     once: "Any",  # Callable[[], Awaitable[bool]]
     *,
     label: str,
@@ -213,9 +213,8 @@ async def retry_process_signal_serialization_conflicts(
             await asyncio.sleep(backoff_sec * attempts)
 
 
-process_signal_with_serialization_retry = (
-    retry_process_signal_serialization_conflicts
-)
+retry_process_signal_serialization_conflicts = retry_signal_serialization_conflicts
+process_signal_with_serialization_retry = retry_signal_serialization_conflicts
 
 
 # ---------------------------------------------------------------------
@@ -573,5 +572,6 @@ __all__ = [
     "poll_signals",
     "process_signal_with_serialization_retry",
     "retry_process_signal_serialization_conflicts",
+    "retry_signal_serialization_conflicts",
     "signal_count",
 ]

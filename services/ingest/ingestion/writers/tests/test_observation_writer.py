@@ -1,24 +1,4 @@
-"""observation_writer unit tests — M2.4 shadow-log path.
-
-These tests cover the writer's M2 shadow-log behaviour, which is
-PRESERVED for tenants whose `ingestion.kafka_path_enabled` is FALSE
-(now an explicit operator / circuit-breaker kill-switch — the default is
-kafka-first). They drive `_record_shadow_event` directly, so they are
-independent of the flag default. The M5.2 full-mode tests live in
-`test_observation_writer_m5.py`.
-
-Covers:
-  - Happy path: a valid NormalizedEnvelope produces a ShadowWriteEvent.
-  - Parse-failure: malformed message bumps `writer.parse_failure`,
-    no event recorded.
-
-The end-to-end shadow test (real Kafka + DB + normalizer + writer +
-100 webhooks) lives in `services/ingest/ingestion/tests/test_e2e_shadow.py`.
-
-M2.4's Path-B import-graph test is INTENTIONALLY REMOVED in M5.2 —
-the writer is now Path A (holds an asyncpg pool) when wired with
-DB deps. See the module docstring of `observation_writer.py`.
-"""
+"""Unit tests for the contract-only normalized observation writer."""
 from __future__ import annotations
 
 import datetime as dt
@@ -66,18 +46,19 @@ def _normalized_envelope_bytes() -> bytes:
 @pytest.fixture(autouse=True)
 def _reset():
     writer_module.reset_metrics()
-    writer_module.reset_shadow_log()
 
 
 # ---------------------------------------------------------------------
-# 1. Happy path — valid NormalizedEnvelope produces ShadowWriteEvent.
+# 1. Happy path — a valid envelope reconstructs the durable draft.
 # ---------------------------------------------------------------------
 
-async def test_record_event_appends_to_shadow_log():
+def test_valid_envelope_reconstructs_draft():
     env = NormalizedEnvelope.model_validate(
         json.loads(_normalized_envelope_bytes())
     )
-    await writer_module._record_shadow_event(env)
+    draft = writer_module._draft_from_envelope(env)
+    assert draft.external_id == "C01:1.0"
+    assert draft.content_text == "hello"
 
 
 def test_full_mode_draft_reconstruction_applies_shared_payload_guards() -> None:
@@ -87,8 +68,6 @@ def test_full_mode_draft_reconstruction_applies_shared_payload_guards() -> None:
     with pytest.raises(ValidationError, match="NUL byte"):
         writer_module._draft_from_envelope(env)
 
-    assert writer_module.get_shadow_log() == []
-    assert writer_module.get_metrics()["writer.shadow_write_events"] == 0
 
 
 def test_full_mode_draft_keeps_private_artifact_descriptor_off_content() -> None:
@@ -115,7 +94,7 @@ def test_full_mode_draft_keeps_private_artifact_descriptor_off_content() -> None
 # `test_e2e_shadow.py`; here we exercise model_validate directly.)
 # ---------------------------------------------------------------------
 
-async def test_malformed_envelope_does_not_record_event():
+def test_malformed_envelope_is_rejected_before_write():
     bad_payload = {
         "envelope_version": 1,
         "source": "slack",
@@ -126,7 +105,3 @@ async def test_malformed_envelope_does_not_record_event():
 
     with pytest.raises(ValidationError):
         NormalizedEnvelope.model_validate(bad_payload)
-
-    # The run_writer loop's except clause does bump + log + continue.
-    # No event was recorded because _record_shadow_event was never reached.
-    assert writer_module.get_shadow_log() == []

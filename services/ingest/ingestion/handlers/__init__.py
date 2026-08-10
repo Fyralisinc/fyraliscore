@@ -1,4 +1,4 @@
-"""services/ingest/ingestion/handlers/__init__.py — handler registry.
+"""Handler registry for direct, non-source ingestion channels.
 
 BUILD-PLAN §3 Prompt 2.A:
     "services/ingest/ingestion/handlers/__init__.py:
@@ -25,7 +25,6 @@ Handler shape (the `ObservationDraft` model below):
 All handlers are pure functions:
     async def handle(payload: dict, request_headers: dict) -> ObservationDraft
 """
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -34,23 +33,15 @@ from typing import Any, Awaitable, Callable
 
 from lib.shared.errors import CompanyOSError
 from lib.shared.types import ObservationKind, TrustTierValue
+from services.ingest.source_contract.models import SourceObjectRef
 
-
-# ARCHITECTURE §14 CHANNEL_TRUST_MAP — authoritative mapping.
-# Only the four Wave 2-A channels are listed here. Agent 2-B will
-# extend via `register()` when those handlers land.
+# External data sources are normalized by Source Connector capabilities and
+# deliberately do not register handlers here.
 CHANNEL_TRUST_MAP: dict[str, str] = {
-    "slack:message": "attested_agent",
     "email:inbound": "attested_agent",
-    "gmail:": "attested_agent",
     "linear:webhook": "authoritative",
-    "github:webhook": "authoritative",
     "calendar:sync": "authoritative",
     "stripe:webhook": "authoritative",
-    "discord:webhook": "attested_agent",
-    "discord:interaction": "attested_agent",
-    "discord:message": "attested_agent",
-    "jira:issue": "authoritative",
     "journal:ui": "authoritative",
     "agent:attested": "attested_agent",
     "news:rss": "reputable",
@@ -61,33 +52,17 @@ CHANNEL_TRUST_MAP: dict[str, str] = {
     "regulatory:api": "authoritative_external",
     "analyst:report": "reputable",
     "ui:contestation": "authoritative",
-    # IN-PEOPLE (sources 23-25): HiBob (HR), Ashby (ATS), LinkedIn (recruiting).
-    # First-party source-of-record systems → authoritative, mirroring the other
-    # entity-model sources (gusto/carta).
-    "hibob:object": "authoritative",
-    "ashby:object": "authoritative",
-    "linkedin:object": "authoritative",
-    # WhatsApp (Cloud API webhook — live). ONE channel/many-event-types
-    # (like github:webhook): inbound customer messages are customer-authored
-    # content via a Meta-signed webhook → attested_agent (Slack/email posture),
-    # while outbound delivery-status callbacks are Meta-asserted facts and the
-    # handler OVERRIDES trust to authoritative + kind=state_change for those.
-    "whatsapp:message": "attested_agent",
-    # Facebook Page Messenger content arrives through Meta-signed webhooks or
-    # Page-token Graph pagination. Messages are customer/Page authored content,
-    # not a provider-authored state fact.
-    "facebook_pages:message": "attested_agent",
-    # Instagram Messaging (Meta-signed webhooks + Graph conversation history).
-    # Customer-authored DMs are attested by Meta delivery; read/delivery/delete
-    # callbacks are Meta-asserted facts and the handler overrides those to
-    # authoritative + state_change.
-    "instagram:message": "attested_agent",
     # Internal channels used by system-originated observations; these
     # carry the highest trust and never enter through a signature-
     # verified webhook.
     "internal:state_change": "authoritative",
     "internal:anomaly": "authoritative",
     "internal:prediction_resolution": "authoritative",
+    # Consolidation carry-forwards. These two rich semantic adapters predate
+    # their SourceConnector-v1 ports and remain explicit rather than being
+    # presented as members of the stable connector fleet.
+    "facebook_pages:message": "attested_agent",
+    "instagram:message": "attested_agent",
 }
 
 
@@ -118,12 +93,11 @@ class ObservationDraft:
     entities_hint: list[dict[str, Any]] = field(default_factory=list)
     unresolved_phrases: list[str] = field(default_factory=list)
     raw_payload: dict[str, Any] | None = None
-    # Private durable-artifact catalog descriptors.  Unlike ``content`` these
-    # may contain an internal S3 bucket/key and are carried only across the
-    # normalizer/writer boundary; core persists them to blobs +
-    # observation_artifacts in the same transaction as the observation.
-    # Handlers must put only ``StoredArtifact.public_ref()`` in content.
+    # Private storage descriptors remain outside persisted observation content.
+    # They are optional for contract connectors and retained for consolidated
+    # artifact-producing ingestion extensions.
     artifact_descriptors: list[dict[str, Any]] = field(default_factory=list)
+    source_object: SourceObjectRef | None = None
 
 
 HandlerFn = Callable[[dict[str, Any], dict[str, str]], Awaitable[ObservationDraft]]
@@ -146,7 +120,9 @@ def register(channel: str) -> Callable[[HandlerFn], HandlerFn]:
 
     def _decorator(fn: HandlerFn) -> HandlerFn:
         if channel in _HANDLERS:
-            raise RuntimeError(f"handler for {channel!r} already registered")
+            raise RuntimeError(
+                f"handler for {channel!r} already registered"
+            )
         _HANDLERS[channel] = fn
         return fn
 
@@ -181,38 +157,15 @@ def _clear_registry_for_tests() -> None:
 # Import handlers so `register()` decorators run. Order matters only
 # for error messages (first to import wins uniqueness check). These
 # imports intentionally come after _HANDLERS is defined above.
-from services.ingest.ingestion.handlers import system  # noqa: E402,F401
-from services.ingest.ingestion.handlers import slack  # noqa: E402,F401
-from services.ingest.ingestion.handlers import github  # noqa: E402,F401
-from services.ingest.ingestion.handlers import linear  # noqa: E402,F401
-from services.ingest.ingestion.handlers import stripe  # noqa: E402,F401
-from services.ingest.ingestion.handlers import discord  # noqa: E402,F401
-from services.ingest.ingestion.handlers import gmail  # noqa: E402,F401
-from services.ingest.ingestion.handlers import notion  # noqa: E402,F401
-from services.ingest.ingestion.handlers import google_calendar  # noqa: E402,F401
-from services.ingest.ingestion.handlers import google_drive  # noqa: E402,F401
-from services.ingest.ingestion.handlers import jira  # noqa: E402,F401
-from services.ingest.ingestion.handlers import mercury  # noqa: E402,F401
-from services.ingest.ingestion.handlers import quickbooks  # noqa: E402,F401
-from services.ingest.ingestion.handlers import grafana  # noqa: E402,F401
-from services.ingest.ingestion.handlers import telegram  # noqa: E402,F401
-from services.ingest.ingestion.handlers import brex  # noqa: E402,F401
-from services.ingest.ingestion.handlers import ramp  # noqa: E402,F401
-from services.ingest.ingestion.handlers import gusto  # noqa: E402,F401
-from services.ingest.ingestion.handlers import deel  # noqa: E402,F401
-from services.ingest.ingestion.handlers import fireflies  # noqa: E402,F401
-from services.ingest.ingestion.handlers import signal  # noqa: E402,F401
-from services.ingest.ingestion.handlers import aws  # noqa: E402,F401
-from services.ingest.ingestion.handlers import miro  # noqa: E402,F401
-from services.ingest.ingestion.handlers import figma  # noqa: E402,F401
-from services.ingest.ingestion.handlers import carta  # noqa: E402,F401
-from services.ingest.ingestion.handlers import hibob  # noqa: E402,F401
-from services.ingest.ingestion.handlers import ashby  # noqa: E402,F401
-from services.ingest.ingestion.handlers import linkedin  # noqa: E402,F401
-from services.ingest.ingestion.handlers import whatsapp  # noqa: E402,F401
-from services.ingest.ingestion.handlers import facebook_pages  # noqa: E402,F401
-from services.ingest.ingestion.handlers import instagram  # noqa: E402,F401
-
+from services.ingest.ingestion.handlers import (
+    calendar,  # noqa: E402,F401
+    email,  # noqa: E402,F401
+    facebook_pages,  # noqa: E402,F401
+    instagram,  # noqa: E402,F401
+    linear,  # noqa: E402,F401
+    stripe,  # noqa: E402,F401
+    system,  # noqa: E402,F401
+)
 
 __all__ = [
     "CHANNEL_TRUST_MAP",

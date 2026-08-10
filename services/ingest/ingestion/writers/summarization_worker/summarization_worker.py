@@ -14,7 +14,15 @@ import orjson
 from aiokafka import AIOKafkaConsumer
 
 from lib.embeddings.mode import write_obs_embeddings
+from lib.observability.metrics import (
+    DOC_MEMORY_ENRICHED_T1,
+    DOC_MEMORY_MINT_FAILURE,
+    DOC_MEMORY_SCOPE_UNRESOLVED,
+    doc_memory_source_label,
+)
 from lib.shared.db import configure_connection_timeouts
+from services.domain.identity.intake import IdentityIntakeRepository
+from services.domain.reasoning_ingress import reasoning_ingress_mode
 from services.domain.triggers import enqueue_trigger
 from services.ingest.ingestion.dlq.publish import publish_dlq
 from services.ingest.ingestion.embedding.publish import publish_embedding_request
@@ -30,8 +38,8 @@ from services.ingest.ingestion.raw_tier.s3 import S3Client
 from services.ingest.ingestion.summarization.batch_store import enqueue_batch_item
 from services.ingest.ingestion.summarization.llm import (
     LLMSummarizer,
-    SummaryResult,
     Summarizer,
+    SummaryResult,
     build_default_summarizer,
 )
 from services.ingest.ingestion.summarization.models import SummarizationEnvelope
@@ -46,13 +54,6 @@ from services.ingest.ingestion.writers.summarization_worker.doc_memory import (
     doc_memory_enabled,
     resolve_document_scope,
 )
-from lib.observability.metrics import (
-    DOC_MEMORY_ENRICHED_T1,
-    DOC_MEMORY_MINT_FAILURE,
-    DOC_MEMORY_SCOPE_UNRESOLVED,
-    doc_memory_source_label,
-)
-
 
 log = logging.getLogger(__name__)
 
@@ -107,7 +108,8 @@ UPDATE observations
        embedding_pending = TRUE
  WHERE id = $3
    AND COALESCE(content->'summarization'->>'status', '') <> 'complete'
- RETURNING source_channel, content_text, occurred_at, kind, trust_tier, actor_id
+ RETURNING id, tenant_id, evidence_id, source_channel, content_text,
+           occurred_at, kind, trust_tier, actor_id
 """
 
 
@@ -123,7 +125,8 @@ UPDATE observations
        embedding_pending = TRUE
  WHERE id = $3
    AND COALESCE(content->'summarization'->>'status', '') <> 'complete'
- RETURNING source_channel, content_text, occurred_at, kind, trust_tier, actor_id
+ RETURNING id, tenant_id, evidence_id, source_channel, content_text,
+           occurred_at, kind, trust_tier, actor_id
 """
 
 
@@ -137,7 +140,8 @@ UPDATE observations
        embedding_pending = FALSE
  WHERE id = $3
    AND COALESCE(content->'summarization'->>'status', '') <> 'complete'
- RETURNING source_channel, content_text, occurred_at, kind, trust_tier, actor_id
+ RETURNING id, tenant_id, evidence_id, source_channel, content_text,
+           occurred_at, kind, trust_tier, actor_id
 """
 
 
@@ -150,7 +154,8 @@ UPDATE observations
        embedding_pending = FALSE
  WHERE id = $3
    AND COALESCE(content->'summarization'->>'status', '') <> 'complete'
- RETURNING source_channel, content_text, occurred_at, kind, trust_tier, actor_id
+ RETURNING id, tenant_id, evidence_id, source_channel, content_text,
+           occurred_at, kind, trust_tier, actor_id
 """
 
 
@@ -271,32 +276,45 @@ async def _write_summary_and_enqueue(
             if updated is None:
                 _bump("summarization_worker.guard_no_op")
                 return "guard_no_op"
-            payload: dict[str, Any] = {
-                "source_channel": updated["source_channel"],
-                "kind": updated["kind"],
-                "trust_tier": updated["trust_tier"],
-                "seed_occurred_at": updated["occurred_at"].isoformat(),
-                "seed_natural_text": (updated["content_text"] or "")[:2000],
-                "scope_actors": (
-                    [str(updated["actor_id"])] if updated["actor_id"] else []
-                ),
-                "summarized": True,
-            }
-            if scope is not None:
-                _enrich_t1_payload(
-                    payload,
-                    scope,
-                    result.structured,
-                    source_channel=updated["source_channel"],
-                )
-            await enqueue_trigger(
-                conn,
-                tenant_id=env.tenant_id,
-                trigger_kind="T1",
-                trigger_subkind="event_arrival",
-                observation_id=env.observation_id,
-                payload=payload,
+            if updated["evidence_id"] is None:
+                raise RuntimeError("summarized observation has no immutable evidence")
+            await IdentityIntakeRepository().enqueue(
+                tenant_id=updated["tenant_id"],
+                observation_id=updated["id"],
+                observation_occurred_at=updated["occurred_at"],
+                evidence_id=updated["evidence_id"],
+                event_kind="observation.ready_for_identity",
+                reason="summary_completed",
+                cause_assertion_ids=(),
+                conn=conn,
             )
+            if await reasoning_ingress_mode(conn, tenant_id=env.tenant_id) == "direct":
+                payload: dict[str, Any] = {
+                    "source_channel": updated["source_channel"],
+                    "kind": updated["kind"],
+                    "trust_tier": updated["trust_tier"],
+                    "seed_occurred_at": updated["occurred_at"].isoformat(),
+                    "seed_natural_text": (updated["content_text"] or "")[:2000],
+                    "scope_actors": (
+                        [str(updated["actor_id"])] if updated["actor_id"] else []
+                    ),
+                    "summarized": True,
+                }
+                if scope is not None:
+                    _enrich_t1_payload(
+                        payload,
+                        scope,
+                        result.structured,
+                        source_channel=updated["source_channel"],
+                    )
+                await enqueue_trigger(
+                    conn,
+                    tenant_id=env.tenant_id,
+                    trigger_kind="T1",
+                    trigger_subkind="event_arrival",
+                    observation_id=env.observation_id,
+                    payload=payload,
+                )
     _bump("summarization_worker.summaries_succeeded")
     return "summarized"
 
@@ -381,7 +399,9 @@ def _enrich_t1_payload(
         payload["seed_entity_ids"] = scope.scope_entities
     if scope.scope_actors:
         payload["doc_scope_actors"] = scope.scope_actors
-        merged = list(dict.fromkeys([*payload.get("scope_actors", []), *scope.scope_actors]))
+        merged = list(
+            dict.fromkeys([*payload.get("scope_actors", []), *scope.scope_actors])
+        )
         payload["scope_actors"] = merged
     if scope.unresolved_actor_refs:
         payload["doc_unresolved_actor_refs"] = scope.unresolved_actor_refs

@@ -20,10 +20,11 @@ inferred from the message string.
 from __future__ import annotations
 
 import hmac
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Protocol, Sequence
 
 from lib.shared.errors import CompanyOSError
+from lib.shared.webhook_verification import VerifiedContext
 
 
 VerificationReason = Literal[
@@ -59,39 +60,6 @@ class Secret:
     value: str
     tenant_id: str | None = None
     label: str | None = None  # opaque tag for rotation observability
-
-
-@dataclass(frozen=True)
-class VerifiedContext:
-    """Result returned by a successful Verifier call.
-
-    The router consumes this to drive downstream ingestion.
-
-    Attributes:
-        provider: Canonical provider name (`slack`, `github`, …).
-        body: The literal bytes that were verified. Re-handed to the
-            ingestion pipeline as-is; the pipeline is responsible for
-            JSON-decoding into a payload dict.
-        secret_label: The `Secret.label` of whichever secret matched —
-            None when the verifier did not record a label. Used by
-            rotation observability tests to confirm the new secret
-            took the request.
-        signed_timestamp: The provider-supplied timestamp (Unix
-            seconds), if the provider's envelope included one.
-            None for providers that do not sign timestamps.
-        tenant_hint: When the signed payload names the originating
-            tenant (Slack `team_id`, GitHub `installation.id`, …),
-            verifiers MAY surface that here so the router can resolve
-            tenant without re-parsing the body. Optional; the router
-            will fall back to provider-specific tenant resolution
-            if absent.
-    """
-
-    provider: str
-    body: bytes
-    secret_label: str | None = None
-    signed_timestamp: int | None = None
-    tenant_hint: dict[str, Any] = field(default_factory=dict)
 
 
 class WebhookVerificationError(CompanyOSError):

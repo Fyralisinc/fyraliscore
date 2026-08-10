@@ -191,27 +191,27 @@ log "Starting topology sweeper…"
   > "$LOGDIR/topology_sweeper.log" 2>&1 &
 record_pid $!
 
-log "Starting Discord gateway worker…"
-: > "$LOGDIR/discord_gateway_worker.log"
-.venv/bin/python scripts/run_discord_gateway_worker.py \
-  > "$LOGDIR/discord_gateway_worker.log" 2>&1 &
+for source in discord telegram signal; do
+  log "Starting ${source} connector gateway worker…"
+  : > "$LOGDIR/${source}_gateway_worker.log"
+  .venv/bin/python scripts/run_connector_gateway_worker.py --source "$source" \
+    > "$LOGDIR/${source}_gateway_worker.log" 2>&1 &
+  record_pid $!
+done
+
+log "Starting connector poll worker…"
+: > "$LOGDIR/connector_poll_worker.log"
+.venv/bin/python scripts/run_connector_poll_worker.py \
+  > "$LOGDIR/connector_poll_worker.log" 2>&1 &
 record_pid $!
 
-# Gmail workers only start when GMAIL_SERVICE_ACCOUNT_JSON_FILE / _JSON is
-# configured. Skipping prevents noisy boot errors in dev where Gmail isn't wired.
-if [ -n "${GMAIL_SERVICE_ACCOUNT_JSON_FILE:-}" ] || [ -n "${GMAIL_SERVICE_ACCOUNT_JSON:-}" ]; then
-  log "Starting gmail watch scheduler…"
-  .venv/bin/python scripts/run_gmail_watch_scheduler.py \
-    > "$LOGDIR/gmail_watch_scheduler.log" 2>&1 &
+for source in gmail google_calendar google_drive; do
+  log "Starting ${source} connector subscription scheduler…"
+  : > "$LOGDIR/${source}_watch_scheduler.log"
+  .venv/bin/python scripts/run_connector_subscription_scheduler.py --source "$source" \
+    > "$LOGDIR/${source}_watch_scheduler.log" 2>&1 &
   record_pid $!
-
-  log "Starting gmail history poller…"
-  .venv/bin/python scripts/run_gmail_history_poller.py \
-    > "$LOGDIR/gmail_history_poller.log" 2>&1 &
-  record_pid $!
-else
-  log "Gmail workers skipped — set GMAIL_SERVICE_ACCOUNT_JSON_FILE to enable."
-fi
+done
 
 # The frontend (ui/) lives in the demo overlay repo (fyraliscore-demo).
 # This script launches the core backend only; run the UI from that repo.

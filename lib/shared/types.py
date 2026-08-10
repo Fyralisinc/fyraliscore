@@ -47,6 +47,9 @@ ObservationKind = Literal[
     "transaction",
 ]
 
+SourceOperation = Literal["create", "update", "delete", "retract", "snapshot"]
+RawRetentionState = Literal["available", "expired", "not_stored"]
+
 TrustTierValue = Literal[
     "authoritative",
     "attested_agent",
@@ -242,6 +245,7 @@ class ObservationRow(_Strict):
     cause_id: UUID | None = None
     sequence_num: int
     entities_mentioned: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_id: UUID | None = None
 
 
 class ObservationCreate(_Strict):
@@ -259,6 +263,80 @@ class ObservationCreate(_Strict):
     external_id: str | None = None
     cause_id: UUID | None = None
     entities_mentioned: list[dict[str, Any]] = Field(default_factory=list)
+    evidence_id: UUID | None = None
+
+
+class SourceEvidenceRow(_Strict):
+    id: UUID
+    tenant_id: UUID
+    source: str
+    connector_installation_id: UUID | None = None
+    installation_scope: str
+    source_channel: str
+    source_object_type: str
+    source_object_id: str
+    source_revision_id: str
+    operation: SourceOperation
+    source_recorded_at: datetime
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    supersedes_evidence_id: UUID | None = None
+    parent_ref: dict[str, Any] | None = None
+    container_ref: dict[str, Any] | None = None
+    thread_id: str | None = None
+    raw_object_key: str | None = None
+    content_hash: str
+    raw_ingested_at: datetime
+    normalized_at: datetime
+    ingress_kind: str
+    ingress_metadata: dict[str, Any] = Field(default_factory=dict)
+    idem_hints: dict[str, str] = Field(default_factory=dict)
+    contract_version: int
+    connector_version: str
+    parser_version: str
+    normalizer_version: str
+    raw_retention_state: RawRetentionState
+    raw_expired_at: datetime | None = None
+    access_policy: dict[str, Any] = Field(default_factory=dict)
+    access_policy_hash: str | None = None
+    access_captured_at: datetime | None = None
+    first_seen_at: datetime
+    last_seen_at: datetime
+
+
+class SourceEvidenceCreate(_Strict):
+    id: UUID | None = None
+    tenant_id: UUID
+    source: str
+    connector_installation_id: UUID | None = None
+    installation_scope: str
+    source_channel: str
+    source_object_type: str
+    source_object_id: str
+    source_revision_id: str
+    operation: SourceOperation = "snapshot"
+    source_recorded_at: datetime
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
+    supersedes_revision_id: str | None = None
+    parent_ref: dict[str, Any] | None = None
+    container_ref: dict[str, Any] | None = None
+    thread_id: str | None = None
+    raw_object_key: str | None = None
+    content_hash: str
+    raw_ingested_at: datetime
+    normalized_at: datetime
+    ingress_kind: str
+    ingress_metadata: dict[str, Any] = Field(default_factory=dict)
+    idem_hints: dict[str, str] = Field(default_factory=dict)
+    contract_version: int = 1
+    connector_version: str = "unknown"
+    parser_version: str = "unknown"
+    normalizer_version: str = "unknown"
+    raw_retention_state: RawRetentionState = "available"
+    access_policy: dict[str, Any] = Field(default_factory=dict)
+    access_policy_hash: str | None = None
+    access_captured_at: datetime | None = None
 
 
 # =====================================================================
@@ -524,6 +602,9 @@ class ActorRow(_Strict):
 
 class ActorIdentityMappingRow(_Strict):
     actor_id: UUID
+    tenant_id: UUID
+    connector_installation_id: UUID | None = None
+    installation_scope: str
     source_channel: str
     source_actor_ref: str
     confidence: float = 1.0
@@ -559,7 +640,8 @@ class EntityAliasRow(_Strict):
 
 __all__ = [
     # enum literals
-    "ObservationKind", "TrustTierValue", "ModelStatus", "ModelArchiveReason",
+    "ObservationKind", "SourceOperation", "RawRetentionState",
+    "TrustTierValue", "ModelStatus", "ModelArchiveReason",
     "ModelStatusNoteKind", "PropositionKind",
     "GoalState", "GoalAltitude", "GoalCachedHealth",
     "CommitmentState", "AmbitionLevel",
@@ -568,7 +650,7 @@ __all__ = [
     "ResourceTemporalCharacter", "ResourceTransactionType",
     "ActorType", "ActorStatus",
     # row models
-    "ObservationRow", "ObservationCreate",
+    "ObservationRow", "ObservationCreate", "SourceEvidenceRow", "SourceEvidenceCreate",
     "ModelRow", "ModelCreate", "ModelStatusNoteRow",
     "GoalRow",
     "CommitmentRow", "CommitmentContributorRow",

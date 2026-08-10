@@ -83,6 +83,8 @@ async def resolve_actor_ref(
     source_actor_ref: str | None,
     source_channel: str,
     actor_repo: ActorRepo | None,
+    tenant_id: UUID,
+    connector_installation_id: UUID | None = None,
 ) -> tuple[UUID | None, str | None]:
     """Resolve a ``<channel>:<ref>`` actor reference to an actor UUID.
 
@@ -97,7 +99,11 @@ async def resolve_actor_ref(
     if ":" not in ref:
         ref = f"{source_channel}:{ref}"
     try:
-        resolved_actor_id = await actor_repo.resolve_by_source_actor_ref(ref)
+        resolved_actor_id = await actor_repo.resolve_by_source_actor_ref(
+            ref,
+            tenant_id,
+            connector_installation_id,
+        )
     except ValidationError:
         resolved_actor_id = None
     return (
@@ -139,7 +145,12 @@ async def resolve_owner_actor(
 
     # 1) Existing path: treat the bare name as a source ref (works when the
     #    summarizer happens to emit a channel-qualified handle).
-    resolved, unresolved = await resolve_actor_ref(who, source_channel, actor_repo)
+    resolved, unresolved = await resolve_actor_ref(
+        who,
+        source_channel,
+        actor_repo,
+        tenant_id,
+    )
     if resolved is not None:
         return resolved, None
 

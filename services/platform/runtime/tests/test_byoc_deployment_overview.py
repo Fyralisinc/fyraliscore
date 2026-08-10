@@ -366,6 +366,7 @@ def test_control_panel_state_composes_sanitized_deployment_reads() -> None:
     assert "signature" not in serialized.lower()
     assert '"raw_payload":' not in serialized.lower()
     assert '"raw_payloads_included":false' in serialized.lower()
+    assert '"payload":' not in serialized.lower()
     assert '"preflight_report":' not in serialized
     assert '"checks":' not in serialized
 

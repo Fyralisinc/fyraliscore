@@ -2594,6 +2594,8 @@ def _sparse_lookup_terms(
                 out.append(token)
             if len(out) >= max(1, int(max_terms)):
                 return out
+    if out and all(term in _SPARSE_LOOKUP_ALLOWED_GENERIC_TERMS for term in out):
+        return []
     return out
 
 

@@ -1,4 +1,5 @@
 """Facebook Pages OAuth install and native-connect handoff."""
+
 from __future__ import annotations
 
 import hashlib
@@ -12,9 +13,9 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 import asyncpg
+import structlog
 from fastapi import Request
 from fastapi.responses import JSONResponse, RedirectResponse
-import structlog
 
 from lib.shared.errors import (
     InstallationCollisionError,
@@ -30,12 +31,11 @@ from services.ingest.integrations.facebook_pages.client import (
 from services.ingest.integrations.oauth_native_connect import (
     build_oauth_native_connect_router,
 )
-from services.ingest.integrations.slack.oauth import (
+from services.ingest.integrations.oauth_state_tokens import (
     _b64url,
     _hmac_key,
     verify_and_consume_state,
 )
-
 
 log = structlog.get_logger("integrations.facebook_pages.oauth")
 
@@ -131,10 +131,8 @@ async def install_handler(request: Request) -> Any:
         pool,
         page_id=page_id,
     )
-    return RedirectResponse(
-        url=f"{_AUTHORIZE_URL}?{urlencode(_authorize_params(client_id, redirect_uri, state_token))}",
-        status_code=302,
-    )
+    authorize_query = urlencode(_authorize_params(client_id, redirect_uri, state_token))
+    return RedirectResponse(url=f"{_AUTHORIZE_URL}?{authorize_query}", status_code=302)
 
 
 async def _connect_handoff(
@@ -143,9 +141,13 @@ async def _connect_handoff(
     request: Request,
     body: dict[str, Any],
 ) -> dict[str, Any]:
-    client_id = str(body.get("client_id") or os.environ.get("FACEBOOK_APP_ID") or "").strip()
+    client_id = str(
+        body.get("client_id") or os.environ.get("FACEBOOK_APP_ID") or ""
+    ).strip()
     redirect_uri = os.environ.get("FACEBOOK_REDIRECT_URI", "").strip()
-    page_id = str(body.get("page_id") or os.environ.get("FACEBOOK_PAGE_ID") or "").strip()
+    page_id = str(
+        body.get("page_id") or os.environ.get("FACEBOOK_PAGE_ID") or ""
+    ).strip()
     missing = [
         name
         for name, value in {
@@ -178,7 +180,9 @@ async def _connect_handoff(
     }
 
 
-def _authorize_params(client_id: str, redirect_uri: str, state_token: str) -> dict[str, str]:
+def _authorize_params(
+    client_id: str, redirect_uri: str, state_token: str
+) -> dict[str, str]:
     return {
         "client_id": client_id,
         "redirect_uri": redirect_uri,
@@ -300,7 +304,10 @@ async def _upsert_page_installation(
         )
         ON CONFLICT (page_id) DO UPDATE SET
             tenant_id = EXCLUDED.tenant_id,
-            page_name = COALESCE(EXCLUDED.page_name, facebook_page_installations.page_name),
+            page_name = COALESCE(
+                EXCLUDED.page_name,
+                facebook_page_installations.page_name
+            ),
             page_access_token_ref = EXCLUDED.page_access_token_ref,
             app_secret_ref = EXCLUDED.app_secret_ref,
             verify_token_ref = EXCLUDED.verify_token_ref,
@@ -480,7 +487,8 @@ def _select_page(
     requested_page_id: str | None,
 ) -> dict[str, Any] | None:
     eligible = [
-        p for p in pages
+        p
+        for p in pages
         if isinstance(p.get("id"), str) and isinstance(p.get("access_token"), str)
     ]
     if requested_page_id:

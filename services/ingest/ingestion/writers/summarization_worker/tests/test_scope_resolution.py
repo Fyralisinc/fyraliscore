@@ -58,7 +58,7 @@ class _FakePool:
         ]
 
     async def fetchval(self, query, *args):
-        return self._actor_map.get((args[0], args[1]))
+        return self._actor_map.get((args[1], args[2]))
 
 
 def test_candidate_phrases_and_entity_heuristic():
@@ -112,7 +112,7 @@ async def test_resolve_actor_ref_resolves_and_prefixes_channel():
     )
     repo = ActorRepo(pool)  # type: ignore[arg-type]
     # Bare ref gets the channel prefix.
-    actor_id, unresolved = await resolve_actor_ref("U01", "slack", repo)
+    actor_id, unresolved = await resolve_actor_ref("U01", "slack", repo, _TENANT)
     assert str(actor_id) == "22222222-2222-2222-2222-222222222222"
     assert unresolved is None
 
@@ -120,15 +120,15 @@ async def test_resolve_actor_ref_resolves_and_prefixes_channel():
 @pytest.mark.asyncio
 async def test_resolve_actor_ref_unresolved_returns_text():
     repo = ActorRepo(_FakePool({}, {}))  # type: ignore[arg-type]
-    actor_id, unresolved = await resolve_actor_ref("U404", "slack", repo)
+    actor_id, unresolved = await resolve_actor_ref("U404", "slack", repo, _TENANT)
     assert actor_id is None
     assert unresolved == "slack:U404"
 
 
 @pytest.mark.asyncio
 async def test_resolve_actor_ref_no_repo_or_ref():
-    assert await resolve_actor_ref(None, "slack", None) == (None, None)
-    assert await resolve_actor_ref("U01", "slack", None) == (None, None)
+    assert await resolve_actor_ref(None, "slack", None, _TENANT) == (None, None)
+    assert await resolve_actor_ref("U01", "slack", None, _TENANT) == (None, None)
 
 
 # --- resolve_owner_actor: the action-item-owner display-name fallback (Task #4)

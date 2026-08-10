@@ -80,8 +80,9 @@ class _FakePool:
         return rows
 
     async def fetchval(self, query: str, *args):
-        # args = (source_channel, source_actor_ref)
-        return self._actor_map.get((args[0], args[1]))
+        # Installation-scoped actor resolution args are
+        # (tenant_id, source_channel, source_actor_ref, installation_scope).
+        return self._actor_map.get((args[1], args[2]))
 
 
 _STRUCTURED = {

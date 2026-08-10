@@ -33,43 +33,15 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from services.ingest.source_contract.source_catalog import source_ids
 
-# MUST stay in sync with RawEnvelope.SourceLiteral / INGESTION_SOURCES. A
-# missing source here is a latent crash: tenant_onboarding builds a
+# Expanded from the source-contract index. A missing source here is a latent
+# crash: tenant_onboarding builds a
 # `TenantOnboardingStarted(sources=[...])` progress event from the applicable
 # sources, and an omitted member (previously 'grafana') makes Pydantic raise a
 # literal_error that propagates out of the orchestrator tick and crashes the
 # worker — so onboarding a grafana tenant never completes.
-Source = Literal[
-    "slack",
-    "github",
-    "discord",
-    "gmail",
-    "notion",
-    "google_calendar",
-    "google_drive",
-    "jira",
-    "mercury",
-    "quickbooks",
-    "grafana",
-    "telegram",
-    "brex",
-    "ramp",
-    "gusto",
-    "deel",
-    "fireflies",
-    "signal",
-    "aws",
-    "miro",
-    "figma",
-    "carta",
-    "hibob",
-    "ashby",
-    "linkedin",
-    "whatsapp",
-    "facebook_pages",
-    "instagram",
-]
+Source = Literal[*source_ids()]
 
 
 class ProgressEventBase(BaseModel):
@@ -88,7 +60,7 @@ class ProgressEventBase(BaseModel):
     event_kind: str
     tenant_id: UUID
     emitted_at: dt.datetime = Field(
-        default_factory=lambda: dt.datetime.now(tz=dt.timezone.utc),
+        default_factory=lambda: dt.datetime.now(tz=dt.UTC),
     )
 
 

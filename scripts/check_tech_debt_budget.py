@@ -23,37 +23,27 @@ from scripts.report_tech_debt_metrics import TechDebtReport, build_report  # noq
 
 
 DEFAULT_FILE_LINE_BUDGETS = {
-    "services/reasoning/think/reconciler.py": 1492,
-    "services/reasoning/sage/outcome_evaluator.py": 1532,
-    "services/platform/execution/inquiry.py": 537,
+    "services/reasoning/think/reconciler.py": 1387,
+    "services/reasoning/sage/outcome_evaluator.py": 1476,
+    "services/platform/execution/inquiry.py": 493,
 }
 
 DEFAULT_FUNCTION_LINE_BUDGETS = {
-    "services/app/gateway/debug_router.py:build_debug_router": 83,
-    "services/app/gateway/finance_router.py:build_finance_router": 8,
+    "services/app/gateway/debug_router.py:build_debug_router": 78,
     "services/app/gateway/map_routes.py:_build_snapshot": 75,
-    "services/app/gateway/slack_router.py:build_slack_router": 9,
     "services/app/gateway/structure_router.py:build_structure_router": 25,
     "services/app/gateway/today_routes.py:register_today_routes": 21,
     "services/app/gateway/ceo_view_wiring.py:configure_ceo_view": 28,
-    "services/ingest/synthetic/backfill_harness/harness.py:_write_install_and_trigger": 43,
-    "services/ingest/synthetic/live_generators/hmac_webhook.py:_build_payload": 6,
-    "services/ingest/synthetic/mock_servers/google_workspace.py:_make_handler": 5,
-    "services/ingest/ingestion/writers/observation_writer.py:_handle_message": 158,
-    "services/ingest/ingestion/feature_flags/circuit_breaker.py:_process_tick": 42,
-    "services/ingest/ingestion/core.py:ingest_from_draft": 104,
-    "services/ingest/ingestion/workflows/shard_fetch.py:_run_fetch_loop": 106,
-    "services/ingest/integrations/gmail/fetcher.py:drain_mailbox_history": 86,
-    "services/ingest/synthetic/validation_runs/composition.py:build_live_drivers": 65,
-    "services/ingest/synthetic/validation_runs/run4_concurrent.py:run4": 112,
-    "scripts/run_discord_gateway_worker.py:_main": 74,
+    "services/ingest/ingestion/writers/observation_writer.py:_handle_message": 136,
+    "services/ingest/ingestion/core.py:ingest_from_draft": 69,
+    "services/ingest/ingestion/workflows/shard_fetch.py:_run_fetch_loop": 99,
     "services/domain/acts/commitments.py:create": 58,
     "services/domain/bridge/queries.py:revenue_at_risk": 38,
-    "services/domain/models/repo.py:_insert_core": 43,
+    "services/domain/models/repo.py:_insert_core": 35,
     "services/app/webhooks/router.py:_inline_ingest_response": 108,
     "services/app/webhooks/router.py:_receive_webhook": 85,
     "services/app/webhooks/router.py:build_webhooks_router": 30,
-    "services/app/gateway/recommendations_router.py:build_recommendations_router": 44,
+    "services/app/gateway/recommendations_router.py:build_recommendations_router": 38,
     "services/app/gateway/artifact_drawers.py:fetch_commitment_overlay": 56,
     "services/product/decision_deltas/router.py:build_router": 18,
     "services/product/forecasts/router.py:build_router": 18,
@@ -63,26 +53,26 @@ DEFAULT_FUNCTION_LINE_BUDGETS = {
     "services/reasoning/sage/cue_extractor.py:_extract_sync": 32,
     "services/reasoning/sage/evidence_projection.py:_rank_for_model": 65,
     "services/reasoning/contestability/service.py:contest_model": 44,
-    "services/reasoning/sage/outcome_evaluator.py:_evaluate": 195,
-    "services/reasoning/sage/reader.py:read": 203,
+    "services/reasoning/sage/outcome_evaluator.py:_evaluate": 194,
+    "services/reasoning/sage/reader.py:read": 179,
     "services/reasoning/think/applier.py:_apply_act_op": 24,
-    "services/reasoning/think/applier.py:_apply_claim_op": 39,
-    "services/reasoning/think/applier.py:apply_diff": 194,
-    "services/reasoning/think/reason.py:_run_once": 167,
+    "services/reasoning/think/applier.py:_apply_claim_op": 37,
+    "services/reasoning/think/applier.py:apply_diff": 149,
+    "services/reasoning/think/reason.py:_run_once": 143,
     "services/reasoning/think/reconciler.py:_reconcile_inner": 45,
     "services/reasoning/think/reason.py:think": 148,
-    "services/reasoning/think/context_use.py:summarize_context_use": 252,
-    "services/reasoning/think/validator.py:validate": 109,
+    "services/reasoning/think/context_use.py:summarize_context_use": 198,
+    "services/reasoning/think/validator.py:validate": 88,
     "services/reasoning/retrieval/assembler.py:assemble_context": 88,
-    "services/reasoning/retrieval/primary.py:primary_retrieve": 223,
+    "services/reasoning/retrieval/primary.py:primary_retrieve": 152,
     "services/reasoning/retrieval/pathways.py:pathway_b_semantic": 88,
     "services/reasoning/retrieval/pathways.py:pathway_a_structural": 129,
     "services/reasoning/retrieval/pathways.py:pathway_g_model_edges": 87,
     "benchmarks/adapters/stress10_adapter.py:__init__": 6,
     "scripts/run_storyline_batch_benchmark.py:run_benchmark": 101,
     "scripts/run_storyline_batch_benchmark.py:score_storylines": 34,
-    "scripts/run_storyline_batch_benchmark.py:_company_intelligence_scorecard": 80,
-    "scripts/run_storyline_batch_benchmark.py:_product_value_evals": 114,
+    "scripts/run_storyline_batch_benchmark.py:_company_intelligence_scorecard": 78,
+    "scripts/run_storyline_batch_benchmark.py:_product_value_evals": 110,
     "scripts/run_1000_signal_model_layer_probe.py:collect_model_layer_report": 46,
     "scripts/run_1000_signal_model_layer_probe.py:main": 55,
     "benchmarks/run_benchmark.py:main": 23,
@@ -106,13 +96,7 @@ FUNCTION_LINE_BUDGET_ARG_NAMES = {
     "services/app/gateway/debug_router.py:build_debug_router": (
         "max_debug_router_factory_lines"
     ),
-    "services/app/gateway/finance_router.py:build_finance_router": (
-        "max_finance_router_factory_lines"
-    ),
     "services/app/gateway/map_routes.py:_build_snapshot": "max_map_snapshot_lines",
-    "services/app/gateway/slack_router.py:build_slack_router": (
-        "max_slack_router_factory_lines"
-    ),
     "services/app/gateway/structure_router.py:build_structure_router": (
         "max_structure_router_factory_lines"
     ),
@@ -122,20 +106,8 @@ FUNCTION_LINE_BUDGET_ARG_NAMES = {
     "services/app/gateway/ceo_view_wiring.py:configure_ceo_view": (
         "max_ceo_view_wiring_lines"
     ),
-    "services/ingest/synthetic/backfill_harness/harness.py:_write_install_and_trigger": (
-        "max_backfill_install_dispatch_lines"
-    ),
-    "services/ingest/synthetic/live_generators/hmac_webhook.py:_build_payload": (
-        "max_hmac_webhook_payload_lines"
-    ),
-    "services/ingest/synthetic/mock_servers/google_workspace.py:_make_handler": (
-        "max_google_workspace_handler_lines"
-    ),
     "services/ingest/ingestion/writers/observation_writer.py:_handle_message": (
         "max_observation_writer_handle_message_lines"
-    ),
-    "services/ingest/ingestion/feature_flags/circuit_breaker.py:_process_tick": (
-        "max_circuit_breaker_process_tick_lines"
     ),
     "services/ingest/ingestion/core.py:ingest_from_draft": (
         "max_ingest_from_draft_lines"
@@ -143,16 +115,6 @@ FUNCTION_LINE_BUDGET_ARG_NAMES = {
     "services/ingest/ingestion/workflows/shard_fetch.py:_run_fetch_loop": (
         "max_shard_fetch_loop_lines"
     ),
-    "services/ingest/integrations/gmail/fetcher.py:drain_mailbox_history": (
-        "max_gmail_drain_history_lines"
-    ),
-    "services/ingest/synthetic/validation_runs/composition.py:build_live_drivers": (
-        "max_live_driver_composition_lines"
-    ),
-    "services/ingest/synthetic/validation_runs/run4_concurrent.py:run4": (
-        "max_run4_concurrent_lines"
-    ),
-    "scripts/run_discord_gateway_worker.py:_main": "max_discord_gateway_main_lines",
     "services/domain/acts/commitments.py:create": "max_commitment_create_lines",
     "services/domain/bridge/queries.py:revenue_at_risk": "max_revenue_at_risk_lines",
     "services/domain/models/repo.py:_insert_core": "max_model_insert_core_lines",
@@ -271,11 +233,9 @@ FUNCTION_LINE_BUDGET_ARG_NAMES = {
 
 @dataclass(frozen=True)
 class TechDebtBudget:
-    # Consolidation baseline: every retained feature is now measured by one
-    # ratchet. Follow-up changes may lower these ceilings but may not exceed them.
-    files_over_threshold: int = 54
-    functions_over_threshold: int = 65
-    classes_over_threshold: int = 25
+    files_over_threshold: int = 37
+    functions_over_threshold: int = 36
+    classes_over_threshold: int = 23
     import_linter_ignored_imports_total: int = 71
     file_line_budgets: Mapping[str, int] = field(
         default_factory=lambda: dict(DEFAULT_FILE_LINE_BUDGETS)
@@ -391,14 +351,14 @@ def check_budget(
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=Path, default=REPO_ROOT)
-    parser.add_argument("--max-files-over-threshold", type=int, default=54)
-    parser.add_argument("--max-functions-over-threshold", type=int, default=65)
-    parser.add_argument("--max-classes-over-threshold", type=int, default=25)
+    parser.add_argument("--max-files-over-threshold", type=int, default=37)
+    parser.add_argument("--max-functions-over-threshold", type=int, default=36)
+    parser.add_argument("--max-classes-over-threshold", type=int, default=23)
     parser.add_argument("--max-import-linter-ignored-imports", type=int, default=71)
-    parser.add_argument("--max-platform-inquiry-lines", type=int, default=537)
-    parser.add_argument("--max-outcome-evaluator-file-lines", type=int, default=1532)
-    parser.add_argument("--max-think-reconciler-file-lines", type=int, default=1492)
-    parser.add_argument("--max-debug-router-factory-lines", type=int, default=83)
+    parser.add_argument("--max-platform-inquiry-lines", type=int, default=493)
+    parser.add_argument("--max-outcome-evaluator-file-lines", type=int, default=1476)
+    parser.add_argument("--max-think-reconciler-file-lines", type=int, default=1387)
+    parser.add_argument("--max-debug-router-factory-lines", type=int, default=78)
     parser.add_argument("--max-finance-router-factory-lines", type=int, default=8)
     parser.add_argument("--max-map-snapshot-lines", type=int, default=75)
     parser.add_argument("--max-slack-router-factory-lines", type=int, default=9)
@@ -408,24 +368,24 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--max-backfill-install-dispatch-lines", type=int, default=43)
     parser.add_argument("--max-hmac-webhook-payload-lines", type=int, default=6)
     parser.add_argument("--max-google-workspace-handler-lines", type=int, default=5)
-    parser.add_argument("--max-observation-writer-handle-message-lines", type=int, default=158)
+    parser.add_argument("--max-observation-writer-handle-message-lines", type=int, default=136)
     parser.add_argument("--max-circuit-breaker-process-tick-lines", type=int, default=42)
-    parser.add_argument("--max-ingest-from-draft-lines", type=int, default=104)
-    parser.add_argument("--max-shard-fetch-loop-lines", type=int, default=106)
+    parser.add_argument("--max-ingest-from-draft-lines", type=int, default=69)
+    parser.add_argument("--max-shard-fetch-loop-lines", type=int, default=99)
     parser.add_argument("--max-gmail-drain-history-lines", type=int, default=86)
     parser.add_argument("--max-live-driver-composition-lines", type=int, default=65)
     parser.add_argument("--max-run4-concurrent-lines", type=int, default=112)
     parser.add_argument("--max-discord-gateway-main-lines", type=int, default=74)
     parser.add_argument("--max-commitment-create-lines", type=int, default=58)
     parser.add_argument("--max-revenue-at-risk-lines", type=int, default=38)
-    parser.add_argument("--max-model-insert-core-lines", type=int, default=43)
+    parser.add_argument("--max-model-insert-core-lines", type=int, default=35)
     parser.add_argument(
         "--max-webhook-inline-ingest-response-lines", type=int, default=108
     )
     parser.add_argument("--max-webhook-receive-lines", type=int, default=85)
     parser.add_argument("--max-webhooks-router-factory-lines", type=int, default=30)
     parser.add_argument(
-        "--max-recommendations-router-factory-lines", type=int, default=44
+        "--max-recommendations-router-factory-lines", type=int, default=38
     )
     parser.add_argument("--max-artifact-commitment-overlay-lines", type=int, default=56)
     parser.add_argument("--max-decision-deltas-router-lines", type=int, default=18)
@@ -436,26 +396,26 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--max-sage-cue-extractor-lines", type=int, default=32)
     parser.add_argument("--max-sage-evidence-rank-lines", type=int, default=65)
     parser.add_argument("--max-contestation-service-entrypoint-lines", type=int, default=44)
-    parser.add_argument("--max-outcome-evaluator-lines", type=int, default=195)
-    parser.add_argument("--max-sage-reader-read-lines", type=int, default=203)
+    parser.add_argument("--max-outcome-evaluator-lines", type=int, default=194)
+    parser.add_argument("--max-sage-reader-read-lines", type=int, default=179)
     parser.add_argument("--max-think-apply-act-op-lines", type=int, default=24)
-    parser.add_argument("--max-think-apply-claim-op-lines", type=int, default=39)
-    parser.add_argument("--max-think-apply-diff-lines", type=int, default=194)
-    parser.add_argument("--max-think-run-once-lines", type=int, default=167)
+    parser.add_argument("--max-think-apply-claim-op-lines", type=int, default=37)
+    parser.add_argument("--max-think-apply-diff-lines", type=int, default=149)
+    parser.add_argument("--max-think-run-once-lines", type=int, default=143)
     parser.add_argument("--max-think-reconcile-inner-lines", type=int, default=45)
     parser.add_argument("--max-think-entrypoint-lines", type=int, default=148)
-    parser.add_argument("--max-think-context-use-lines", type=int, default=252)
-    parser.add_argument("--max-think-validate-lines", type=int, default=109)
+    parser.add_argument("--max-think-context-use-lines", type=int, default=198)
+    parser.add_argument("--max-think-validate-lines", type=int, default=88)
     parser.add_argument("--max-assemble-context-lines", type=int, default=88)
-    parser.add_argument("--max-primary-retrieve-lines", type=int, default=223)
+    parser.add_argument("--max-primary-retrieve-lines", type=int, default=152)
     parser.add_argument("--max-pathway-b-semantic-lines", type=int, default=88)
     parser.add_argument("--max-pathway-a-structural-lines", type=int, default=129)
     parser.add_argument("--max-pathway-g-model-edges-lines", type=int, default=87)
     parser.add_argument("--max-stress10-adapter-init-lines", type=int, default=6)
     parser.add_argument("--max-storyline-run-benchmark-lines", type=int, default=101)
     parser.add_argument("--max-storyline-score-lines", type=int, default=34)
-    parser.add_argument("--max-company-intelligence-scorecard-lines", type=int, default=80)
-    parser.add_argument("--max-product-value-evals-lines", type=int, default=114)
+    parser.add_argument("--max-company-intelligence-scorecard-lines", type=int, default=78)
+    parser.add_argument("--max-product-value-evals-lines", type=int, default=110)
     parser.add_argument("--max-model-layer-report-lines", type=int, default=46)
     parser.add_argument("--max-model-layer-probe-main-lines", type=int, default=55)
     parser.add_argument("--max-benchmark-runner-main-lines", type=int, default=23)

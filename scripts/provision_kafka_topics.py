@@ -22,6 +22,7 @@ partition count, 1 on error. Existing topics with the wrong partition count are
 reported and left untouched; shrinking Kafka topics is destructive and growing
 them changes key placement, so deployment must make that decision explicitly.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -39,20 +40,18 @@ log = logging.getLogger("provision_kafka_topics")
 
 # Control-plane topics — NOT per-source (they carry per-tenant signals,
 # not per-source data). See docs/ingestion/source-isolation.md.
-CONTROL_PLANE_TOPICS = (
-    "ingestion.tenant_traffic_signal",
-)
+CONTROL_PLANE_TOPICS = ("ingestion.tenant_traffic_signal",)
 
 # Every topic the ingestion data plane uses: one per (stage, source)
 # lane derived from the source registry (source-isolation), plus the
 # control-plane topics. The registry is the single source of truth —
-# add a source to RawEnvelope.SourceLiteral and its four topics appear
+# add a source to source_contract/source-index.json and its four topics appear
 # here automatically. A test asserts this set matches the registry.
 INGESTION_TOPICS = tuple(all_data_plane_topics()) + CONTROL_PLANE_TOPICS
 
 # Platform egress topics (ADR-0004 E3.1) — provisioned alongside ingestion, kept
 # out of INGESTION_TOPICS so the source-registry parity test stays ingestion-scoped.
-from services.platform.extensions.egress.kafka import egress_topics  # noqa: E402
+from services.platform.extensions.egress.kafka import egress_topics
 
 ALL_TOPICS = INGESTION_TOPICS + tuple(egress_topics())
 
@@ -79,9 +78,8 @@ def _partition_count(description: object) -> int | None:
 def _topic_error(description: object) -> object | None:
     if isinstance(description, dict):
         return description.get("error_code") or description.get("error")
-    return (
-        getattr(description, "error_code", None)
-        or getattr(description, "error", None)
+    return getattr(description, "error_code", None) or getattr(
+        description, "error", None
     )
 
 
@@ -159,7 +157,9 @@ async def _provision() -> int:
                 pass
             log.info(
                 "created topics %s (partitions=%d replication=%d)",
-                missing, partitions, replication,
+                missing,
+                partitions,
+                replication,
             )
         # Verify.
         existing = set(await admin.list_topics())

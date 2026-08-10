@@ -239,7 +239,7 @@ async def _hint_from_body(
         if actor_resolver is not None:
             try:
                 actor_id = await actor_resolver.resolve_by_source_actor_ref(
-                    f"email:{addr}"
+                    f"email:{addr}", tenant_id
                 )
             except Exception:
                 actor_id = None
@@ -320,7 +320,7 @@ async def handle_email_webhook(
     if actor_resolver is not None:
         try:
             author_actor_id = await actor_resolver.resolve_by_source_actor_ref(
-                source_actor_ref
+                source_actor_ref, tenant_id
             )
         except Exception:
             author_actor_id = None
