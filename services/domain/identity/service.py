@@ -75,8 +75,8 @@ class IdentityResolutionService:
             assertion_id: UUID | None = None
             if (
                 persist_assertions
+                and decision.outcome == "resolved"
                 and decision.selected_ref is not None
-                and decision.outcome != "unresolved"
             ):
                 top = next(
                     item for item in ranked if item.candidate_ref == decision.selected_ref
@@ -148,9 +148,7 @@ class IdentityResolutionService:
             )
 
         status = (
-            "partial"
-            if any(item.outcome in {"ambiguous", "unresolved"} for item in items)
-            else "complete"
+            "complete" if items and all(item.outcome == "resolved" for item in items) else "partial"
         )
         snapshot = IdentityResolutionSnapshot.seal(
             id=uuid7(),

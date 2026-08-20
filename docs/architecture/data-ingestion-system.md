@@ -39,10 +39,10 @@ provider bytes
 Each step adds interpretation without deleting the prior representation. Uncertainty, contradictory claims, access restrictions, source revisions, and producer versions remain inspectable.
 
 ## 2. Whole-system architecture
-
 ```mermaid
 flowchart LR
-    subgraph EX[External systems]
+
+    subgraph EX[External Systems]
       API[Provider APIs]
       WH[Webhooks and watches]
       GW[Gateway streams]
@@ -50,6 +50,7 @@ flowchart LR
 
     subgraph P[Perception Plane]
       direction LR
+
       C1[1. Connector contract<br/>catalog and admission]
       C2[2. Installation authority<br/>secrets and lifecycle]
       C3[3. Acquisition runtime<br/>pull poll push stream reconcile]
@@ -63,8 +64,10 @@ flowchart LR
 
     subgraph IK[Identity and Knowledge Plane]
       direction LR
+
       C6[7. Provenance access and knowledge<br/>evidence spans and immutable claim sets]
       C7[6. Entity resolution<br/>references mentions candidates assertions]
+
       IS[(Immutable identity snapshot)]
       KS[(Immutable knowledge snapshot)]
 
@@ -74,8 +77,10 @@ flowchart LR
 
     subgraph S[Situation Plane]
       direction LR
+
       C8[8. Topic routing and membership<br/>include hold exclude]
       C9[9. Lifecycle contradictions and snapshots<br/>open dormant settled reopened]
+
       ES[(Settled episode snapshot)]
 
       KS --> C8
@@ -91,6 +96,7 @@ flowchart LR
 
     ES --> OUT[Episode snapshot outbox]
     OUT -. boundary only .-> R[Reasoning layer]
+
 ```
 
 Two control flows enter the Situation Plane:

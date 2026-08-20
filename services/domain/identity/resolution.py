@@ -99,10 +99,10 @@ class ResolutionDecision(_Contract):
 
     @model_validator(mode="after")
     def validate_selection(self) -> "ResolutionDecision":
-        if self.outcome in {"resolved", "probable"} and self.selected_ref is None:
+        if self.outcome == "resolved" and self.selected_ref is None:
             raise ValueError("resolved decisions require a selected ref")
-        if self.outcome == "unresolved" and self.selected_ref is not None:
-            raise ValueError("unresolved decisions cannot select a ref")
+        if self.outcome != "resolved" and self.selected_ref is not None:
+            raise ValueError("non-final decisions cannot expose a selected ref")
         return self
 
 
@@ -337,17 +337,15 @@ def decide_resolution(
         return ResolutionDecision(
             mention_id=mention.id,
             outcome="probable",
-            selected_ref=top.candidate_ref,
             confidence=top.score,
-            alternatives=alternatives,
+            alternatives=(top.candidate_ref, *alternatives),
             reasons=reasons,
         )
     return ResolutionDecision(
         mention_id=mention.id,
         outcome="ambiguous",
-        selected_ref=top.candidate_ref,
         confidence=top.score,
-        alternatives=tuple(item.candidate_ref for item in viable[1:]),
+        alternatives=tuple(item.candidate_ref for item in viable),
         reasons=(*reasons, "acceptance_margin_not_met"),
     )
 
@@ -360,6 +358,16 @@ class IdentitySnapshotItem(_Contract):
     assertion_id: UUID | None = None
     alternatives: tuple[dict[str, Any], ...] = ()
     reasons: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_final_authority(self) -> "IdentitySnapshotItem":
+        if self.outcome != "resolved" and (
+            self.selected_ref is not None or self.assertion_id is not None
+        ):
+            raise ValueError("non-final snapshot items cannot expose selection or assertion")
+        if self.outcome == "resolved" and self.selected_ref is None:
+            raise ValueError("resolved snapshot items require a selected ref")
+        return self
 
 
 class _SnapshotPayload(_Contract):
@@ -387,6 +395,15 @@ class _SnapshotPayload(_Contract):
             raise ValueError("non-query snapshots require an observation")
         if len({item.mention_id for item in self.items}) != len(self.items):
             raise ValueError("snapshot mentions must be unique")
+        expected_status = (
+            "complete"
+            if self.items and all(item.outcome == "resolved" for item in self.items)
+            else "partial"
+        )
+        if self.resolution_status != expected_status:
+            raise ValueError(
+                f"snapshot resolution status must be {expected_status} for its item outcomes"
+            )
         return self
 
 
