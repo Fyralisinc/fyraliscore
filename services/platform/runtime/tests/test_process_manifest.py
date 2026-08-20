@@ -65,9 +65,12 @@ def test_production_manifest_json_contains_compose_metadata() -> None:
     by_name = {row["name"]: row for row in rows}
 
     assert by_name["gateway"]["has_healthcheck"] is True
-    assert by_name["circuit_breaker"]["singleton"] is True
-    assert by_name["circuit_breaker"]["has_healthcheck"] is True
-    assert by_name["circuit_breaker"]["compose_service"] == "circuit_breaker"
+    assert by_name["source_connector_lifecycle"]["singleton"] is True
+    assert by_name["source_connector_lifecycle"]["has_healthcheck"] is True
+    assert (
+        by_name["source_connector_lifecycle"]["compose_service"]
+        == "source_connector_lifecycle"
+    )
     assert by_name["extension_workers"]["singleton"] is True
 
 

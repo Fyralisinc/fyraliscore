@@ -1,79 +1,10 @@
-"""services/ingest/ingestion/writers/observation_writer.py
-   — Observation writer with flag-branched full-mode.
+"""Contract-only normalized-envelope observation writer.
 
-History:
-  - M2.4: Path B no-op. Consumed `ingestion.normalized`, logged each
-    NormalizedEnvelope, appended a `ShadowWriteEvent` to an in-process
-    list. NO Postgres write. The inline `ingest()` was the source of
-    truth during the 48h zero-divergence soak.
-  - M5.2: full-mode transition. Per-envelope the writer reads
-    `ingestion.kafka_path_enabled` from `tenant_flags`. When TRUE,
-    the writer calls `services.ingest.ingestion.core.ingest_from_draft(...)`
-    to write the observation (the normalizer already ran the handler,
-    so the draft fields embedded in the envelope are used directly).
-    When FALSE, the writer preserves M2's shadow-log no-op behavior.
-  - Gate inversion: the default is now kafka-first. The writer reads
-    `tenant_flags.kafka_path_enabled()` (shared single-source default,
-    `KAFKA_PATH_ENABLED_DEFAULT=True`), so a tenant with NO flag row is
-    full-mode. Shadow-only now requires an EXPLICIT FALSE (operator /
-    circuit-breaker kill-switch). The ingress readers use the same helper,
-    so a publishing ingress can never pair with a shadow-logging writer
-    (that split would silently drop observations).
-
-============================================================
-PATH A — the writer is now Path A for full-mode tenants
-============================================================
-The M2.4 import-graph contract ("writer MUST NOT import asyncpg") is
-INTENTIONALLY LIFTED in M5.2. The writer now:
-  - Holds an asyncpg.Pool (pgbouncer-compatible — fifth activation
-    of `statement_cache_size=0` after M3.1, M3.3, M4.2, M5.1).
-  - Wires ActorRepo + EntityAliasRepo for actor/entity resolution
-    inside `ingest_from_draft`.
-  - Reads `tenant_flags` per envelope.
-
-The M2 e2e shadow test (`test_e2e_shadow.py`) exercises the shadow-log
-path by seeding `ingestion.kafka_path_enabled=FALSE` for its tenants
-(under the inverted default a missing row would instead take the
-full-mode write path).
-
-============================================================
-PER-ENVELOPE TRANSACTION + BATCHED CONSUME CONTRACT
-============================================================
-Each envelope still gets ONE call to `ingest_from_draft`, which opens
-its own transaction and preserves the existing DLQ / partition self-heal
-semantics. The writer can now batch-consume Kafka records and process
-independent tenant groups concurrently; offsets commit only after the
-whole batch reaches a definitive outcome. A crash before commit replays
-the batch, and the observation unique key dedups already-written rows.
-
-============================================================
-ERROR HANDLING
-============================================================
-  - Parse failure (NormalizedEnvelope.model_validate raises):
-    bump parse_failure, DLQ-publish, COMMIT offset. Same as M2.4.
-  - Full-mode permanent error (ValidationError, HandlerNotFound):
-    bump full_mode_failure, DLQ-publish, COMMIT offset.
-  - Full-mode transient error (any other Exception): retry in place,
-    then re-raise so the consumer loop exits, the supervisor restarts
-    the writer, and Kafka redelivers from the last committed offset.
-    F3: a DETERMINISTIC poison message would otherwise redeliver forever
-    (head-of-line-blocking the partition — and any backfill sharing the
-    key). A durable, restart-surviving give-up counter
-    (`writer_poison_attempts`, keyed by topic/partition/offset) routes the
-    message to the DLQ and COMMITs after `_POISON_MAX_DURABLE_ATTEMPTS`
-    cross-restart give-ups, so the partition advances.
-
-KILL-SWITCH / BACKFILL EXEMPTION (F1)
-============================================================
-The `kafka_path_enabled` flag is a LIVE cutover switch. When FALSE, live
-ingress falls back to inline `ingest()` and the writer shadow-logs to avoid
-double-writing. Backfill has NO inline fallback (`shard_fetch` always
-publishes `ingress_kind="backfill"` and advances its cursor on the
-broker-ack), so the writer ALWAYS persists backfill envelopes regardless of
-the flag — otherwise a flag flip mid-backfill would silently drop rows the
-shard cursor has already moved past. Backfill is single-path, so writing it
-unconditionally cannot double-write.
+Every envelope is persisted through ``ingest_from_draft``. Offsets advance
+only after a durable write, a dedup hit, or a deliberate DLQ decision. There
+is no alternate inline owner or runtime routing flag.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -88,6 +19,7 @@ from typing import Any
 import asyncpg
 from aiokafka import AIOKafkaConsumer
 
+from lib.observability.metrics import WRITER_SHADOW_DROP
 from lib.shared.backoff import exponential_backoff_seconds
 from lib.shared.db import configure_connection_timeouts
 from lib.shared.errors import ValidationError
@@ -99,15 +31,15 @@ from services.ingest.ingestion.core import (
     ingest_from_draft,
 )
 from services.ingest.ingestion.dlq.publish import publish_dlq
-from services.ingest.ingestion.feature_flags.client import (
-    TenantFlags,
-)
 from services.ingest.ingestion.handlers import (
     HandlerNotFound,
     ObservationDraft,
 )
 from services.ingest.ingestion.kafka.producer import IdempotentProducer, ProducerConfig
-from services.ingest.ingestion.kafka.shutdown import install_shutdown_event, next_or_stop
+from services.ingest.ingestion.kafka.shutdown import (
+    install_shutdown_event,
+    next_or_stop,
+)
 from services.ingest.ingestion.kafka.topics import consumer_group, subscribe_topics
 from services.ingest.ingestion.observability import (
     Heartbeat,
@@ -123,9 +55,7 @@ from services.domain.observations.partitions import ensure_partitions
 # Permanent errors are DLQ'd inside `_handle_message`; only transient/
 # unknown errors escape to the loop, so retrying them in place is safe
 # (the offset is not committed until the message succeeds).
-_TRANSIENT_MAX_ATTEMPTS = int(
-    os.environ.get("WRITER_TRANSIENT_MAX_ATTEMPTS", "5")
-)
+_TRANSIENT_MAX_ATTEMPTS = int(os.environ.get("WRITER_TRANSIENT_MAX_ATTEMPTS", "5"))
 _TRANSIENT_BACKOFF_BASE_S = float(
     os.environ.get("WRITER_TRANSIENT_BACKOFF_BASE_SEC", "0.5")
 )
@@ -183,7 +113,6 @@ _WRITER_GROUP = "observation-writer"
 # In-process metrics. M3 swaps to OTel Prometheus.
 _metrics: dict[str, float] = {
     "writer.messages_consumed": 0.0,
-    "writer.shadow_write_events": 0.0,
     "writer.full_mode_writes": 0.0,
     "writer.full_mode_dedup_hits": 0.0,
     "writer.full_mode_failures": 0.0,
@@ -204,12 +133,6 @@ _metrics: dict[str, float] = {
     "writer.dlq_publish.skipped": 0.0,
     "writer.batches_consumed": 0.0,
     "writer.batch_messages_consumed": 0.0,
-    # F2 — an envelope reached the shadow path and was DROPPED (no row, no
-    # DLQ, offset committed). Distinct from the benign `shadow_write_events`
-    # (which counts the legacy M2 soak no-op): a SUSTAINED nonzero here means
-    # ingress is publishing while the writer shadow-logs — silent data loss /
-    # ingress↔writer drift. Alert-worthy.
-    "writer.shadow_drop": 0.0,
     # F3 — a transient/unknown-error message exceeded the durable poison cap
     # and was routed to the DLQ so the partition could advance. Any nonzero
     # value warrants a look (a real poison message, or a > cap outage).
@@ -294,6 +217,12 @@ async def _record_shadow_event(env: NormalizedEnvelope) -> None:
     # logged at ERROR as defense-in-depth for F1's invariant.
     is_backfill = event.ingress_kind == "backfill"
     _bump("writer.shadow_drop")
+    # BYOC §12 G6 — promote this silent-data-loss log line to a fleet-scraped
+    # counter (the in-process `_metrics` dict above resets on restart and is
+    # not a real Prometheus family). ingress_kind label lets the control plane
+    # alert hard on backfill (invariant violation) vs. tolerate live (the
+    # inline path persists those when kafka_path_enabled is FALSE).
+    WRITER_SHADOW_DROP.inc(ingress_kind=event.ingress_kind)
     (log.error if is_backfill else log.warning)(
         "writer.shadow_drop",
         extra={
@@ -338,6 +267,8 @@ def _draft_from_envelope(env: NormalizedEnvelope) -> ObservationDraft:
         entities_hint=list(env.entities_hint),
         unresolved_phrases=[],
         raw_payload=None,
+        artifact_descriptors=list(env.artifact_descriptors),
+        source_object=env.source_object,
     )
 
 
@@ -370,6 +301,19 @@ async def _full_mode_write(
         summarization_producer=summarization_producer,
         raw_s3_key=env.raw_s3_key,
         ingress_kind=env.ingress_kind,
+        evidence_context={
+            "source": env.source,
+            "connector_installation_id": env.connector_installation_id,
+            "content_hash": env.content_hash,
+            "raw_ingested_at": env.raw_ingested_at,
+            "normalized_at": env.normalized_at,
+            "ingress_metadata": dict(env.ingress_metadata),
+            "idem_hints": dict(env.idem_hints),
+            "contract_version": env.envelope_version,
+            "connector_version": env.connector_version,
+            "parser_version": env.parser_version,
+            "normalizer_version": env.normalizer_version,
+        },
     )
     if result.deduped:
         _bump("writer.full_mode_dedup_hits")
@@ -428,7 +372,9 @@ async def _attempt_partition_self_heal(
     # race and surfacing DuplicateTableError despite IF NOT EXISTS.
     try:
         created = await ensure_partitions(
-            config.pool, as_of=occurred.date(), months_ahead=0,
+            config.pool,
+            as_of=occurred.date(),
+            months_ahead=0,
         )
     except asyncpg.exceptions.DuplicateTableError:
         created = []  # another writer created it first — treat as success
@@ -475,10 +421,7 @@ async def make_writer_pool(
     full-mode Postgres writes. `statement_cache_size=0` per the
     M1.3 ADR Q1 pgbouncer-transaction-mode contract.
 
-    Mirrors the M5.1 circuit-breaker pool init at
-    `services/ingest/ingestion/feature_flags/circuit_breaker.py::make_breaker_pool`
-    and the M4.2 session-state pool at
-    `services/ingest/integrations/discord/gateway/session_state.py::make_session_state_pool`.
+    Uses the same transaction-pool settings as the connector workflow pools.
     """
     return await asyncpg.create_pool(
         dsn,
@@ -511,12 +454,9 @@ class WriterConfig:
     # M3.1 — producer config for DLQ publishes + embedding-pending
     # publishes (same producer instance, different topics).
     dlq_producer_config: ProducerConfig | None = None
-    # M5.2 — Path A deps for full-mode envelopes. When `pool` is
-    # None, the writer stays in shadow-only mode for every envelope
-    # (matches M2.4 behaviour; useful for tests that don't want a
-    # DB).
+    # Durable persistence dependencies. A missing pool is a startup/runtime
+    # error; there is no shadow or alternate writer mode.
     pool: asyncpg.Pool | None = None
-    tenant_flags: TenantFlags | None = None
     actor_repo: ActorRepo | None = None
     alias_repo: EntityAliasRepo | None = None
     embedder: Any = None
@@ -719,40 +659,8 @@ async def _handle_message(
         )
         return
 
-    # ---- Flag-branched write ----
-    should_full_mode = False
-    if config.pool is not None:
-        if env.ingress_kind == "backfill":
-            # F1 — backfill is ALWAYS persisted, regardless of the kill-switch.
-            # The `kafka_path_enabled` flag is a LIVE cutover switch: when an
-            # operator / the circuit-breaker flips it FALSE, live ingress falls
-            # back to the inline `ingest()` path (so live data is still
-            # written) and the writer shadow-logs to avoid double-writing it.
-            # Backfill has NO inline fallback — `shard_fetch` publishes
-            # `ingress_kind="backfill"` straight to Kafka with no flag check and
-            # advances its shard cursor on the broker-ack. So a FALSE flag would
-            # make the writer shadow-DROP backfill (no row, no DLQ, offset
-            # committed, cursor already past it) — silent, success-shaped,
-            # unrecoverable data loss. Backfill is strictly single-path
-            # (shard_fetch → Kafka → normalizer → writer; the inline
-            # ingest()/ingest_from_draft() paths are live-only), so always
-            # writing it here can never double-write.
-            should_full_mode = True
-        elif config.tenant_flags is not None:
-            # Live ingress. Inverted default (kafka-first): a tenant with no
-            # flag row is full-mode. Only an explicit FALSE (operator /
-            # circuit-breaker kill-switch) keeps the writer in shadow-only mode.
-            # MUST read through `kafka_path_enabled()` — the same single-source
-            # default the ingress readers use — so the two ends never drift
-            # (ingress publishing while the writer shadow-logs would silently
-            # drop observations).
-            should_full_mode = await config.tenant_flags.kafka_path_enabled(
-                env.tenant_id,
-            )
-
-    if not should_full_mode:
-        await _record_shadow_event(env)
-        return
+    if config.pool is None:
+        raise RuntimeError("contract observation writer requires DATABASE_URL")
 
     try:
         summarization_producer = config.summarization_producer or embedding_producer
@@ -791,8 +699,7 @@ async def _handle_message(
         if exc.constraint_name is not None:
             raise
         occurred = (
-            env.occurred_at.isoformat()
-            if env.occurred_at is not None else "<none>"
+            env.occurred_at.isoformat() if env.occurred_at is not None else "<none>"
         )
         try:
             status = await _attempt_partition_self_heal(
@@ -887,14 +794,14 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
                     break
                 consumed += 1
                 await _handle_message_with_retry(
-                    msg, config=config, dlq_producer=dlq_producer,
-                    embedding_producer=embedding_producer, stop_event=stop_event,
+                    msg,
+                    config=config,
+                    dlq_producer=dlq_producer,
+                    embedding_producer=embedding_producer,
+                    stop_event=stop_event,
                 )
                 await consumer.commit()
-                if (
-                    config.stop_after is not None
-                    and consumed >= config.stop_after
-                ):
+                if config.stop_after is not None and consumed >= config.stop_after:
                     break
         else:
             sem = asyncio.Semaphore(max(1, config.max_batch_concurrency))
@@ -929,10 +836,7 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
                 for partition_messages in batches.values():
                     messages.extend(partition_messages)
                 if not messages:
-                    if (
-                        config.stop_after is not None
-                        and consumed >= config.stop_after
-                    ):
+                    if config.stop_after is not None and consumed >= config.stop_after:
                         break
                     continue
 
@@ -960,10 +864,7 @@ async def run_writer(config: WriterConfig) -> dict[str, int]:
                 # observation-level dedup handles already-inserted rows.
                 await consumer.commit()
 
-                if (
-                    config.stop_after is not None
-                    and consumed >= config.stop_after
-                ):
+                if config.stop_after is not None and consumed >= config.stop_after:
                     break
     finally:
         ticker.cancel()
@@ -1015,7 +916,10 @@ async def _bump_durable_poison_attempts(
             return int(
                 await conn.fetchval(
                     _POISON_BUMP_SQL,
-                    msg.topic, int(msg.partition), int(msg.offset), last_error,
+                    msg.topic,
+                    int(msg.partition),
+                    int(msg.offset),
+                    last_error,
                 )
             )
     except Exception as exc:  # noqa: BLE001 — bookkeeping must never crash the writer
@@ -1044,7 +948,9 @@ async def _clear_durable_poison_attempts(config: WriterConfig, msg: Any) -> None
         async with config.pool.acquire() as conn:
             await conn.execute(
                 _POISON_CLEAR_SQL,
-                msg.topic, int(msg.partition), int(msg.offset),
+                msg.topic,
+                int(msg.partition),
+                int(msg.offset),
             )
     except Exception as exc:  # noqa: BLE001
         log.warning(
@@ -1103,7 +1009,8 @@ async def _handle_message_with_retry(
                 # non-shutdown give-up counts toward the durable poison cap.
                 if not stop_event.is_set():
                     durable = await _bump_durable_poison_attempts(
-                        config, msg,
+                        config,
+                        msg,
                         last_error=f"{type(exc).__name__}: {str(exc)[:200]}",
                     )
                     if 0 < _POISON_MAX_DURABLE_ATTEMPTS <= durable:
@@ -1184,7 +1091,8 @@ def main() -> None:
         group = os.environ.get("WRITER_CONSUMER_GROUP", _WRITER_GROUP)
         config = WriterConfig(
             bootstrap_servers=os.environ.get(
-                "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
+                "KAFKA_BOOTSTRAP_SERVERS",
+                "localhost:9092",
             ),
             consumer_group=group,
             source=source,
@@ -1202,7 +1110,6 @@ def main() -> None:
                 consumer_group=config.consumer_group,
                 source=source,
                 pool=pool,
-                tenant_flags=TenantFlags(pool),
                 actor_repo=ActorRepo(pool),
                 alias_repo=EntityAliasRepo(pool),
                 # `embedder` defaults to None — observations land at
@@ -1210,9 +1117,7 @@ def main() -> None:
                 # worker (or M3.3 backlog drainer) picks them up.
                 embedder=None,
                 batch_size=int(os.environ.get("WRITER_BATCH_SIZE", "1")),
-                batch_timeout_ms=int(
-                    os.environ.get("WRITER_BATCH_TIMEOUT_MS", "500")
-                ),
+                batch_timeout_ms=int(os.environ.get("WRITER_BATCH_TIMEOUT_MS", "500")),
                 max_batch_concurrency=int(
                     os.environ.get("WRITER_MAX_CONCURRENCY", "1")
                 ),
@@ -1222,8 +1127,7 @@ def main() -> None:
             finally:
                 await pool.close()
         else:
-            # No DSN — run in pure shadow mode (matches M2.4).
-            await run_writer(config)
+            raise RuntimeError("contract observation writer requires DATABASE_URL")
 
     asyncio.run(_run())
 
@@ -1233,13 +1137,10 @@ if __name__ == "__main__":  # pragma: no cover - process entrypoint
 
 
 __all__ = [
-    "ShadowWriteEvent",
     "WriterConfig",
     "get_metrics",
-    "get_shadow_log",
     "main",
     "make_writer_pool",
     "reset_metrics",
-    "reset_shadow_log",
     "run_writer",
 ]

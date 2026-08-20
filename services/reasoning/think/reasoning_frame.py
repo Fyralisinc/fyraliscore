@@ -341,6 +341,33 @@ def reasoning_job_from_trigger(trigger: TriggerContext) -> ReasoningJob:
             },
         )
     if trigger.kind == "T4":
+        if trigger.subkind == "representation_repair":
+            return _internal_reflection_job(
+                trigger,
+                source="representation_audit",
+                intent="repair_representation_gap",
+                priority=(
+                    "truth_maintenance",
+                    "evidence_grounding",
+                    "memory_quality",
+                ),
+                allowed_ops=(
+                    "claim_ops",
+                    "memory_lifecycle_ops",
+                    "relation_claim_ops",
+                    "relation_frame_ops",
+                    "edge_ops",
+                ),
+                budget={
+                    "claim_ops": 2,
+                    "memory_lifecycle_ops": 2,
+                    "relation_claim_ops": 2,
+                    "relation_frame_ops": 1,
+                    "edge_ops": 2,
+                    "act_ops": 0,
+                    "resource_ops": 0,
+                },
+            )
         if trigger.subkind == "latent_relationship_candidate":
             return _internal_reflection_job(
                 trigger,

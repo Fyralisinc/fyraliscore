@@ -14,6 +14,11 @@ from uuid import UUID
 
 import asyncpg
 
+from services.domain.projections.repo import ProjectionRecord, ProjectionRepo
+
+
+_PROJECTIONS = ProjectionRepo()
+
 
 @dataclass(frozen=True)
 class ActorOperatingContext:
@@ -131,6 +136,11 @@ async def load_actor_operating_context(
         ref,
     )
     obs_counts = {r["actor_id"]: int(r["n"]) for r in observation_rows}
+    profile_snapshots = await _load_employee_profile_snapshots(
+        conn,
+        tenant_id=tenant_id,
+        actor_ids=ids,
+    )
 
     out: list[ActorOperatingContext] = []
     for actor_id in ids:
@@ -183,11 +193,29 @@ async def load_actor_operating_context(
                 f"owns {len(actor_commitments)} active commitments in current context"
             )
 
+        profile = profile_snapshots.get(actor_id)
+        if profile is not None and profile.source_model_ids:
+            projected = _projected_context_lists(profile)
+            capabilities = projected["capabilities"]
+            constraints = projected["constraints"]
+            support_needs = [
+                *projected["support_needs"],
+                *support_needs,
+            ]
+            risk_factors = projected["risk_factors"]
+            relationship_context = projected["relationship_context"]
+            profile_model_ids = tuple(profile.source_model_ids)
+            active_model_count = len(profile_model_ids)
+            model_ids = profile_model_ids[:max_models_per_actor]
+        else:
+            active_model_count = len(actor_models)
+            model_ids = tuple(r["id"] for r in actor_models)
+
         out.append(
             ActorOperatingContext(
                 actor_id=actor_id,
                 display_name=names.get(actor_id),
-                active_model_count=len(actor_models),
+                active_model_count=active_model_count,
                 recent_observation_count=obs_counts.get(actor_id, 0),
                 active_commitment_count=len(actor_commitments),
                 blocked_commitment_count=len(blocked),
@@ -198,7 +226,7 @@ async def load_actor_operating_context(
                 relationship_context=tuple(
                     dict.fromkeys(relationship_context[:5])
                 ),
-                model_ids=tuple(r["id"] for r in actor_models),
+                model_ids=model_ids,
                 commitment_ids=tuple(r["id"] for r in actor_commitments),
             )
         )
@@ -248,6 +276,77 @@ def _model_line(row: asyncpg.Record) -> str:
     )
 
 
+async def _load_employee_profile_snapshots(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    actor_ids: tuple[UUID, ...],
+) -> dict[UUID, ProjectionRecord]:
+    out: dict[UUID, ProjectionRecord] = {}
+    for actor_id in actor_ids:
+        snapshot = await _PROJECTIONS.get_snapshot(
+            conn,
+            tenant_id=tenant_id,
+            projection_name="employee_profiles",
+            subject_key=f"employee:{actor_id}:profile",
+        )
+        if snapshot is not None:
+            out[actor_id] = snapshot
+    return out
+
+
+def _projected_context_lists(profile: ProjectionRecord) -> dict[str, list[str]]:
+    facets = profile.payload.get("facets")
+    if not isinstance(facets, dict):
+        facets = {}
+    return {
+        "capabilities": _profile_facet_lines(facets, "capabilities"),
+        "constraints": [
+            *_profile_facet_lines(facets, "patterns"),
+            *_profile_facet_lines(facets, "constraints"),
+        ],
+        "support_needs": _profile_facet_lines(facets, "support_needs"),
+        "risk_factors": _profile_facet_lines(facets, "risk_factors"),
+        "relationship_context": [
+            *_profile_facet_lines(facets, "work_style"),
+            *_profile_facet_lines(facets, "relationships"),
+        ],
+    }
+
+
+def _profile_facet_lines(
+    facets: dict[str, Any],
+    name: str,
+    *,
+    limit: int = 5,
+) -> list[str]:
+    values = facets.get(name)
+    if not isinstance(values, list):
+        return []
+    return [
+        line
+        for line in (_profile_card_line(card) for card in values[:limit])
+        if line
+    ]
+
+
+def _profile_card_line(card: Any) -> str | None:
+    if not isinstance(card, dict):
+        return None
+    natural = str(card.get("natural") or "").strip()
+    model_id = str(card.get("model_id") or "").strip()
+    role = str(card.get("claim_role") or "model").strip()
+    try:
+        confidence = float(card.get("confidence"))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if not natural:
+        return None
+    if model_id:
+        return f"model {model_id} ({role}, conf={confidence:.2f}): {natural}"
+    return f"{role} (conf={confidence:.2f}): {natural}"
+
+
 def _looks_like_constraint(text: str) -> bool:
     return any(
         token in text
@@ -274,6 +373,10 @@ def _looks_like_support_need(text: str) -> bool:
             "needs support",
             "needs help",
             "needs decision",
+            "needs clarity",
+            "needs owner",
+            "needs ownership",
+            "ownership clarity",
             "waiting on",
             "blocked",
             "unblock",

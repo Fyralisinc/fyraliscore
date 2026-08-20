@@ -20,7 +20,6 @@ from hypothesis import strategies as st
 
 from lib.shared.errors import CompanyOSError, ValidationError
 from services.ingest.ingestion.handlers.email import handle_email_webhook
-from services.ingest.ingestion.handlers.github import handle_github_webhook
 from services.ingest.ingestion.handlers.linear import handle_linear_webhook
 
 
@@ -40,21 +39,6 @@ _json_value = st.recursive(
     ),
     max_leaves=12,
 )
-
-
-@settings(max_examples=40, suppress_health_check=[HealthCheck.function_scoped_fixture])
-@given(payload=_json_value)
-async def test_github_fuzz_never_raises_unhandled(payload):
-    if not isinstance(payload, dict):
-        # The handler only accepts dicts; callers translate non-dicts
-        # to a 400 at the Gateway. Skip those here.
-        return
-    try:
-        await handle_github_webhook(payload, {"X-GitHub-Event": "pull_request"})
-    except (ValidationError, CompanyOSError, TypeError, AttributeError):
-        # All acceptable failure modes — structured errors or predictable
-        # downstream type errors (never an unhandled generic Exception).
-        pass
 
 
 @settings(max_examples=40, suppress_health_check=[HealthCheck.function_scoped_fixture])
@@ -82,25 +66,6 @@ async def test_email_fuzz_never_raises_unhandled(payload):
 # =====================================================================
 # External-id stability → dedup across calls
 # =====================================================================
-
-async def test_github_pr_merge_external_id_stable():
-    payload = {
-        "action": "closed",
-        "pull_request": {
-            "number": 1, "title": "t", "node_id": "PR_same",
-            "merged": True, "base": {"ref": "main"},
-        },
-        "repository": {"full_name": "acme/r"},
-        "sender": {"login": "alice"},
-    }
-    d1 = await handle_github_webhook(
-        payload, {"X-GitHub-Event": "pull_request"}
-    )
-    d2 = await handle_github_webhook(
-        payload, {"X-GitHub-Event": "pull_request"}
-    )
-    assert d1.external_id == d2.external_id == "PR_same"
-
 
 async def test_linear_issue_external_id_stable():
     payload = {
@@ -143,18 +108,11 @@ async def test_handlers_do_not_touch_tenant_fields_directly():
     from services.ingest.ingestion.handlers import ObservationDraft
 
     payload = {
-        "action": "closed",
-        "pull_request": {
-            "number": 1, "title": "t", "node_id": "PR_t",
-            "merged": True, "base": {"ref": "main"},
-        },
-        "repository": {"full_name": "acme/r"},
-        "sender": {"login": "alice"},
+        "action": "create",
+        "type": "Issue",
+        "data": {"id": "issue-uuid", "identifier": "ENG-1", "title": "x"},
     }
-    draft = await handle_github_webhook(
-        payload,
-        {"X-GitHub-Event": "pull_request", "X-Tenant-Id": "some-value"},
-    )
+    draft = await handle_linear_webhook(payload, {"X-Tenant-Id": "some-value"})
     assert isinstance(draft, ObservationDraft)
     assert not hasattr(draft, "tenant_id")
     # Nor any content field that would surface the tenant header.

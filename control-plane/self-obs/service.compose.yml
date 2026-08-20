@@ -1,0 +1,133 @@
+# =============================================================================
+# control-plane / self-obs / service.compose.yml  —  WS-SELFOBS (NFR-10)
+# -----------------------------------------------------------------------------
+# Standalone compose fragment. The Assemble step merges these two services into
+# the master docker-compose.control-plane.yml. Do NOT edit the master file here.
+#
+# WHAT THIS ADDS
+#   cp-self-obs-exporter  the ACTIVE prober (cp_exporter.py): probes every CP
+#                         service's health/readiness on each scrape, exposes
+#                         up/latency + the ingest-path-alive synthetic + the
+#                         silence heartbeat on :9110/metrics.
+#   cp-prometheus         a DEDICATED Prometheus that scrapes the exporter (and
+#                         mimir/loki/grafana /metrics directly), loads cp_rules.yml,
+#                         and pages on control-plane silence. Separate from any
+#                         fleet/customer metrics path so it can detect that the
+#                         fleet path itself is what is down.
+#
+# WHY DEDICATED (not central Mimir): you cannot use the system you are watching
+# to tell you that system is down. The CP self-monitor is intentionally a small,
+# independent Prometheus that survives a full Mimir/fleet-pipeline outage.
+#
+# Networks/volumes (cp-net, etc.) are declared in the master compose; referenced
+# here as external-by-merge. If running this fragment STANDALONE for a smoke
+# test, uncomment the `networks:` block at the bottom and the per-service host
+# port publishes, and create the network first:  docker network create cp-net
+#
+# ASSEMBLE NOTES
+#   * Add a `cp-self-obs-data:` named volume to the master `volumes:` block (the
+#     prometheus TSDB persists across restarts).
+#   * To wire the dashboard, provision a Grafana datasource named/uid
+#     `fyralis-cp-prometheus` pointing at http://cp-prometheus:9090 and drop
+#     dashboards/cp_self.json under grafana/dashboards/ (a `control-plane`
+#     provider, or reuse Fleet). The dashboard's ${DS_CP} input binds to it.
+#   * auth-proxy is mTLS-only, so it is NOT a direct prometheus target — its
+#     liveness comes via the exporter. To upgrade the ingest synthetic from
+#     STRUCTURAL to FULLPUSH, mount a tenant client cert/key into the exporter
+#     and set CP_SELFOBS_CLIENT_CERT / CP_SELFOBS_CLIENT_KEY (see README).
+# =============================================================================
+
+services:
+  # --- the active prober --------------------------------------------------
+  cp-self-obs-exporter:
+    build:
+      # Self-contained: build context is THIS dir, not the control-plane root.
+      context: ./self-obs
+      dockerfile: Dockerfile
+    image: fyralis/cp-self-obs
+    container_name: cp-self-obs-exporter
+    environment:
+      CP_SELFOBS_LISTEN_HOST: "0.0.0.0"
+      CP_SELFOBS_LISTEN_PORT: "9110"
+      CP_SELFOBS_PROBE_TIMEOUT_S: "5"
+      # CP service endpoints (defaults already match the cp-net service DNS;
+      # listed here for visibility/override).
+      CP_AUTHPROXY_HOST: "auth-proxy"
+      CP_AUTHPROXY_PORT: "8443"
+      CP_MIMIR_URL: "http://mimir:9009/ready"
+      CP_LOKI_URL: "http://loki:3100/ready"
+      CP_GRAFANA_URL: "http://grafana:3000/api/health"
+      CP_CONSOLE_URL: "http://console:8080/healthz"
+      CP_CONFIGDIST_URL: "http://config-dist:8090/healthz"
+      CP_RELEASE_URL: "http://release-registry:8090/healthz"
+      # --- OPTIONAL: full-push ingest synthetic (mounts below, off by default) ---
+      # CP_SELFOBS_CLIENT_CERT: "/run/selfobs/client.crt"
+      # CP_SELFOBS_CLIENT_KEY:  "/run/selfobs/client.key"
+      # CP_SELFOBS_CA_CHAIN:    "/run/selfobs/ca-chain.crt"
+    # OPTIONAL client cert mount to upgrade the synthetic to FULLPUSH (read-only,
+    # a real tenant cert issued by ca/issue_cert.py). Off by default; the
+    # structural synthetic needs no secret.
+    # volumes:
+    #   - ./self-obs/selfobs-client:/run/selfobs:ro
+    ports:
+      # Operator-local convenience; on cp-net it is cp-self-obs-exporter:9110.
+      - "9110:9110"
+    networks:
+      - cp-net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9110/metrics',timeout=3).status==200 else 1)"
+      interval: 20s
+      timeout: 4s
+      retries: 3
+      start_period: 10s
+
+  # --- the dedicated CP-self Prometheus -----------------------------------
+  cp-prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: cp-prometheus
+    command:
+      - --config.file=/etc/prometheus/cp-prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # Short retention: this is an operational watchdog, not long-term storage.
+      - --storage.tsdb.retention.time=15d
+      - --web.enable-lifecycle
+      - --web.listen-address=0.0.0.0:9090
+    volumes:
+      - ./self-obs/cp-prometheus.yml:/etc/prometheus/cp-prometheus.yml:ro
+      - ./self-obs/cp_rules.yml:/etc/prometheus/cp_rules.yml:ro
+      - cp-self-obs-data:/prometheus
+    ports:
+      # Operator-local convenience; on cp-net it is cp-prometheus:9090.
+      - "9091:9090"
+    networks:
+      - cp-net
+    depends_on:
+      - cp-self-obs-exporter
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+# --- standalone-only scaffolding (uncomment to run THIS fragment alone) ------
+# When merged into the master compose these are declared centrally; do NOT
+# duplicate them there.
+#
+# networks:
+#   cp-net:
+#     driver: bridge
+#
+# volumes:
+#   cp-self-obs-data:
+
+# When MERGED into the master compose, add to its top-level `volumes:` block:
+#   cp-self-obs-data:
+volumes:
+  cp-self-obs-data:

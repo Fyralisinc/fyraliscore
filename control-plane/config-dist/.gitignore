@@ -1,0 +1,9 @@
+# Runtime data: the signed-config store + the signing home (PRIVATE KEY material).
+# Never commit: the signing home holds the ed25519 private key used to sign configs,
+# and the store holds generated per-deployment versions. Both are reproducible.
+_data/
+*.private.pem
+
+# python
+__pycache__/
+*.pyc

@@ -6,11 +6,11 @@ Spec reference: ARCHITECTURE-FINAL.md §8 "Primary pathway resolver",
 BUILD-PLAN §4 Prompt 3.A item 2.
 
 Per-trigger pathway mix:
-  - T1 (new signal)          : A + B + C + G
-  - T2 (prediction due)      : A + B + D + G
-  - T3 (anomaly)             : A + B + C + G
-  - T4 (background/pattern)  : D + A + G
-  - T6 (legacy topology row) : A + B + G
+  - T1 (new signal)          : A + B + L + C + G
+  - T2 (prediction due)      : A + B + L + D + G
+  - T3 (anomaly)             : A + B + L + C + G
+  - T4 (background/pattern)  : D + A + L + G
+  - T6 (legacy topology row) : A + B + L + G
 
 Ranking: each item (Model, Observation, etc.) is scored with
 `pathway_weight * position_decay(position)`. The same Model surfacing
@@ -31,6 +31,8 @@ scoring is trigger-dependent. PathwayResult itself is trigger-agnostic.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import math
 import json
 import time
@@ -41,7 +43,12 @@ from uuid import UUID
 
 import asyncpg
 
-from lib.embeddings.ollama import OllamaClient
+from lib.embeddings.mode import seed_from_stored_obs_vector, shadow_compare_seed
+from lib.embeddings.ollama import (
+    OllamaClient,
+    OllamaDimensionMismatch,
+    OllamaError,
+)
 from lib.shared.errors import CompanyOSError, ValidationError
 from lib.shared.types import (
     CommitmentRow,
@@ -53,6 +60,12 @@ from lib.shared.types import (
 )
 
 from services.domain.models.repo import ModelsRepo
+from services.reasoning.sage.retrieval_policy import (
+    SageRetrievalPolicy,
+    SageRouteUtility,
+    plan_primary_retrieval,
+    summarize_primary_observation,
+)
 
 from .config import CONFIG, RetrievalConfig
 from .pathways import (
@@ -64,10 +77,63 @@ from .pathways import (
     pathway_c_temporal,
     pathway_d_pattern,
     pathway_g_model_edges,
+    pathway_l_semantic_terms,
 )
+from .projection_pathway import pathway_projection_context
+from .read_fanout import ReadFanoutBudget
 from .scoring import merge_and_rank_rrf
 
 from lib.observability import counter, histogram
+
+logger = logging.getLogger(__name__)
+
+# Shadow-mode parity gauge: cosine between the persisted obs seed vector and an
+# on-demand re-embed of the same content_text. A distribution near 1.0 confirms
+# the lazy seed (cutover) reproduces the stored vector's ANN neighbours.
+_SHADOW_SEED_COSINE = histogram(
+    "retrieval_obs_seed_shadow_cosine",
+    "Cosine(persisted obs seed vector, on-demand re-embed of content_text).",
+    (),
+)
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = na = nb = 0.0
+    for x, y in zip(a, b):
+        fx = float(x)
+        fy = float(y)
+        dot += fx * fy
+        na += fx * fx
+        nb += fy * fy
+    if na <= 0.0 or nb <= 0.0:
+        return 0.0
+    return dot / ((na**0.5) * (nb**0.5))
+
+
+async def _shadow_compare_seed_vector(
+    *,
+    embedder: OllamaClient,
+    stored: list[float],
+    seed_text: str,
+    notes: dict[str, Any],
+) -> None:
+    """Measure how close an on-demand re-embed is to the persisted seed vector.
+
+    Shadow mode only: does not affect retrieval. Records the cosine into the
+    pathway notes (persisted in the retrieval audit) and a Prometheus histogram.
+    """
+    try:
+        reembed = await embedder.embed(seed_text)
+    except (OllamaError, OllamaDimensionMismatch) as exc:
+        notes["shadow_seed_error"] = str(exc)
+        return
+    if len(reembed) != len(stored):
+        notes["shadow_seed_dim_mismatch"] = [len(stored), len(reembed)]
+        return
+    cos = _cosine_similarity(stored, reembed)
+    notes["shadow_seed_cosine"] = cos
+    _SHADOW_SEED_COSINE.observe(cos)
+    logger.info("obs_embedding_shadow_seed_cosine=%.6f dim=%d", cos, len(stored))
 
 
 TriggerKind = Literal["T1", "T2", "T3", "T4", "T6"]
@@ -154,7 +220,7 @@ def _append_pathway_timing(
             note[key] = value
     timings.append(note)
     # Prometheus twin of the debug-notes timing. `stage` is a bounded
-    # literal set (derive_scope, pathway_A..G, merge/rank stages).
+    # literal set (derive_scope, pathway_A..L, merge/rank stages).
     _STAGE_DURATION.observe(elapsed_ms / 1000.0, stage=stage)
     _STAGE_TOTAL.inc(stage=stage, status="skipped" if extra.get("skipped") else "ok")
 
@@ -163,11 +229,23 @@ def _append_pathway_timing(
 # situation candidates, and those candidates reach Think through T4
 # `latent_relationship_candidate` member_model_ids.
 _TRIGGER_WEIGHTS: dict[TriggerKind, dict[str, float]] = {
-    "T1": {"A": 0.34, "B": 0.34, "C": 0.16, "G": 0.16},
-    "T2": {"A": 0.18, "B": 0.18, "D": 0.12, "G": 0.52},
-    "T3": {"A": 0.35, "B": 0.25, "C": 0.18, "G": 0.22},
-    "T4": {"D": 0.42, "A": 0.28, "G": 0.30},
-    "T6": {"A": 0.30, "B": 0.25, "G": 0.45},
+    "T1": {"A": 0.30, "B": 0.26, "L": 0.12, "C": 0.16, "G": 0.16},
+    "T2": {"A": 0.16, "B": 0.15, "L": 0.12, "D": 0.12, "G": 0.45},
+    "T3": {"A": 0.30, "B": 0.20, "L": 0.12, "C": 0.16, "G": 0.22},
+    "T4": {"D": 0.38, "A": 0.25, "L": 0.12, "G": 0.25},
+    "T6": {"A": 0.28, "B": 0.22, "L": 0.12, "G": 0.38},
+}
+
+_TRIGGER_SUBKIND_WEIGHTS: dict[tuple[TriggerKind, str], dict[str, float]] = {
+    # Open questions are deliberately system-wide: semantic vector and lexical
+    # term search should dominate, with graph/pattern context as support.
+    ("T4", "open_question_search"): {
+        "B": 0.34,
+        "L": 0.22,
+        "D": 0.18,
+        "G": 0.16,
+        "A": 0.10,
+    },
 }
 
 
@@ -175,9 +253,18 @@ _DEFAULT_TOP_N = 80
 
 
 def _trigger_weights(
-    kind: TriggerKind, cfg: RetrievalConfig
+    kind: TriggerKind,
+    cfg: RetrievalConfig,
+    *,
+    subkind: str | None = None,
 ) -> dict[str, float] | None:
-    weights = _TRIGGER_WEIGHTS.get(kind)
+    weights = (
+        _TRIGGER_SUBKIND_WEIGHTS.get((kind, subkind))
+        if subkind is not None
+        else None
+    )
+    if weights is None:
+        weights = _TRIGGER_WEIGHTS.get(kind)
     if weights is None:
         return None
     if not cfg.trigger_weights_json:
@@ -188,7 +275,9 @@ def _trigger_weights(
         return dict(weights)
     if not isinstance(payload, dict):
         return dict(weights)
-    override = payload.get(kind)
+    override = payload.get(f"{kind}:{subkind}") if subkind else None
+    if override is None:
+        override = payload.get(kind)
     if override is None and all(pathway in payload for pathway in weights):
         override = payload
     if not isinstance(override, dict):
@@ -303,6 +392,14 @@ class RetrievalResult:
     model_scores: dict[UUID, float] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class _PathwayFanoutResult:
+    name: str
+    result: PathwayResult | None
+    notes: dict[str, Any]
+    timings: list[dict[str, Any]]
+
+
 # ---------------------------------------------------------------------
 # Scoring + de-dup
 # ---------------------------------------------------------------------
@@ -407,6 +504,7 @@ def _merge_and_rank_models_rrf(
     """
     from .scoring import (
         DIMENSION_ACTIVATION,
+        DIMENSION_LEXICAL,
         DIMENSION_MODEL_EDGE,
         DIMENSION_PATTERN,
         DIMENSION_PROVENANCE,
@@ -421,6 +519,7 @@ def _merge_and_rank_models_rrf(
     dim_weights = {
         DIMENSION_STRUCTURAL: weights.get("A", 0.0),
         DIMENSION_SEMANTIC: weights.get("B", 0.0),
+        DIMENSION_LEXICAL: weights.get("L", 0.0),
         DIMENSION_TEMPORAL: weights.get("C", 0.0),
         DIMENSION_PATTERN: weights.get("D", 0.0),
         DIMENSION_MODEL_EDGE: weights.get("G", 0.0),
@@ -706,7 +805,10 @@ async def _derive_trigger_scope(
                     and row["content_text"].strip()
                 ):
                     model_natural = row["content_text"]
-                if model_embedding is None:
+                # The persisted obs vector is only used as the T1 seed cache.
+                # Under `cutover` we ignore it and re-embed content_text on
+                # demand in _run_pathway_b (the column may also be NULL there).
+                if model_embedding is None and seed_from_stored_obs_vector():
                     model_embedding = _coerce_vector(row["embedding"])
 
     if trigger.kind == "T2":
@@ -771,6 +873,8 @@ def _primary_notes(
         "config_summary": {
             "semantic_k": cfg.semantic_k,
             "semantic_hnsw_ef_search": cfg.semantic_hnsw_ef_search,
+            "semantic_terms_enabled": cfg.semantic_terms_enabled,
+            "semantic_terms_k": cfg.semantic_terms_k,
             "temporal_max_observations": cfg.temporal_max_observations,
             "temporal_max_models": cfg.temporal_max_models,
             "temporal_include_entity_mentions": cfg.temporal_include_entity_mentions,
@@ -778,11 +882,62 @@ def _primary_notes(
             "rrf_k": cfg.rrf_k,
             "trigger_weights_overridden": bool(cfg.trigger_weights_json),
             "recency_decay_half_life_days": cfg.recency_decay_half_life_days,
+            "projection_context_enabled": cfg.projection_context_enabled,
+            "projection_context_max_snapshots": cfg.projection_context_max_snapshots,
+            "projection_context_max_models": cfg.projection_context_max_models,
             "assembler_use_mmr": cfg.assembler_use_mmr,
             "assembler_budget_models": cfg.assembler_budget_models,
             "assembler_budget_observations": cfg.assembler_budget_observations,
         },
     }
+
+
+def _plan_sage_primary_policy(
+    *,
+    trigger: TriggerContext,
+    cfg: RetrievalConfig,
+    weights: dict[str, float],
+    effective_seed_entities: list[dict[str, Any]],
+    effective_scope_actors: list[UUID],
+    notes: dict[str, Any],
+    route_utilities: tuple[SageRouteUtility, ...] = (),
+    company_profile: Any | None = None,
+) -> tuple[dict[str, float], SageRetrievalPolicy | None]:
+    if not bool(getattr(cfg, "sage_retrieval_policy_enabled", True)):
+        notes["sage_retrieval_policy"] = {"enabled": False}
+        return weights, None
+
+    policy = plan_primary_retrieval(
+        trigger=trigger,
+        weights=weights,
+        effective_seed_entities=effective_seed_entities,
+        effective_scope_actors=effective_scope_actors,
+        projection_enabled=bool(cfg.projection_context_enabled),
+        semantic_terms_enabled=bool(cfg.semantic_terms_enabled),
+        semantic_k=int(cfg.semantic_k),
+        shadow=bool(getattr(cfg, "sage_retrieval_policy_shadow_mode", False)),
+        exploration_rate=float(
+            getattr(cfg, "sage_retrieval_policy_exploration_rate", 0.05)
+        ),
+        route_utilities=route_utilities,
+        company_profile=company_profile,
+    )
+    adjusted_weights = policy.apply_primary_weights(weights)
+    policy_notes = policy.notes()
+    policy_notes["original_weights"] = dict(weights)
+    policy_notes["applied_weights"] = dict(adjusted_weights)
+    notes["sage_retrieval_policy"] = policy_notes
+    if not policy.shadow:
+        for decision in policy.decisions:
+            if decision.mode == "skip" and decision.path in weights:
+                notes["pathways_skipped"].append(
+                    {
+                        "pathway": decision.path,
+                        "reason": decision.reason,
+                        "source": "sage_retrieval_policy",
+                    }
+                )
+    return adjusted_weights, policy
 
 
 async def _prepare_effective_trigger_scope(
@@ -831,6 +986,63 @@ async def _prepare_effective_trigger_scope(
     )
 
 
+async def _run_projection_context(
+    *,
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    cfg: RetrievalConfig,
+    effective_seed_entities: list[dict[str, Any]],
+    effective_scope_actors: list[UUID],
+    notes: dict[str, Any],
+    pathway_timings: list[dict[str, Any]],
+) -> PathwayResult | None:
+    stage_started = time.perf_counter()
+    if not cfg.projection_context_enabled:
+        notes["projection_context"] = {"enabled": False}
+        _append_pathway_timing(
+            pathway_timings,
+            "projection_context",
+            stage_started,
+            skipped=True,
+            reason="disabled",
+        )
+        return None
+
+    try:
+        result = await pathway_projection_context(
+            trigger,
+            trigger.tenant_id,
+            conn,
+            effective_seed_entities=effective_seed_entities,
+            effective_scope_actors=effective_scope_actors,
+            max_snapshots=cfg.projection_context_max_snapshots,
+            max_models=cfg.projection_context_max_models,
+        )
+        notes["projection_context"] = result.notes
+        _append_pathway_timing(
+            pathway_timings,
+            "projection_context",
+            stage_started,
+            **_pathway_counts(result),
+        )
+        return result if result.models else None
+    except Exception as exc:
+        _raise_if_postgres_error(exc)
+        notes["projection_context"] = {
+            "enabled": True,
+            "skipped": True,
+            "reason": str(exc),
+        }
+        _append_pathway_timing(
+            pathway_timings,
+            "projection_context",
+            stage_started,
+            skipped=True,
+            reason=str(exc),
+        )
+        return None
+
+
 async def _run_pathway_a(
     *,
     trigger: TriggerContext,
@@ -839,6 +1051,7 @@ async def _run_pathway_a(
     read_fanout_enabled: bool,
     read_fanout_min_seeds: int,
     read_fanout_chunk_size: int,
+    read_fanout_budget: ReadFanoutBudget | None = None,
     effective_seed_entities: list[dict[str, Any]],
     effective_scope_actors: list[UUID],
     notes: dict[str, Any],
@@ -860,6 +1073,7 @@ async def _run_pathway_a(
             read_fanout_enabled=read_fanout_enabled,
             read_fanout_min_seeds=read_fanout_min_seeds,
             read_fanout_chunk_size=read_fanout_chunk_size,
+            read_fanout_budget=read_fanout_budget,
         )
         notes["pathways_run"].append("A")
         _append_pathway_timing(
@@ -888,6 +1102,7 @@ async def _run_pathway_b(
     conn: asyncpg.Connection,
     cfg: RetrievalConfig,
     embedder: OllamaClient | None,
+    sage_policy: SageRetrievalPolicy | None = None,
     effective_seed_entities: list[dict[str, Any]],
     effective_scope_actors: list[UUID],
     t2_model_natural: str | None,
@@ -897,7 +1112,48 @@ async def _run_pathway_b(
 ) -> PathwayResult | None:
     text = trigger.seed_natural_text or t2_model_natural or ""
     vector = trigger.precomputed_seed_vector or t2_model_embedding
-    b_k = trigger.semantic_k if trigger.semantic_k != 40 else cfg.semantic_k
+
+    # Guardrail 1 (parity): when the seed must be re-embedded (cutover) or
+    # measured (shadow), embed the FULL observation content_text
+    # (t2_model_natural for T1) rather than the truncated trigger payload, so the
+    # lazy seed reproduces the vector historically persisted from the full text.
+    # Eager keeps `text` and the precomputed vector untouched — zero behaviour
+    # change — since `reembed_text` is only consumed on the re-embed/shadow paths.
+    reembed_text = t2_model_natural or text
+
+    if (
+        shadow_compare_seed()
+        and trigger.kind == "T1"
+        and vector is not None
+        and embedder is not None
+        and reembed_text.strip()
+    ):
+        await _shadow_compare_seed_vector(
+            embedder=embedder,
+            stored=list(vector),
+            seed_text=reembed_text,
+            notes=notes,
+        )
+
+    if vector is None and embedder is not None and reembed_text.strip():
+        # Cutover: resolve the seed once here and cache it on the trigger so
+        # inquiry rounds reuse it (Guardrail 2 — retrieval_actions reuses
+        # trigger.precomputed_seed_vector when query_text == trigger_text)
+        # instead of re-embedding the same text each round. pathway_b_semantic
+        # then uses this precomputed vector and never re-embeds `text` itself.
+        try:
+            vector = await embedder.embed(reembed_text)
+            trigger.precomputed_seed_vector = list(vector)
+            notes["seed_vector_source"] = "lazy_reembed"
+        except (OllamaError, OllamaDimensionMismatch) as exc:
+            # Leave vector None; pathway_b_semantic will raise -> skip pathway B
+            # gracefully (model formation still proceeds from A/C/G).
+            notes["seed_vector_reembed_error"] = str(exc)
+
+    trigger_semantic_k_overridden = trigger.semantic_k != 40
+    b_k = trigger.semantic_k if trigger_semantic_k_overridden else cfg.semantic_k
+    if sage_policy is not None and not trigger_semantic_k_overridden:
+        b_k = sage_policy.budget_for("B", b_k)
     stage_started = time.perf_counter()
     try:
         result = await pathway_b_semantic(
@@ -942,6 +1198,78 @@ async def _run_pathway_b(
         _append_pathway_timing(
             pathway_timings,
             "pathway_B",
+            stage_started,
+            skipped=True,
+            reason=str(exc),
+        )
+        return None
+
+
+async def _run_pathway_l(
+    *,
+    trigger: TriggerContext,
+    conn: asyncpg.Connection,
+    cfg: RetrievalConfig,
+    effective_seed_entities: list[dict[str, Any]],
+    effective_scope_actors: list[UUID],
+    t2_model_natural: str | None,
+    notes: dict[str, Any],
+    pathway_timings: list[dict[str, Any]],
+) -> PathwayResult | None:
+    stage_started = time.perf_counter()
+    if not cfg.semantic_terms_enabled:
+        notes["pathways_skipped"].append(
+            {"pathway": "L", "reason": "semantic_terms_disabled"}
+        )
+        _append_pathway_timing(
+            pathway_timings,
+            "pathway_L",
+            stage_started,
+            skipped=True,
+            reason="semantic_terms_disabled",
+        )
+        return None
+
+    text = trigger.seed_natural_text or t2_model_natural or ""
+    try:
+        result = await pathway_l_semantic_terms(
+            text,
+            trigger.tenant_id,
+            conn,
+            seed_signature=(
+                trigger.seed_signature
+                if isinstance(trigger.seed_signature, dict)
+                else None
+            ),
+            scope_actors=effective_scope_actors,
+            scope_entities=effective_seed_entities,
+            limit=cfg.semantic_terms_k,
+        )
+        if result.notes.get("reason") == "no_terms":
+            notes["pathways_skipped"].append({"pathway": "L", "reason": "no_terms"})
+            _append_pathway_timing(
+                pathway_timings,
+                "pathway_L",
+                stage_started,
+                skipped=True,
+                reason="no_terms",
+                **_pathway_counts(result),
+            )
+            return None
+        notes["pathways_run"].append("L")
+        _append_pathway_timing(
+            pathway_timings,
+            "pathway_L",
+            stage_started,
+            **_pathway_counts(result),
+        )
+        return result
+    except Exception as exc:
+        _raise_if_postgres_error(exc)
+        notes["pathways_skipped"].append({"pathway": "L", "reason": str(exc)})
+        _append_pathway_timing(
+            pathway_timings,
+            "pathway_L",
             stage_started,
             skipped=True,
             reason=str(exc),
@@ -1194,6 +1522,215 @@ async def _reconsolidate_primary_models(
     return [by_id.get(m.id, m) for m in models]
 
 
+def _primary_pathway_fanout_enabled(
+    *,
+    cfg: RetrievalConfig,
+    conn: asyncpg.Connection,
+    read_pool: asyncpg.Pool | None,
+) -> bool:
+    if not bool(getattr(cfg, "primary_pathway_parallel_enabled", True)):
+        return False
+    if read_pool is None:
+        return False
+    in_transaction = getattr(conn, "is_in_transaction", None)
+    if callable(in_transaction) and in_transaction():
+        return False
+    max_size = getattr(read_pool, "get_max_size", None)
+    if callable(max_size):
+        try:
+            return int(max_size()) > 1
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+async def _run_primary_pathways_fanout(
+    *,
+    trigger: TriggerContext,
+    cfg: RetrievalConfig,
+    weights: dict[str, float],
+    sage_policy: SageRetrievalPolicy | None,
+    read_pool: asyncpg.Pool,
+    read_fanout_budget: ReadFanoutBudget,
+    embedder: OllamaClient | None,
+    structural_read_fanout_enabled: bool,
+    structural_read_fanout_min_seeds: int,
+    structural_read_fanout_chunk_size: int,
+    effective_seed_entities: list[dict[str, Any]],
+    effective_scope_actors: list[UUID],
+    t2_model_natural: str | None,
+    t2_model_embedding: list[float] | None,
+    notes: dict[str, Any],
+    pathway_timings: list[dict[str, Any]],
+) -> list[PathwayResult]:
+    slots: list[tuple[str, Any]] = []
+
+    def policy_allows(path: str) -> bool:
+        return sage_policy is None or sage_policy.allows(path)
+
+    async def run_projection(
+        read_conn: asyncpg.Connection,
+        local_notes: dict[str, Any],
+        local_timings: list[dict[str, Any]],
+    ) -> PathwayResult | None:
+        return await _run_projection_context(
+            trigger=trigger,
+            conn=read_conn,
+            cfg=cfg,
+            effective_seed_entities=effective_seed_entities,
+            effective_scope_actors=effective_scope_actors,
+            notes=local_notes,
+            pathway_timings=local_timings,
+        )
+
+    if policy_allows("projection_context"):
+        slots.append(("projection_context", run_projection))
+
+    if "A" in weights and policy_allows("A"):
+        async def run_a(
+            read_conn: asyncpg.Connection,
+            local_notes: dict[str, Any],
+            local_timings: list[dict[str, Any]],
+        ) -> PathwayResult | None:
+            return await _run_pathway_a(
+                trigger=trigger,
+                conn=read_conn,
+                read_pool=read_pool,
+                read_fanout_enabled=structural_read_fanout_enabled,
+                read_fanout_min_seeds=structural_read_fanout_min_seeds,
+                read_fanout_chunk_size=structural_read_fanout_chunk_size,
+                read_fanout_budget=read_fanout_budget,
+                effective_seed_entities=effective_seed_entities,
+                effective_scope_actors=effective_scope_actors,
+                notes=local_notes,
+                pathway_timings=local_timings,
+            )
+
+        slots.append(("A", run_a))
+
+    if "B" in weights and policy_allows("B"):
+        async def run_b(
+            read_conn: asyncpg.Connection,
+            local_notes: dict[str, Any],
+            local_timings: list[dict[str, Any]],
+        ) -> PathwayResult | None:
+            return await _run_pathway_b(
+                trigger=trigger,
+                conn=read_conn,
+                cfg=cfg,
+                embedder=embedder,
+                sage_policy=sage_policy,
+                effective_seed_entities=effective_seed_entities,
+                effective_scope_actors=effective_scope_actors,
+                t2_model_natural=t2_model_natural,
+                t2_model_embedding=t2_model_embedding,
+                notes=local_notes,
+                pathway_timings=local_timings,
+            )
+
+        slots.append(("B", run_b))
+
+    if "L" in weights and policy_allows("L"):
+        async def run_l(
+            read_conn: asyncpg.Connection,
+            local_notes: dict[str, Any],
+            local_timings: list[dict[str, Any]],
+        ) -> PathwayResult | None:
+            return await _run_pathway_l(
+                trigger=trigger,
+                conn=read_conn,
+                cfg=cfg,
+                effective_seed_entities=effective_seed_entities,
+                effective_scope_actors=effective_scope_actors,
+                t2_model_natural=t2_model_natural,
+                notes=local_notes,
+                pathway_timings=local_timings,
+            )
+
+        slots.append(("L", run_l))
+
+    if "C" in weights and policy_allows("C"):
+        async def run_c(
+            read_conn: asyncpg.Connection,
+            local_notes: dict[str, Any],
+            local_timings: list[dict[str, Any]],
+        ) -> PathwayResult | None:
+            return await _run_pathway_c(
+                trigger=trigger,
+                conn=read_conn,
+                cfg=cfg,
+                effective_seed_entities=effective_seed_entities,
+                effective_scope_actors=effective_scope_actors,
+                notes=local_notes,
+                pathway_timings=local_timings,
+            )
+
+        slots.append(("C", run_c))
+
+    if "D" in weights and policy_allows("D"):
+        async def run_d(
+            read_conn: asyncpg.Connection,
+            local_notes: dict[str, Any],
+            local_timings: list[dict[str, Any]],
+        ) -> PathwayResult | None:
+            return await _run_pathway_d(
+                trigger=trigger,
+                conn=read_conn,
+                notes=local_notes,
+                pathway_timings=local_timings,
+            )
+
+        slots.append(("D", run_d))
+
+    if "G" in weights and policy_allows("G"):
+        async def run_g(
+            read_conn: asyncpg.Connection,
+            local_notes: dict[str, Any],
+            local_timings: list[dict[str, Any]],
+        ) -> PathwayResult | None:
+            return await _run_pathway_g(
+                trigger=trigger,
+                conn=read_conn,
+                effective_seed_entities=effective_seed_entities,
+                effective_scope_actors=effective_scope_actors,
+                notes=local_notes,
+                pathway_timings=local_timings,
+            )
+
+        slots.append(("G", run_g))
+
+    async def run_slot(name: str, runner: Any) -> _PathwayFanoutResult:
+        local_notes: dict[str, Any] = {"pathways_run": [], "pathways_skipped": []}
+        local_timings: list[dict[str, Any]] = []
+        async with read_fanout_budget.connection() as read_conn:
+            result = await runner(read_conn, local_notes, local_timings)
+        return _PathwayFanoutResult(name, result, local_notes, local_timings)
+
+    tasks: list[asyncio.Task[_PathwayFanoutResult]] = []
+    async with asyncio.TaskGroup() as task_group:
+        for name, runner in slots:
+            tasks.append(task_group.create_task(run_slot(name, runner)))
+
+    pathway_results: list[PathwayResult] = []
+    for task in tasks:
+        item = task.result()
+        if item.name == "projection_context" and "projection_context" in item.notes:
+            notes["projection_context"] = item.notes["projection_context"]
+        notes["pathways_run"].extend(item.notes.get("pathways_run", []))
+        notes["pathways_skipped"].extend(item.notes.get("pathways_skipped", []))
+        pathway_timings.extend(item.timings)
+        if item.result is not None:
+            pathway_results.append(item.result)
+    budget_snapshot = read_fanout_budget.snapshot()
+    notes["primary_read_fanout_budget"] = {
+        "max_concurrency": budget_snapshot.max_concurrency,
+        "peak_in_use": budget_snapshot.peak_in_use,
+        "acquired": budget_snapshot.acquired,
+        "denied": budget_snapshot.denied,
+    }
+    return pathway_results
+
+
 # ---------------------------------------------------------------------
 # primary_retrieve
 # ---------------------------------------------------------------------
@@ -1211,6 +1748,8 @@ async def primary_retrieve(
     structural_read_fanout_chunk_size: int = 8,
     top_n: int = _DEFAULT_TOP_N,
     config: RetrievalConfig | None = None,
+    sage_route_utilities: tuple[SageRouteUtility, ...] = (),
+    company_profile: Any | None = None,
 ) -> RetrievalResult:
     """
     Run the per-trigger pathway mix, merge results, reconsolidate the
@@ -1234,7 +1773,7 @@ async def primary_retrieve(
     """
     cfg = config or CONFIG
     _coerce_trigger_seed_occurred_at(trigger)
-    weights = _trigger_weights(trigger.kind, cfg)
+    weights = _trigger_weights(trigger.kind, cfg, subkind=trigger.subkind)
     if weights is None:
         raise ValidationError(
             f"unknown trigger kind {trigger.kind!r}",
@@ -1255,29 +1794,32 @@ async def primary_retrieve(
         notes,
         pathway_timings,
     )
+    weights, sage_policy = _plan_sage_primary_policy(
+        trigger=trigger,
+        cfg=cfg,
+        weights=weights,
+        effective_seed_entities=effective_seed_entities,
+        effective_scope_actors=effective_scope_actors,
+        notes=notes,
+        route_utilities=sage_route_utilities,
+        company_profile=company_profile,
+    )
+    notes["weights"] = dict(weights)
 
-    if "A" in weights:
-        result = await _run_pathway_a(
+    if _primary_pathway_fanout_enabled(cfg=cfg, conn=conn, read_pool=read_pool):
+        assert read_pool is not None
+        read_fanout_budget = ReadFanoutBudget.from_pool(read_pool)
+        pathway_results = await _run_primary_pathways_fanout(
             trigger=trigger,
-            conn=conn,
-            read_pool=read_pool,
-            read_fanout_enabled=structural_read_fanout_enabled,
-            read_fanout_min_seeds=structural_read_fanout_min_seeds,
-            read_fanout_chunk_size=structural_read_fanout_chunk_size,
-            effective_seed_entities=effective_seed_entities,
-            effective_scope_actors=effective_scope_actors,
-            notes=notes,
-            pathway_timings=pathway_timings,
-        )
-        if result is not None:
-            pathway_results.append(result)
-
-    if "B" in weights:
-        result = await _run_pathway_b(
-            trigger=trigger,
-            conn=conn,
             cfg=cfg,
+            weights=weights,
+            sage_policy=sage_policy,
+            read_pool=read_pool,
+            read_fanout_budget=read_fanout_budget,
             embedder=embedder,
+            structural_read_fanout_enabled=structural_read_fanout_enabled,
+            structural_read_fanout_min_seeds=structural_read_fanout_min_seeds,
+            structural_read_fanout_chunk_size=structural_read_fanout_chunk_size,
             effective_seed_entities=effective_seed_entities,
             effective_scope_actors=effective_scope_actors,
             t2_model_natural=t2_model_natural,
@@ -1285,43 +1827,102 @@ async def primary_retrieve(
             notes=notes,
             pathway_timings=pathway_timings,
         )
-        if result is not None:
-            pathway_results.append(result)
+    else:
+        if sage_policy is None or sage_policy.allows("projection_context"):
+            projection_result = await _run_projection_context(
+                trigger=trigger,
+                conn=conn,
+                cfg=cfg,
+                effective_seed_entities=effective_seed_entities,
+                effective_scope_actors=effective_scope_actors,
+                notes=notes,
+                pathway_timings=pathway_timings,
+            )
+            if projection_result is not None:
+                pathway_results.append(projection_result)
 
-    if "C" in weights:
-        result = await _run_pathway_c(
-            trigger=trigger,
-            conn=conn,
-            cfg=cfg,
-            effective_seed_entities=effective_seed_entities,
-            effective_scope_actors=effective_scope_actors,
-            notes=notes,
-            pathway_timings=pathway_timings,
-        )
-        if result is not None:
-            pathway_results.append(result)
+        if "A" in weights and (sage_policy is None or sage_policy.allows("A")):
+            result = await _run_pathway_a(
+                trigger=trigger,
+                conn=conn,
+                read_pool=read_pool,
+                read_fanout_enabled=structural_read_fanout_enabled,
+                read_fanout_min_seeds=structural_read_fanout_min_seeds,
+                read_fanout_chunk_size=structural_read_fanout_chunk_size,
+                read_fanout_budget=None,
+                effective_seed_entities=effective_seed_entities,
+                effective_scope_actors=effective_scope_actors,
+                notes=notes,
+                pathway_timings=pathway_timings,
+            )
+            if result is not None:
+                pathway_results.append(result)
 
-    if "D" in weights:
-        result = await _run_pathway_d(
-            trigger=trigger,
-            conn=conn,
-            notes=notes,
-            pathway_timings=pathway_timings,
-        )
-        if result is not None:
-            pathway_results.append(result)
+        if "B" in weights and (sage_policy is None or sage_policy.allows("B")):
+            result = await _run_pathway_b(
+                trigger=trigger,
+                conn=conn,
+                cfg=cfg,
+                embedder=embedder,
+                sage_policy=sage_policy,
+                effective_seed_entities=effective_seed_entities,
+                effective_scope_actors=effective_scope_actors,
+                t2_model_natural=t2_model_natural,
+                t2_model_embedding=t2_model_embedding,
+                notes=notes,
+                pathway_timings=pathway_timings,
+            )
+            if result is not None:
+                pathway_results.append(result)
 
-    if "G" in weights:
-        result = await _run_pathway_g(
-            trigger=trigger,
-            conn=conn,
-            effective_seed_entities=effective_seed_entities,
-            effective_scope_actors=effective_scope_actors,
-            notes=notes,
-            pathway_timings=pathway_timings,
-        )
-        if result is not None:
-            pathway_results.append(result)
+        if "L" in weights and (sage_policy is None or sage_policy.allows("L")):
+            result = await _run_pathway_l(
+                trigger=trigger,
+                conn=conn,
+                cfg=cfg,
+                effective_seed_entities=effective_seed_entities,
+                effective_scope_actors=effective_scope_actors,
+                t2_model_natural=t2_model_natural,
+                notes=notes,
+                pathway_timings=pathway_timings,
+            )
+            if result is not None:
+                pathway_results.append(result)
+
+        if "C" in weights and (sage_policy is None or sage_policy.allows("C")):
+            result = await _run_pathway_c(
+                trigger=trigger,
+                conn=conn,
+                cfg=cfg,
+                effective_seed_entities=effective_seed_entities,
+                effective_scope_actors=effective_scope_actors,
+                notes=notes,
+                pathway_timings=pathway_timings,
+            )
+            if result is not None:
+                pathway_results.append(result)
+
+        if "D" in weights and (sage_policy is None or sage_policy.allows("D")):
+            result = await _run_pathway_d(
+                trigger=trigger,
+                conn=conn,
+                notes=notes,
+                pathway_timings=pathway_timings,
+            )
+            if result is not None:
+                pathway_results.append(result)
+
+        if "G" in weights and (sage_policy is None or sage_policy.allows("G")):
+            result = await _run_pathway_g(
+                trigger=trigger,
+                conn=conn,
+                effective_seed_entities=effective_seed_entities,
+                effective_scope_actors=effective_scope_actors,
+                notes=notes,
+                pathway_timings=pathway_timings,
+            )
+            if result is not None:
+                pathway_results.append(result)
 
     models, observations, acts, resources, scores = await _merge_primary_results(
         trigger=trigger,
@@ -1340,6 +1941,13 @@ async def primary_retrieve(
         pathway_timings=pathway_timings,
         notes=notes,
     )
+    if sage_policy is not None:
+        notes["sage_retrieval_policy_observation"] = summarize_primary_observation(
+            policy=sage_policy,
+            notes=notes,
+            models=len(models),
+            observations=len(observations),
+        ).notes()
 
     return RetrievalResult(
         trigger=trigger,

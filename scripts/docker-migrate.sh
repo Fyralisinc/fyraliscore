@@ -19,11 +19,16 @@ if [ -n "$dupes" ]; then
   exit 1
 fi
 
+# BYOC §12 G1 — formal definition lives in db/migrations/0187_schema_migrations.sql;
+# this lazy bootstrap keeps shape parity (incl. the checksum column added by 0155
+# for drift detection) for DBs whose first migration is applied by this runner.
 psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 -q <<'SQL'
 CREATE TABLE IF NOT EXISTS schema_migrations (
   filename text PRIMARY KEY,
+  checksum text,
   applied_at timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum text;
 SQL
 
 applied=0
@@ -54,8 +59,12 @@ for f in db/migrations/*.sql; do
   else
     psql -d "$DATABASE_URL" -v ON_ERROR_STOP=1 --single-transaction -q -f "$f"
   fi
+  # BYOC §12 G1 — capture the file digest so the control plane can detect a
+  # silently-edited applied migration (schema drift). sha256sum is part of
+  # coreutils and present in the gateway image.
+  checksum="$(sha256sum "$f" | cut -d' ' -f1)"
   psql -tAd "$DATABASE_URL" -c \
-    "INSERT INTO schema_migrations(filename) VALUES('${fname}') ON CONFLICT DO NOTHING" >/dev/null
+    "INSERT INTO schema_migrations(filename, checksum) VALUES('${fname}', '${checksum}') ON CONFLICT DO NOTHING" >/dev/null
   applied=$((applied+1))
 done
 

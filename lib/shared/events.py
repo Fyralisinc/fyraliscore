@@ -21,6 +21,7 @@ import-linter contract enforces this); discovery uses only the stdlib.
 from __future__ import annotations
 
 import importlib.metadata as importlib_metadata
+import contextlib
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -39,6 +40,17 @@ _discovered = False
 def subscribe(topic: str, handler: Handler) -> None:
     """Register ``handler`` to be awaited whenever ``topic`` is published."""
     _subscribers.setdefault(topic, []).append(handler)
+
+
+def unsubscribe(topic: str, handler: Handler) -> None:
+    """Remove a previously registered handler if it is still present."""
+    handlers = _subscribers.get(topic)
+    if not handlers:
+        return
+    with contextlib.suppress(ValueError):
+        handlers.remove(handler)
+    if not handlers:
+        _subscribers.pop(topic, None)
 
 
 def _discover_subscribers() -> None:

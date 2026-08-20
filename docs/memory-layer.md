@@ -453,7 +453,8 @@ drives cascade and realtime NOTIFY.
 
 [services/observations/repo.py](services/observations/repo.py). The
 `observations` table is append-only, **range-partitioned monthly on
-`occurred_at`**, and vector-searchable (768-d HNSW).
+`occurred_at`**. Its 768-d embedding is retained as an optional T1 seed vector;
+the hot semantic ANN surface is the Model layer.
 
 Salient columns: `kind` (e.g. `state_change`, `contestation`), `source_channel`,
 `actor_id`, `content` / `content_text`, `embedding` (+ `embedding_pending`
@@ -980,6 +981,7 @@ tests pass across think/models/topology/relationships/scripts).
 |---|---|---|
 | `THINK_POLL_INTERVAL_S` | 2.0 | worker poll cadence |
 | `THINK_POLL_BATCH` | 10 | triggers fetched per poll |
+| `THINK_WORKER_LANES` | unset | optional comma-separated lane filter: `reflex`, `batch_memory`, `relationship`, `deep_synthesis`, `repair`; unset means all lanes |
 | `THINK_MAX_CONCURRENCY_PER_TENANT` | 1 | per-tenant parallelism |
 | `THINK_QUEUE_BACKPRESSURE_LIMIT` | 500 | depth that slows polling 1.5× |
 | `THINK_TRIGGER_MAX_ATTEMPTS` | 5 | retries before failure |
@@ -993,6 +995,10 @@ tests pass across think/models/topology/relationships/scripts).
 | `TOPOLOGY_SWEEPER_INTERVAL_S` | 900 | sweeper cadence |
 | `TOPOLOGY_SWEEPER_LIMIT_PER_TENANT` | 50 | models per sweep |
 | `TOPOLOGY_SWEEPER_MIN_ACTIVATION` | 0.15 | sweep activation floor |
+
+The production compose file also exposes an opt-in `think-lanes` profile with
+one specialized worker per lane. When enabling that profile, scale the default
+all-lane `think_worker` down if strict per-lane capacity isolation is desired.
 
 ---
 

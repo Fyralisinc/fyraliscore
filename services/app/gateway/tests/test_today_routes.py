@@ -393,11 +393,8 @@ async def test_get_delta_denies_hidden_target_delta(
         headers=_auth(token),
     )
 
-    assert resp.status_code == 403, resp.text
-    assert resp.json() == {
-        "error": "access_denied",
-        "reason": "resource_out_of_scope:relational",
-    }
+    assert resp.status_code == 404, resp.text
+    assert resp.json() == {"error": "not_found"}
 
 
 @pytest.mark.asyncio
@@ -661,6 +658,32 @@ async def test_correction_elevates_to_correction_submitted(
     assert imp["correction_submitted"] is True
     assert imp["correction"]["type"] == "wrong_conclusion"
     assert imp["correction"]["explanation"].startswith("We already")
+
+    trigger = await gateway_pool.fetchrow(
+        """
+        SELECT trigger_kind, trigger_subkind, payload
+        FROM think_trigger_queue
+        WHERE tenant_id = $1
+          AND trigger_kind = 'T4'
+          AND trigger_subkind = 'representation_repair'
+          AND payload->>'source_delta_id' = $2
+        ORDER BY enqueued_at DESC
+        LIMIT 1
+        """,
+        tenant_id,
+        str(did),
+    )
+    assert trigger is not None
+    assert trigger["trigger_kind"] == "T4"
+    assert trigger["trigger_subkind"] == "representation_repair"
+    payload = trigger["payload"]
+    if isinstance(payload, str):
+        payload = json.loads(payload)
+    assert payload["repair_intent"] == "apply_human_correction"
+    assert payload["audit_warning_code"] == "human_correction_submitted"
+    assert payload["oracle_outcome_fact"]["fact_kind"] == "human_correction"
+    assert payload["oracle_outcome_fact"]["trust_tier"] == "authoritative"
+    assert payload["oracle_outcome_fact"]["payload"]["correction"]["type"] == "wrong_conclusion"
 
 
 @pytest.mark.asyncio

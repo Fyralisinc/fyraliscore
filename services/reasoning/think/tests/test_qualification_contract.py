@@ -351,6 +351,7 @@ async def test_scripted_think_creates_model_audit_state_change_and_post_commit(
     assert [r["action_kind"] for r in post_commit_kinds] == [
         "broadcast_realtime",
         "discover_model_edges",
+        "materialize_projections",
     ]
 
 
@@ -416,7 +417,7 @@ async def test_think_partially_accepts_mixed_llm_diff_and_records_drop_count(
     assert validation_error_count == 1
 
 
-async def test_duplicate_claims_auto_merge_through_real_think_path(
+async def test_duplicate_claims_compile_to_confirmation_through_real_think_path(
     fresh_db: asyncpg.Pool,
     tenant: UUID,
     models_repo: ModelsRepo,
@@ -496,7 +497,8 @@ async def test_duplicate_claims_auto_merge_through_real_think_path(
         )
 
     assert model_count == 1
-    assert reconcile is not None
-    assert reconcile["decision"] == "auto_merge"
-    assert reconcile["matched_model_id"] == existing.id
+    # Exact duplicates are canonicalized before reconciliation: the mutation
+    # compiler turns the insert into a lifecycle confirmation of the existing
+    # model, so no reconciliation event is expected.
+    assert reconcile is None
     assert changed_confidence > existing.confidence

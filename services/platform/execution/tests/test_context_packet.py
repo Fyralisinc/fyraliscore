@@ -9,6 +9,7 @@ from services.platform.execution.types import (
     Hypothesis,
     InquiryQuestion,
     QuestionAnswer,
+    ResidualDebtCard,
     SufficiencyVerdict,
 )
 from services.reasoning.retrieval.primary import TriggerContext
@@ -388,6 +389,62 @@ def test_compile_context_packet_emits_memory_decision_candidates() -> None:
     )
     assert str(commitment_id) in by_family["act_update"]["target_act_ids"]
     assert by_family["no_op"]["reason"].startswith("Batch may contain")
+
+
+def test_compile_context_packet_carries_bounded_residual_spine() -> None:
+    trigger = _trigger()
+    residuals = [
+        ResidualDebtCard(
+            residual_id=uuid4(),
+            residual_kind="compression_uncertain",
+            source_observation_id=uuid4(),
+            compact_summary=(
+                "Think succeeded but no durable model-layer fate represented "
+                f"customer blocker {idx}. " + ("detail " * 120)
+            ),
+            reason=f"think_success_without_durable_fate:{idx}",
+        )
+        for idx in range(8)
+    ]
+    residuals.append(
+        ResidualDebtCard(
+            residual_id=uuid4(),
+            residual_kind="validation_dropped_value",
+            compact_summary="Already absorbed residual should not enter the packet.",
+            reason="absorbed",
+            status="absorbed",
+        )
+    )
+
+    packet = context_packet.compile_context_packet(
+        trigger,
+        "DEEP_INQUIRY_PATH",
+        (Hypothesis("H1", "Procurement risk increased.", 0.7, "high"),),
+        [_question()],
+        [],
+        [_card("Model evidence supports procurement risk.", supports={"H1"})],
+        SufficiencyVerdict(
+            "sufficient_for_reasoning",
+            "ready",
+            1,
+            0,
+            (),
+        ),
+        token_budget=30000,
+        residuals=residuals,
+    )
+
+    spine = packet["model_residual_spine"]
+    policy = packet["budget"]["residual_spine"]
+    assert len(spine) == 5
+    assert policy["non_canonical"] is True
+    assert policy["open_residual_count"] == 8
+    assert policy["packet_residual_count"] == 5
+    assert policy["suppressed_residual_count"] == 3
+    assert all(item["non_canonical"] is True for item in spine)
+    assert all("ordinary model-layer evidence" in item["use"] for item in spine)
+    assert "Already absorbed" not in str(spine)
+    assert max(len(item["compact_summary"]) for item in spine) <= 360
 
 
 def test_memory_decision_candidates_emit_bounded_relation_slot_candidates() -> None:

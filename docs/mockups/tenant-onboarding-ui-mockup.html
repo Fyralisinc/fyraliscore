@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fyralis · Tenant Onboarding — UI Mockup</title>
+<!--
+  PURE FRONTEND MOCKUP. No backend, no DB, no network calls.
+  Implements the flow in docs/plans/tenant-onboarding-ui.md so you can click
+  through the phases and watch the state machine transition after each action.
+  All state lives in the `state` object below; the right rail shows it live.
+-->
+<style>
+  :root{
+    --bg:#0f1117; --panel:#171a23; --panel2:#1e2230; --line:#2a3040;
+    --ink:#e7eaf2; --muted:#9aa3b8; --accent:#7c83ff; --accent2:#5b62e0;
+    --ok:#37d399; --warn:#f0b54f; --user:#f78fb3; --org:#62b0ff; --acct:#c79bff;
+    --radius:12px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  a{color:var(--accent)}
+  .app{display:grid;grid-template-columns:240px 1fr 360px;min-height:100vh}
+  /* ---- left: stepper rail ---- */
+  .rail{background:var(--panel);border-right:1px solid var(--line);padding:22px 18px}
+  .brand{font-weight:700;font-size:15px;letter-spacing:.2px;margin-bottom:4px}
+  .brand small{display:block;color:var(--muted);font-weight:500;font-size:11px;margin-top:2px}
+  .steps{margin-top:26px;list-style:none;padding:0}
+  .steps li{display:flex;gap:12px;align-items:flex-start;padding:10px 8px;border-radius:10px;cursor:pointer;color:var(--muted)}
+  .steps li.active{background:var(--panel2);color:var(--ink)}
+  .steps li.done{color:var(--ink)}
+  .dot{width:24px;height:24px;border-radius:50%;border:1.5px solid var(--line);display:grid;place-items:center;font-size:12px;flex:0 0 auto;background:var(--bg)}
+  .steps li.active .dot{border-color:var(--accent);color:var(--accent)}
+  .steps li.done .dot{background:var(--ok);border-color:var(--ok);color:#04241a}
+  .steps .t{font-weight:600;font-size:13px}
+  .steps .s{font-size:11px;color:var(--muted)}
+  .checklist{margin-top:30px;border-top:1px solid var(--line);padding-top:18px}
+  .checklist h4{margin:0 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+  .checklist .ci{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);padding:4px 0}
+  .checklist .ci.on{color:var(--ink)}
+  .checklist .box{width:15px;height:15px;border-radius:4px;border:1.5px solid var(--line);display:grid;place-items:center;font-size:10px}
+  .checklist .ci.on .box{background:var(--ok);border-color:var(--ok);color:#04241a}
+  /* ---- center: stage ---- */
+  .stage{padding:34px 40px;max-width:760px}
+  .phase-k{font-size:11px;letter-spacing:.7px;text-transform:uppercase;color:var(--accent);font-weight:700}
+  h1{font-size:22px;margin:6px 0 4px}
+  .sub{color:var(--muted);margin:0 0 22px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px;margin-bottom:14px}
+  .card h3{margin:0 0 4px;font-size:15px}
+  .card p.h{margin:0 0 14px;color:var(--muted);font-size:13px}
+  label{display:block;font-size:12px;color:var(--muted);margin:10px 0 5px}
+  input,select{width:100%;background:var(--bg);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:10px 12px;font-size:13px}
+  input:focus,select:focus{outline:none;border-color:var(--accent)}
+  .row{display:flex;gap:10px}.row>*{flex:1}
+  .btn{appearance:none;border:1px solid var(--accent2);background:var(--accent);color:#fff;font-weight:600;font-size:13px;padding:10px 16px;border-radius:9px;cursor:pointer}
+  .btn:hover{background:var(--accent2)}
+  .btn.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+  .btn.ghost:hover{border-color:var(--accent)}
+  .btn.sm{padding:7px 12px;font-size:12px}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .actions{display:flex;gap:10px;align-items:center;margin-top:18px}
+  .spacer{flex:1}
+  .pill{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+  .pill.org{color:var(--org);border-color:#284a6e}
+  .pill.user{color:var(--user);border-color:#6e2f49}
+  .pill.hybrid{color:var(--accent);border-color:#3a3f7a}
+  .pill.account{color:var(--acct);border-color:#4a3a6e}
+  .pill.ok{color:var(--ok);border-color:#1f5a45}
+  .pill.warn{color:var(--warn);border-color:#5e4a22}
+  .muted{color:var(--muted)}
+  .hr{height:1px;background:var(--line);margin:14px 0}
+  /* source grid */
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .src{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px}
+  .src .top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .src .nm{font-weight:600;display:flex;align-items:center;gap:9px}
+  .ic{width:26px;height:26px;border-radius:7px;background:var(--panel2);display:grid;place-items:center;font-size:13px;font-weight:700}
+  .src .scopes{font-size:11px;color:var(--muted);margin:9px 0 12px;min-height:30px}
+  .roster{font-size:12px;color:var(--muted);margin:8px 0}
+  .bar{height:7px;border-radius:6px;background:var(--panel2);overflow:hidden;margin-top:6px}
+  .bar > i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--ok));transition:width .4s}
+  .empty{border:1px dashed var(--line);border-radius:11px;padding:14px;color:var(--muted);font-size:12px;font-style:italic}
+  /* modal */
+  .scrim{position:fixed;inset:0;background:rgba(4,6,12,.6);display:none;place-items:center;z-index:30}
+  .scrim.on{display:grid}
+  .modal{width:420px;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;box-shadow:0 24px 60px rgba(0,0,0,.5)}
+  .modal h3{margin:0 0 2px}
+  .modal .prov{font-size:12px;color:var(--muted);margin-bottom:14px}
+  .scopelist{background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:12px 14px;font-size:12px}
+  .scopelist div{padding:3px 0;display:flex;gap:8px;align-items:center}
+  .banner{background:linear-gradient(90deg,#10302a,#143a30);border:1px solid #1f5a45;border-radius:12px;padding:18px 20px;display:flex;gap:14px;align-items:center;margin-bottom:16px}
+  .banner .big{font-size:26px}
+  .banner h3{margin:0 0 2px;color:var(--ok)}
+  /* ---- right: state inspector ---- */
+  .inspect{background:#0b0d13;border-left:1px solid var(--line);padding:18px;display:flex;flex-direction:column;gap:14px;position:sticky;top:0;height:100vh;overflow:auto}
+  .inspect h4{margin:0;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+  pre{margin:0;background:#06080d;border:1px solid var(--line);border-radius:9px;padding:12px;font:11.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;color:#b8c0d8;white-space:pre-wrap;word-break:break-word}
+  .key{color:#7c83ff}.str{color:#8fe3a8}.num{color:#f0b54f}.bool{color:#f78fb3}
+  .logwrap{flex:1;min-height:120px;display:flex;flex-direction:column}
+  .log{flex:1;overflow:auto;display:flex;flex-direction:column-reverse;gap:4px;font:11.5px/1.45 ui-monospace,Menlo,monospace}
+  .log .e{padding:5px 9px;border-radius:7px;background:#0e1119;border:1px solid var(--line);color:#cdd5ea}
+  .log .e b{color:var(--accent)}
+  .log .e i{color:var(--muted);font-style:normal}
+  .topbar{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:10px 18px;background:var(--panel);border-bottom:1px solid var(--line)}
+  .topbar .tag{font-size:11px;color:var(--warn);border:1px solid #5e4a22;border-radius:999px;padding:2px 10px}
+  @media(max-width:1100px){.app{grid-template-columns:1fr}.rail,.inspect{display:none}}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="topbar">
+    <strong>Fyralis · Tenant Onboarding</strong>
+    <span class="tag">UI MOCKUP — no backend / no DB</span>
+    <span class="spacer" style="flex:1"></span>
+    <button class="btn ghost sm" data-action="reset">↺ Reset flow</button>
+  </div>
+
+  <!-- LEFT: stepper + activation checklist -->
+  <aside class="rail">
+    <div class="brand">Fyralis<small>Company OS · onboarding</small></div>
+    <ul class="steps" id="steps"></ul>
+    <div class="checklist">
+      <h4>Activation checklist</h4>
+      <div id="checklist"></div>
+    </div>
+  </aside>
+
+  <!-- CENTER: stage -->
+  <main class="stage" id="stage"></main>
+
+  <!-- RIGHT: live state inspector -->
+  <aside class="inspect">
+    <div>
+      <h4>Live state</h4>
+      <pre id="stateview"></pre>
+    </div>
+    <div class="logwrap">
+      <h4 style="margin-bottom:8px">Transition log</h4>
+      <div class="log" id="log"></div>
+    </div>
+  </aside>
+</div>
+
+<!-- consent modal (simulated OAuth) -->
+<div class="scrim" id="scrim">
+  <div class="modal" id="modal"></div>
+</div>
+
+<script>
+/* ----------------------------- STATE ----------------------------- */
+const PHASES = [
+  {k:'Account',       s:'Sign up / sign in'},
+  {k:'Organization',  s:'Create the workspace'},
+  {k:'Identity & access', s:'SSO · SCIM · members'},
+  {k:'Connect sources',   s:'Data ingestion'},
+  {k:'Sync & activate',   s:'First signals'},
+];
+
+const SOURCES = [
+  {key:'github',  name:'GitHub',  icon:'GH', grain:'org',     scopes:['Contents: read','Issues: read','Pull requests: read']},
+  {key:'slack',   name:'Slack',   icon:'SL', grain:'hybrid',  scopes:['channels:history','users:read'], userNote:'per-user xoxp token for DMs'},
+  {key:'notion',  name:'Notion',  icon:'No', grain:'org',     scopes:['Read content (workspace bot)']},
+  {key:'gmail',   name:'Gmail',   icon:'GM', grain:'org',     scopes:['gmail.readonly · domain-wide delegation']},
+  {key:'jira',    name:'Jira',    icon:'JR', grain:'account', scopes:['API token (one admin/service account)']},
+  {key:'ramp',    name:'Ramp',    icon:'Ra', grain:'org',     scopes:['business: read (company token)']},
+  {key:'telegram',name:'Telegram',icon:'Tg', grain:'user',    scopes:['MTProto session · each member self-connects']},
+  {key:'signal',  name:'Signal',  icon:'Si', grain:'user',    scopes:['linked device · each member self-connects']},
+];
+const MORE_SOURCES = 18; // +18 of the 26 not shown in the mock grid
+const TEAM_SIZE = 5;     // mock member count for per-user rosters
+
+const state = {
+  step: 0,
+  user: { email: null, authed: false, emailVerified: false },
+  org:  { name: null, domain: null, domainVerified: false, role: null, ownerStatus: 'none', ceo: null }, // ownerStatus: none|pending|verified
+  identity: { sso: 'none', scim: false, invites: [] },   // sso: none|configured|tested
+  connections: {},  // key -> {grain, status, members?:{connected,total}}
+  sync: {},         // key -> {pct, phase}   phase: connecting|syncing|landed
+  activated: false,
+};
+
+const log = [];
+function logEvent(action, detail){
+  log.push({ t: tick(), action, detail: detail||'' });
+  renderInspector();
+}
+let _t = 0; function tick(){ _t+=1; return _t; }  // deterministic "clock" (no Date)
+
+/* --------------------------- HELPERS ----------------------------- */
+const $ = sel => document.querySelector(sel);
+const grainLabel = g => ({org:'Org-wide',user:'Per-user',hybrid:'Hybrid',account:'Account'})[g];
+function connectedCount(){ return Object.keys(state.connections).length; }
+function anyLanded(){ return Object.values(state.sync).some(s=>s.phase==='landed'); }
+
+function setStep(n){ state.step = n; logEvent('navigate', 'step → '+PHASES[n].k); render(); }
+
+/* --------------------------- RENDER ------------------------------ */
+function render(){
+  renderSteps();
+  renderChecklist();
+  renderStage();
+  renderInspector();
+}
+
+function renderSteps(){
+  $('#steps').innerHTML = PHASES.map((p,i)=>{
+    const cls = i===state.step ? 'active' : (i<state.step?'done':'');
+    const mark = i<state.step ? '✓' : (i+1);
+    return `<li class="${cls}" data-action="goto" data-step="${i}">
+      <span class="dot">${mark}</span>
+      <span><span class="t">${p.k}</span><br><span class="s">${p.s}</span></span></li>`;
+  }).join('');
+}
+
+function renderChecklist(){
+  const items = [
+    ['Email verified', state.user.authed && state.user.emailVerified],
+    ['Owner confirmed (domain)', !!state.org.name && state.org.domainVerified],
+    ['Identity / CEO set', state.identity.sso!=='none' || state.identity.invites.length>0 || !!state.org.ceo],
+    ['First source connected', connectedCount()>0],
+    ['Signals landing 🎉', state.activated],
+  ];
+  $('#checklist').innerHTML = items.map(([t,on])=>`
+    <div class="ci ${on?'on':''}"><span class="box">${on?'✓':''}</span>${t}</div>`).join('');
+}
+
+function renderStage(){
+  const s = state.step;
+  const html = [stepAccount, stepOrg, stepIdentity, stepConnect, stepSync][s]();
+  $('#stage').innerHTML = `<div class="phase-k">Phase ${s} · ${PHASES[s].k}</div>${html}`;
+}
+
+/* Phase 0 — account */
+function stepAccount(){
+  if(state.user.authed && !state.user.emailVerified){
+    return `<h1>Verify your email</h1>
+      <p class="sub">We sent a magic link to <b>${state.user.email}</b>. Verifying proves you control the inbox — the first assurance layer (§5.0). It says nothing about role yet.</p>
+      <div class="card"><h3>📧 Check your inbox</h3><p class="h">After verifying you become a <b>pending owner</b> — owner powers stay locked until you verify your <i>domain</i> in Phase 1.</p>
+      <div class="actions"><span class="spacer"></span><button class="btn" data-action="verify-email">Simulate clicking the link</button></div></div>`;
+  }
+  if(state.user.authed){
+    return `<h1>You're signed in</h1>
+      <p class="sub">${state.user.email} · <span class="pill warn">pending owner</span> — ownership is confirmed by <b>domain verification</b>, not email (§5.0).</p>
+      <div class="card"><h3>✓ Email verified</h3><p class="h">Next: create your organization and verify your domain to unlock owner powers.</p>
+      <div class="actions"><span class="spacer"></span><button class="btn" data-action="goto" data-step="1">Continue →</button></div></div>`;
+  }
+  return `<h1>Create your account</h1>
+    <p class="sub">Hybrid onboarding: self-serve signup → guided setup. This first user becomes a <b>pending owner</b> — confirmed only after domain verification (§5.0). The installer need not be the CEO.</p>
+    <div class="card">
+      <label>Work email</label>
+      <input id="email" placeholder="you@company.com" value="ceo@acme.com"/>
+      <label>Password</label>
+      <input type="password" id="pw" placeholder="••••••••" value="hunter2hunter2"/>
+      <div class="actions">
+        <button class="btn" data-action="signup">Create account</button>
+        <span class="muted" style="font-size:12px">or</span>
+        <button class="btn ghost sm" data-action="social" data-prov="Google">Continue with Google</button>
+        <button class="btn ghost sm" data-action="social" data-prov="Microsoft">Microsoft</button>
+      </div>
+    </div>`;
+}
+
+/* Phase 1 — organization */
+function stepOrg(){
+  if(!state.org.name){
+    return `<h1>Create your organization</h1>
+      <p class="sub">Seeds the tenant + you as a <b>pending owner</b>. <b>Domain verification confirms ownership</b> and unlocks owner powers (§5.0).</p>
+      <div class="card">
+        <label>Organization name</label>
+        <input id="orgname" placeholder="Acme Inc." value="Acme Inc."/>
+        <label>Primary domain</label>
+        <input id="orgdomain" placeholder="acme.com" value="acme.com"/>
+        <div class="actions"><span class="spacer"></span><button class="btn" data-action="create-org">Create organization</button></div>
+      </div>`;
+  }
+  const v = state.org.domainVerified;
+  const ownerPill = v ? `<span class="pill ok">owner · verified</span>` : `<span class="pill warn">pending owner</span>`;
+  return `<h1>${state.org.name}</h1>
+    <p class="sub">Tenant provisioned · ${ownerPill}</p>
+    <div class="card">
+      <h3>Verify domain — ${state.org.domain}</h3>
+      <p class="h">Whoever controls <b>${state.org.domain}</b> DNS is the legitimate org authority — this, not your email, is what confers <b>owner powers</b> (invite the company, connect org-wide sources).</p>
+      <div class="scopelist"><div><span class="pill">TXT</span> fyralis-verify=9f3a1c</div></div>
+      <div class="actions">
+        ${v ? `<span class="pill ok">✓ Domain verified · owner confirmed</span>` : `<button class="btn" data-action="verify-domain">I've added the record · Verify</button>`}
+        <span class="spacer"></span>
+        <button class="btn ${v?'':'ghost'}" data-action="goto" data-step="2">Continue →</button>
+      </div>
+    </div>
+    ${v?'':`<div class="empty">Until the domain is verified you're a <b>pending owner</b>: inviting the company and connecting org-wide sources stay locked. (If this domain were already claimed, you'd instead join as a member pending admin approval — org-squat defense.)</div>`}`;
+}
+
+/* Phase 2 — identity & access */
+function stepIdentity(){
+  const id = state.identity;
+  const ssoState = id.sso==='tested' ? `<span class="pill ok">✓ tested &amp; active</span>`
+                 : id.sso==='configured' ? `<span class="pill warn">metadata loaded — test it</span>`
+                 : `<span class="pill">not configured</span>`;
+  return `<h1>Identity &amp; access</h1>
+    <p class="sub">Enterprise-grade from day one. Optional now — a small team can skip and add later.</p>
+
+    <div class="card">
+      <div class="top" style="display:flex;justify-content:space-between"><h3>Enterprise SSO — SAML / OIDC <span class="muted" style="font-weight:400">(self-hosted via Ory Polis)</span></h3>${ssoState}</div>
+      <p class="h">Exchange IdP metadata, then <b>Test connection</b> before activating (misconfig is the #1 SSO failure).</p>
+      ${id.sso==='none' ? `<button class="btn sm" data-action="config-sso">Upload IdP metadata</button>` : ''}
+      ${id.sso==='configured' ? `<button class="btn sm" data-action="test-sso">▷ Test connection</button>` : ''}
+      ${id.sso==='tested' ? `<div class="muted" style="font-size:12px">JIT provisioning on · members from <b>${state.org.domain}</b> auto-provision on first login.</div>` : ''}
+    </div>
+
+    <div class="card">
+      <div class="top" style="display:flex;justify-content:space-between"><h3>SCIM provisioning</h3>${id.scim?`<span class="pill ok">✓ endpoint live</span>`:`<span class="pill">off</span>`}</div>
+      <p class="h">Push users/groups from your IdP automatically.</p>
+      ${id.scim
+        ? `<div class="scopelist"><div>Base URL <span class="muted">https://acme.fyralis.io/scim/v2</span></div><div>Token <span class="muted">scim_••••_b91 · last sync: never</span></div></div>`
+        : `<button class="btn sm" data-action="enable-scim">Generate SCIM endpoint + token</button>`}
+    </div>
+
+    <div class="card">
+      <h3>Invite members</h3>
+      <p class="h">Org-scoped invites (the recommended B2B mechanism). Map each to a role.</p>
+      <div class="row">
+        <input id="invemail" placeholder="teammate@acme.com"/>
+        <select id="invrole" style="max-width:150px"><option>admin</option><option selected>contributor</option><option>viewer</option></select>
+        <button class="btn sm" data-action="add-invite" style="flex:0 0 auto">Invite</button>
+      </div>
+      ${id.invites.length? `<div class="hr"></div>` + id.invites.map(iv=>`<div style="display:flex;justify-content:space-between;font-size:13px;padding:3px 0"><span>${iv.email}</span><span class="pill">${iv.role} · invited</span></div>`).join('') : ''}
+    </div>
+
+    <div class="card">
+      <div class="top" style="display:flex;justify-content:space-between"><h3>Designate the CEO</h3>${state.org.ceo?`<span class="pill ok">★ ${state.org.ceo}</span>`:`<span class="pill">not set</span>`}</div>
+      <p class="h">The installer need not be the CEO. Map the seeded CEO actor to a real, SSO-assured user — or take it from an IdP <code>title</code> claim once SSO is on (§5.0).</p>
+      <div class="row">
+        <select id="ceopick">${[state.user.email, ...id.invites.map(i=>i.email)].filter(Boolean).map(e=>`<option ${state.org.ceo===e?'selected':''}>${e}</option>`).join('')}</select>
+        <button class="btn sm" data-action="designate-ceo" style="flex:0 0 auto">Designate as CEO</button>
+      </div>
+    </div>
+
+    <div class="actions"><button class="btn ghost" data-action="goto" data-step="1">← Back</button><span class="spacer"></span>
+      <button class="btn ghost" data-action="goto" data-step="3">Skip for now</button>
+      <button class="btn" data-action="goto" data-step="3">Continue →</button></div>`;
+}
+
+/* Phase 3 — connect sources */
+function stepConnect(){
+  const cards = SOURCES.map(src=>{
+    const c = state.connections[src.key];
+    const badge = `<span class="pill ${src.grain}">${grainLabel(src.grain)}</span>`;
+    let body, action;
+    if(!c){
+      const locked = src.grain!=='user' && !state.org.domainVerified;  // owner power gated on domain verification
+      action = locked
+        ? `<button class="btn sm" disabled title="Verify your domain (Phase 1) to connect org-wide sources">🔒 Connect</button>`
+        : `<button class="btn sm" data-action="connect" data-src="${src.key}">Connect</button>`;
+      body = `<div class="scopes">${src.scopes.join(' · ')}</div>`;
+    } else if(c.grain==='user' || (c.grain==='hybrid' && c.members)){
+      const m = c.members;
+      body = `<div class="roster"><b>${m.connected}</b> of <b>${m.total}</b> members self-connected
+        ${m.connected<m.total?` · <span class="warn">${m.total-m.connected} pending</span>`:` · <span class="pill ok">complete</span>`}</div>
+        <div class="bar"><i style="width:${Math.round(100*m.connected/m.total)}%"></i></div>`;
+      action = m.connected<m.total ? `<button class="btn ghost sm" data-action="member-connect" data-src="${src.key}">Simulate a member connecting</button>` : `<span class="pill ok">✓ connected</span>`;
+    } else {
+      body = `<div class="scopes">${src.scopes.join(' · ')}</div>`;
+      action = `<span class="pill ok">✓ connected (org-wide)</span>`;
+    }
+    return `<div class="src">
+      <div class="top"><span class="nm"><span class="ic">${src.icon}</span>${src.name}</span>${badge}</div>
+      ${body}
+      <div class="actions" style="margin-top:6px">${action}</div>
+    </div>`;
+  }).join('');
+
+  const n = connectedCount();
+  const gate = !state.org.domainVerified
+    ? `<div class="banner" style="background:linear-gradient(90deg,#3a2a10,#3a3012);border-color:#5e4a22"><span class="big">🔒</span><div><h3 style="color:var(--warn)">Pending owner — org-wide sources locked</h3><span class="muted">Verify your domain in Phase 1 to unlock org-wide / account installs. Per-user sources can still self-connect (they're personal).</span></div></div>`
+    : '';
+  return `<h1>Connect data sources</h1>
+    <p class="sub">Org-aware: <span class="pill org">Org-wide</span> = one admin install covers everyone ·
+      <span class="pill user">Per-user</span> = each member self-connects ·
+      <span class="pill hybrid">Hybrid</span> ·
+      <span class="pill account">Account</span>. Connect ≥1 to activate.</p>
+    ${gate}
+    <div class="grid">${cards}</div>
+    <div class="empty" style="margin-top:12px">+ ${MORE_SOURCES} more connectors (26 total) — finance, HR, infra…</div>
+    <div class="actions">
+      <button class="btn ghost" data-action="goto" data-step="2">← Back</button><span class="spacer"></span>
+      <span class="muted" style="font-size:12px">${n} source${n===1?'':'s'} connected</span>
+      <button class="btn" data-action="goto" data-step="4" ${n?'':'disabled'}>Start sync →</button>
+    </div>`;
+}
+
+/* Phase 4 — sync & activation */
+function stepSync(){
+  const keys = Object.keys(state.connections);
+  const rows = keys.map(k=>{
+    const src = SOURCES.find(x=>x.key===k);
+    const sy = state.sync[k] || {pct:0,phase:'connecting'};
+    const label = sy.phase==='landed' ? `<span class="pill ok">✓ first signals landed · ${Math.round(sy.pct*3.2)} obs</span>`
+                : sy.phase==='syncing' ? `<span class="pill warn">syncing… ${Math.round(sy.pct*3.2)} obs</span>`
+                : `<span class="pill">connecting…</span>`;
+    return `<div class="src">
+      <div class="top"><span class="nm"><span class="ic">${src.icon}</span>${src.name}</span>${label}</div>
+      <div class="bar"><i style="width:${sy.pct}%"></i></div>
+    </div>`;
+  }).join('');
+
+  const banner = state.activated
+    ? `<div class="banner"><span class="big">🎉</span><div><h3>Activated — signals are flowing</h3>
+        <span class="muted">First real data landed from a connected source. This is the aha-moment the funnel optimizes for.</span></div></div>`
+    : `<div class="card"><h3>Backfill running…</h3><p class="h">Connecting a source fires backfill automatically (onboarding_triggers → orchestrator). We surface live progress and the <b>first-signals-landed</b> moment.</p>
+        <button class="btn" data-action="start-sync" id="syncbtn">▷ Start sync (simulate)</button></div>`;
+
+  return `<h1>Sync &amp; first value</h1>
+    <p class="sub">Goal-oriented: the flow ends with the user <b>having done the thing</b> — real signals landing.</p>
+    ${banner}
+    <div class="grid">${rows || '<div class="empty">No sources connected — go back and connect one.</div>'}</div>
+    <div class="actions"><button class="btn ghost" data-action="goto" data-step="3">← Back</button><span class="spacer"></span>
+      ${state.activated?`<button class="btn" data-action="reset">Finish ✓</button>`:''}</div>`;
+}
+
+/* --------------------------- INSPECTOR --------------------------- */
+function syntaxColor(json){
+  return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?)/g, m=>{
+    let c='num';
+    if(/^"/.test(m)) c = /:$/.test(m) ? 'key' : 'str';
+    else if(/true|false/.test(m)) c='bool';
+    else if(/null/.test(m)) c='bool';
+    return `<span class="${c}">${m}</span>`;
+  });
+}
+function renderInspector(){
+  const view = {
+    step: PHASES[state.step].k,
+    user: state.user, org: state.org,
+    identity: { sso: state.identity.sso, scim: state.identity.scim, invites: state.identity.invites.length },
+    connections: Object.fromEntries(Object.entries(state.connections).map(([k,v])=>[k, v.members?`${v.grain}(${v.members.connected}/${v.members.total})`:v.grain])),
+    activated: state.activated,
+  };
+  $('#stateview').innerHTML = syntaxColor(JSON.stringify(view,null,2));
+  $('#log').innerHTML = log.slice(-40).map(e=>`<div class="e"><b>#${e.t}</b> <i>${e.action}</i> ${e.detail}</div>`).join('');
+}
+
+/* --------------------------- ACTIONS ----------------------------- */
+function openConsent(src){
+  const userBit = src.grain==='hybrid' ? `<div class="hr"></div><div class="muted" style="font-size:12px">Bot token connects channels org-wide. DMs need a per-user token — members self-connect after.</div>` : '';
+  $('#modal').innerHTML = `
+    <h3>Authorize Fyralis</h3>
+    <div class="prov">${src.name} · ${grainLabel(src.grain)} ${src.grain==='org'?'(admin consent)':''}</div>
+    <div class="scopelist">${src.scopes.map(s=>`<div>✓ ${s}</div>`).join('')}</div>
+    ${userBit}
+    <div class="actions"><button class="btn ghost" data-action="cancel-consent">Cancel</button><span class="spacer"></span>
+      <button class="btn" data-action="confirm-consent" data-src="${src.key}">Allow access</button></div>`;
+  $('#scrim').classList.add('on');
+  logEvent('oauth_open', src.key+' · simulated consent');
+}
+function closeConsent(){ $('#scrim').classList.remove('on'); }
+
+function doConnect(key){
+  const src = SOURCES.find(x=>x.key===key);
+  if(src.grain!=='user' && !state.org.domainVerified){ logEvent('blocked', key+' · org-wide locked until domain verified'); return; }
+  if(src.grain==='user'){
+    // per-user: no admin consent; create a roster
+    state.connections[key] = {grain:'user', status:'partial', members:{connected:0,total:TEAM_SIZE}};
+    logEvent('connect', `${key} · per-user roster opened (0/${TEAM_SIZE})`);
+    render();
+  } else {
+    openConsent(src);  // org / hybrid / account → simulated OAuth consent
+  }
+}
+function confirmConsent(key){
+  const src = SOURCES.find(x=>x.key===key);
+  if(src.grain==='hybrid'){
+    state.connections[key] = {grain:'hybrid', status:'connected', members:{connected:0,total:TEAM_SIZE}};
+    logEvent('connect', `${key} · bot token (org-wide) + per-user DM roster`);
+  } else {
+    state.connections[key] = {grain:src.grain, status:'connected'};
+    logEvent('connect', `${key} · ${grainLabel(src.grain)} ${src.grain==='org'?'(one install = full coverage)':''}`);
+  }
+  closeConsent(); render();
+}
+function memberConnect(key){
+  const c = state.connections[key];
+  if(c.members && c.members.connected < c.members.total){
+    c.members.connected++;
+    logEvent('member_connect', `${key} · ${c.members.connected}/${c.members.total} members`);
+    if(c.members.connected===c.members.total) c.status='connected';
+    render();
+  }
+}
+
+let syncTimer=null;
+function startSync(){
+  const keys = Object.keys(state.connections);
+  keys.forEach(k=>{ if(!state.sync[k]) state.sync[k]={pct:0,phase:'connecting'}; });
+  logEvent('backfill_start', `${keys.length} source(s) · onboarding_triggers fired`);
+  if(syncTimer) return;
+  syncTimer = setInterval(()=>{
+    let allDone = true;
+    keys.forEach((k,idx)=>{
+      const sy = state.sync[k];
+      const speed = 6 + (idx%3)*3;                 // stagger sources a bit
+      if(sy.pct < 100){ sy.pct = Math.min(100, sy.pct + speed); allDone=false; }
+      if(sy.pct>0 && sy.phase==='connecting') sy.phase='syncing';
+      if(sy.pct>=38 && sy.phase==='syncing' && !sy._landed){
+        sy._landed=true; sy.phase='landed';
+        logEvent('first_data_landed', `${k} · first observations written`);
+        if(!state.activated){ state.activated=true; logEvent('ACTIVATED','🎉 tenant reached first value'); }
+      }
+      if(sy.pct>=100) sy.phase='landed';
+    });
+    render();
+    if(allDone){ clearInterval(syncTimer); syncTimer=null; logEvent('backfill_complete','all connected sources synced'); }
+  }, 450);
+}
+
+/* ----------------------- EVENT DELEGATION ------------------------ */
+document.addEventListener('click', e=>{
+  const el = e.target.closest('[data-action]'); if(!el) return;
+  const a = el.dataset.action;
+  switch(a){
+    case 'signup': {
+      const email = ($('#email')||{}).value || 'ceo@acme.com';
+      state.user = {email, authed:true, emailVerified:false};
+      logEvent('sign_up', email+' · email/password'); logEvent('email_sent', 'magic link → '+email); render(); break;
+    }
+    case 'social': {
+      state.user = {email:'ceo@acme.com', authed:true, emailVerified:false};
+      logEvent('sign_up', 'social · '+el.dataset.prov); logEvent('email_sent', 'verification via '+el.dataset.prov); render(); break;
+    }
+    case 'verify-email': {
+      state.user.emailVerified=true; state.org.ownerStatus='pending';
+      logEvent('email_verified', 'inbox control proven'); logEvent('owner_pending', 'pending owner — needs domain proof'); render(); break;
+    }
+    case 'create-org': {
+      state.org.name = ($('#orgname')||{}).value || 'Acme Inc.';
+      state.org.domain = ($('#orgdomain')||{}).value || 'acme.com';
+      state.org.role = 'owner'; state.org.ownerStatus = 'pending';
+      logEvent('org_created', `${state.org.name} · pending owner seeded`); render(); break;
+    }
+    case 'verify-domain': {
+      state.org.domainVerified=true; state.org.ownerStatus='verified';
+      logEvent('domain_verified', state.org.domain); logEvent('owner_confirmed', 'owner powers unlocked'); render(); break;
+    }
+    case 'designate-ceo': {
+      const pick=($('#ceopick')||{}).value; if(pick){ state.org.ceo=pick; logEvent('ceo_designated', pick+' · bound to CEO actor'); render(); } break;
+    }
+    case 'config-sso': state.identity.sso='configured'; logEvent('sso_metadata', 'IdP metadata loaded'); render(); break;
+    case 'test-sso': state.identity.sso='tested'; logEvent('sso_tested', 'test connection OK · JIT on'); render(); break;
+    case 'enable-scim': state.identity.scim=true; logEvent('scim_enabled', 'endpoint + token generated'); render(); break;
+    case 'add-invite': {
+      const email=($('#invemail')||{}).value, role=($('#invrole')||{}).value||'contributor';
+      if(email){ state.identity.invites.push({email,role}); logEvent('member_invited', `${email} · ${role}`); render(); }
+      break;
+    }
+    case 'connect': doConnect(el.dataset.src); break;
+    case 'confirm-consent': confirmConsent(el.dataset.src); break;
+    case 'cancel-consent': closeConsent(); logEvent('oauth_cancel',''); break;
+    case 'member-connect': memberConnect(el.dataset.src); break;
+    case 'start-sync': startSync(); break;
+    case 'goto': setStep(+el.dataset.step); break;
+    case 'reset': {
+      if(syncTimer){clearInterval(syncTimer);syncTimer=null;}
+      Object.assign(state,{step:0,user:{email:null,authed:false,emailVerified:false},org:{name:null,domain:null,domainVerified:false,role:null,ownerStatus:'none',ceo:null},
+        identity:{sso:'none',scim:false,invites:[]},connections:{},sync:{},activated:false});
+      log.length=0; _t=0; logEvent('reset','flow restarted'); render(); break;
+    }
+  }
+});
+
+/* close modal on scrim click */
+$('#scrim').addEventListener('click', e=>{ if(e.target.id==='scrim'){ closeConsent(); } });
+
+/* boot */
+logEvent('boot','mockup loaded');
+render();
+</script>
+</body>
+</html>

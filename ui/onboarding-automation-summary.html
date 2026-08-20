@@ -1,0 +1,796 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Fyralis BYOC Onboarding Automation Summary</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #071016;
+        --panel: #0d1820;
+        --panel-soft: #10212a;
+        --border: #20333e;
+        --text: #eef6f2;
+        --muted: #a8b8b4;
+        --teal: #56c59d;
+        --blue: #66a8ff;
+        --amber: #e7ba5f;
+        --red: #e77b7b;
+        --white: #ffffff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      .shell {
+        width: min(1120px, calc(100% - 32px));
+        margin: 0 auto;
+      }
+
+      header {
+        border-bottom: 1px solid var(--border);
+        background: #081219;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        min-height: 72px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .logo {
+        display: grid;
+        width: 38px;
+        height: 38px;
+        place-items: center;
+        border-radius: 8px;
+        background: var(--white);
+        color: #071016;
+        font-weight: 800;
+      }
+
+      .brand strong,
+      .brand span {
+        display: block;
+      }
+
+      .brand span {
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 30px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 0 12px;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      main {
+        padding: 44px 0 64px;
+      }
+
+      .hero {
+        display: grid;
+        grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+        gap: 24px;
+        align-items: stretch;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        max-width: 760px;
+        font-size: clamp(34px, 5vw, 64px);
+        line-height: 1.02;
+        letter-spacing: 0;
+      }
+
+      h2 {
+        font-size: 24px;
+        line-height: 1.2;
+      }
+
+      h3 {
+        font-size: 16px;
+      }
+
+      .lead {
+        max-width: 680px;
+        margin-top: 18px;
+        color: var(--muted);
+        font-size: 18px;
+      }
+
+      .hero-panel,
+      .section,
+      .card,
+      .command,
+      .timeline-item {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+
+      .hero-panel {
+        padding: 22px;
+      }
+
+      .meter {
+        margin-top: 22px;
+      }
+
+      .meter-row {
+        display: flex;
+        justify-content: space-between;
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .bar {
+        overflow: hidden;
+        height: 10px;
+        margin-top: 10px;
+        border-radius: 999px;
+        background: #1c2c35;
+      }
+
+      .bar span {
+        display: block;
+        width: 92%;
+        height: 100%;
+        background: var(--teal);
+      }
+
+      .status-list {
+        display: grid;
+        gap: 12px;
+        margin-top: 22px;
+      }
+
+      .status-list div {
+        display: grid;
+        grid-template-columns: 18px 1fr;
+        gap: 10px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .dot {
+        width: 10px;
+        height: 10px;
+        margin-top: 6px;
+        border-radius: 999px;
+        background: var(--teal);
+      }
+
+      .dot.blue {
+        background: var(--blue);
+      }
+
+      .dot.amber {
+        background: var(--amber);
+      }
+
+      .section {
+        margin-top: 24px;
+        padding: 24px;
+      }
+
+      .section-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+
+      .section-header p {
+        max-width: 720px;
+        margin-top: 6px;
+        color: var(--muted);
+      }
+
+      .grid {
+        display: grid;
+        gap: 14px;
+      }
+
+      .grid.cols-2 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .grid.cols-3 {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .card {
+        padding: 18px;
+        background: var(--panel-soft);
+      }
+
+      .card p {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .tag {
+        display: inline-flex;
+        width: fit-content;
+        margin-bottom: 10px;
+        border: 1px solid #245747;
+        border-radius: 999px;
+        padding: 4px 9px;
+        color: var(--teal);
+        font-size: 12px;
+        font-weight: 800;
+      }
+
+      .tag.blue {
+        border-color: #28486d;
+        color: var(--blue);
+      }
+
+      .tag.amber {
+        border-color: #61502a;
+        color: var(--amber);
+      }
+
+      .flow {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .timeline-item {
+        position: relative;
+        min-height: 130px;
+        padding: 16px;
+      }
+
+      .timeline-item strong {
+        display: block;
+        font-size: 15px;
+      }
+
+      .timeline-item span {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 26px;
+        height: 26px;
+        margin-bottom: 12px;
+        border-radius: 999px;
+        background: #19352d;
+        color: var(--teal);
+        font-size: 13px;
+        font-weight: 800;
+      }
+
+      .timeline-item p {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .command {
+        display: grid;
+        gap: 10px;
+        padding: 16px;
+        background: #09131b;
+      }
+
+      code {
+        display: block;
+        overflow-wrap: anywhere;
+        border-radius: 6px;
+        background: #050b10;
+        padding: 12px;
+        color: #d7eee5;
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid var(--border);
+        padding: 13px 14px;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      th {
+        background: #0a151d;
+        color: var(--text);
+        font-size: 13px;
+      }
+
+      td {
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .note {
+        border-left: 3px solid var(--amber);
+        padding: 14px 16px;
+        background: #17150e;
+        color: #d8c69b;
+        font-size: 14px;
+      }
+
+      footer {
+        border-top: 1px solid var(--border);
+        padding: 24px 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      @media (max-width: 920px) {
+        .hero,
+        .grid.cols-2,
+        .grid.cols-3,
+        .flow {
+          grid-template-columns: 1fr;
+        }
+
+        .topbar,
+        .section-header {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="shell topbar">
+        <div class="brand">
+          <div class="logo">F</div>
+          <div>
+            <strong>Fyralis</strong>
+            <span>BYOC onboarding automation summary</span>
+          </div>
+        </div>
+        <span class="pill">Prototype status: agent-first onboarding</span>
+      </div>
+    </header>
+
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <span class="pill">Design Partner BYOC Pilot</span>
+          <h1>What we built for Fyralis onboarding</h1>
+          <p class="lead">
+            The onboarding flow now starts in the hosted Fyralis portal, moves
+            into the customer cloud for setup, and uses a local agent CLI to
+            automate BYOC readiness, setup artifacts, and source connection
+            receipts without exporting source secrets or raw customer data.
+          </p>
+        </div>
+
+        <aside class="hero-panel">
+          <h2>Current capability</h2>
+          <div class="meter">
+            <div class="meter-row">
+              <span>Prototype completeness</span>
+              <span>92%</span>
+            </div>
+            <div class="bar"><span></span></div>
+          </div>
+          <div class="status-list">
+            <div>
+              <span class="dot"></span>
+              <p>Hosted portal captures safe commercial and customer metadata.</p>
+            </div>
+            <div>
+              <span class="dot blue"></span>
+              <p>Customer-cloud CLI generates setup, plan, validation, and readiness artifacts.</p>
+            </div>
+            <div>
+              <span class="dot amber"></span>
+              <p>Provider executor can now render or run CloudFormation and Helm with explicit approval.</p>
+            </div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <div>
+            <h2>Onboarding Flow</h2>
+            <p>
+              The product flow is split between the Fyralis-hosted portal and
+              the customer-cloud console. The hosted side never asks for source
+              tokens, cloud secrets, raw logs, prompts, embeddings, or customer
+              payloads.
+            </p>
+          </div>
+          <span class="pill">Host -> Customer Cloud</span>
+        </div>
+
+        <div class="flow">
+          <div class="timeline-item">
+            <span>1</span>
+            <strong>Get Fyralis</strong>
+            <p>Customer chooses Design Partner BYOC or Enterprise.</p>
+          </div>
+          <div class="timeline-item">
+            <span>2</span>
+            <strong>Customer Intake</strong>
+            <p>Company, target cloud, and setup owner are captured.</p>
+          </div>
+          <div class="timeline-item">
+            <span>3</span>
+            <strong>Agent Setup</strong>
+            <p>Fyralis generates BYOC setup artifacts and autopilot commands.</p>
+          </div>
+          <div class="timeline-item">
+            <span>4</span>
+            <strong>Source Autopilot</strong>
+            <p>Every source can be prepared from local customer-cloud refs.</p>
+          </div>
+          <div class="timeline-item">
+            <span>5</span>
+            <strong>Launch</strong>
+            <p>Readiness, first-sync, health, and activation receipts are produced.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <div>
+            <h2>Features Now In The Flow</h2>
+            <p>
+              These are the main onboarding capabilities now represented in the
+              UI and CLI.
+            </p>
+          </div>
+        </div>
+
+        <div class="grid cols-3">
+          <article class="card">
+            <span class="tag">Hosted Portal</span>
+            <h3>Get Fyralis page</h3>
+            <p>
+              Customer-facing start page with Design Partner BYOC and Enterprise
+              paths. The Design Partner path creates an onboarding intent.
+            </p>
+          </article>
+          <article class="card">
+            <span class="tag">No Secrets</span>
+            <h3>Customer intake</h3>
+            <p>
+              Captures company, setup owner, and target cloud only. It avoids
+              credentials and customer data.
+            </p>
+          </article>
+          <article class="card">
+            <span class="tag blue">Agent Mode</span>
+            <h3>Cloud readiness</h3>
+            <p>
+              Defines region, environment, access mode, permission profile, and
+              approval policy for the customer-cloud setup agent.
+            </p>
+          </article>
+          <article class="card">
+            <span class="tag blue">Autopilot</span>
+            <h3>BYOC setup command</h3>
+            <p>
+              A single CLI path generates setup role templates, registration,
+              preflight reports, discovery plans, review bundles, approval
+              receipts, provider executor reports, and readiness reports.
+            </p>
+          </article>
+          <article class="card">
+            <span class="tag blue">Local Rehearsal</span>
+            <h3>Zero-spend runtime package</h3>
+            <p>
+              A local Helm chart now runs the BYOC data plane on kind with
+              Postgres, Kafka, MinIO, Redis, gateway, jobs, and workers.
+            </p>
+          </article>
+          <article class="card">
+            <span class="tag">Customer Cloud</span>
+            <h3>Trust boundary page</h3>
+            <p>
+              Makes it explicit that source credentials, raw payloads, private
+              logs, prompts, and embeddings remain inside the customer cloud.
+            </p>
+          </article>
+          <article class="card">
+            <span class="tag blue">Sources</span>
+            <h3>Source lifecycle agent</h3>
+            <p>
+              Source setup now runs as discover, plan, apply, validate, and
+              activate stages for all 26 supported source profiles.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <div>
+            <h2>Automation Commands</h2>
+            <p>
+              These are the main commands the customer-cloud console or setup
+              owner can run. Individual manual commands still exist as an
+              advanced fallback.
+            </p>
+          </div>
+        </div>
+
+        <div class="grid cols-2">
+          <div class="command">
+            <h3>Generate zero-spend local rehearsal</h3>
+            <code>fyralis byoc agent local-rehearsal --region us-east-1 --workdir .fyralis/local-rehearsal --json</code>
+          </div>
+          <div class="command">
+            <h3>Setup Fyralis in customer cloud</h3>
+            <code>fyralis byoc agent autopilot --cloud aws --region us-east-1 --external-id fyralis-acme-finance-pilot --bundle fyralis-byoc-acme-finance.zip --capabilities kubernetes,network,secrets,postgres,s3,kafka --auto-approve --run-readonly-api-probes --run-provider-executor --stack-name fyralis-byoc-acme-finance --json</code>
+          </div>
+          <div class="command">
+            <h3>Execute AWS resources and Helm install</h3>
+            <code>fyralis byoc agent provider-executor --cloud aws --region us-east-1 --stack-name fyralis-byoc-acme-finance --create-change-set --execute-change-set --execute-helm --confirm-cost-and-mutation --json</code>
+          </div>
+          <div class="command">
+            <h3>Discover source gates</h3>
+            <code>fyralis byoc source discover --source all --scopes auto --provider-authorization-mode preauthorized-ref --preauthorized-ref-manifest ./customer-source-refs.json --json</code>
+          </div>
+          <div class="command">
+            <h3>Plan source setup</h3>
+            <code>fyralis byoc source plan --source all --scopes auto --sync-mode dry-run --backfill-window 30d --provider-authorization-mode preauthorized-ref --preauthorized-ref-manifest ./customer-source-refs.json --json</code>
+          </div>
+          <div class="command">
+            <h3>Apply approved source plan</h3>
+            <code>fyralis byoc source apply --source all --requires-approval --plan latest --sync-mode dry-run --backfill-window 30d --provider-authorization-mode preauthorized-ref --preauthorized-ref-manifest ./customer-source-refs.json --json</code>
+          </div>
+          <div class="command">
+            <h3>Validate and activate sources</h3>
+            <code>fyralis byoc source validate --source all --provider-authorization-mode preauthorized-ref --preauthorized-ref-manifest ./customer-source-refs.json --json
+fyralis byoc source activate --source all --requires-approval --start-first-sync --sync-mode limited-backfill --backfill-window 30d --provider-authorization-mode preauthorized-ref --preauthorized-ref-manifest ./customer-source-refs.json --json</code>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <div>
+            <h2>What The CLI Produces</h2>
+            <p>
+              The CLI writes local customer-cloud artifacts. These are safe,
+              structured receipts and manifests, not source secrets.
+            </p>
+          </div>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Area</th>
+              <th>Generated artifacts</th>
+              <th>Purpose</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>BYOC agent</td>
+              <td>Role template, registration, preflight report, discovery plan, review bundle, apply receipt, CloudFormation template, Helm values, provider executor report, readiness report</td>
+              <td>Prepare and validate the customer-cloud deployment path.</td>
+            </tr>
+            <tr>
+              <td>Local rehearsal</td>
+              <td>Local Helm chart, kind runbook, generated Helm values, customer-source refs example</td>
+              <td>Run a zero-spend BYOC rehearsal before touching AWS.</td>
+            </tr>
+            <tr>
+              <td>Source setup</td>
+              <td>Discovery, source contract, setup plan, provider setup, secret refs, connection contract, validation, scope receipt, first-sync receipt, activation, readiness receipt</td>
+              <td>Automate every local step and expose only the exact human gates that provider APIs cannot complete.</td>
+            </tr>
+            <tr>
+              <td>Status handoff</td>
+              <td>Sanitized readiness and issue-code style receipts</td>
+              <td>Let Fyralis know setup status without receiving raw customer data.</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <div>
+            <h2>Supported Source Automation</h2>
+            <p>
+              The source registry now covers communication, productivity,
+              engineering, knowledge, meetings, finance, people, cloud, design,
+              operations, and CRM sources.
+            </p>
+          </div>
+          <span class="pill">26 source profiles</span>
+        </div>
+
+        <div class="grid cols-3">
+          <article class="card">
+            <span class="tag blue">OAuth</span>
+            <h3>Slack, GitHub, Discord, Notion</h3>
+            <p>
+              The customer-cloud UI generates real provider approval URLs,
+              watches callbacks, stores refs locally, and polls for landed
+              observations.
+            </p>
+          </article>
+          <article class="card">
+            <span class="tag blue">API Token</span>
+            <h3>Jira</h3>
+            <p>
+              The UI verifies Atlassian credentials, enumerates projects,
+              stores encrypted refs, registers webhook state, and emits the
+              onboarding trigger.
+            </p>
+          </article>
+          <article class="card">
+            <span class="tag blue">Gateway Session</span>
+            <h3>Telegram</h3>
+            <p>
+              The UI verifies MTProto session material, enumerates dialogs,
+              stores local refs, and creates Telegram install and shard state.
+            </p>
+          </article>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <div>
+            <h2>Host vs Customer Cloud Split</h2>
+            <p>
+              This split is the core of the BYOC model.
+            </p>
+          </div>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>Fyralis hosted portal</th>
+              <th>Customer cloud console / agent</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Plan selection, design-partner intent, customer intake, setup package overview</td>
+              <td>Cloud setup, source credentials, provider sessions, runtime validation, source sync</td>
+            </tr>
+            <tr>
+              <td>Stores sanitized onboarding metadata only</td>
+              <td>Stores provider tokens, source refs, raw payloads, logs, prompts, and embeddings</td>
+            </tr>
+            <tr>
+              <td>Receives readiness status and bounded issue codes</td>
+              <td>Runs autopilot commands and produces local receipts</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="section">
+        <div class="section-header">
+          <div>
+            <h2>Current Honest Status</h2>
+            <p>
+              The onboarding prototype is much closer to the real product
+              flow. The remaining limits are now about customer authorization,
+              provider access, quotas, and live-environment approval.
+            </p>
+          </div>
+        </div>
+
+        <div class="grid cols-2">
+          <article class="card">
+            <span class="tag">Done</span>
+            <h3>Customer-cloud executor</h3>
+            <p>
+              The CLI renders CloudFormation and Helm artifacts, can create or
+              execute CloudFormation change sets, and can run Helm install after
+              explicit customer confirmation.
+            </p>
+          </article>
+          <article class="card">
+            <span class="tag">Done</span>
+            <h3>Local BYOC rehearsal</h3>
+            <p>
+              The local chart gives us a no-AWS path to rehearse the gateway,
+              migrations, Kafka topics, object storage, source refs, and workers.
+            </p>
+          </article>
+          <article class="card">
+            <span class="tag amber">Requires customer refs</span>
+            <h3>Provider authorization</h3>
+            <p>
+              OAuth consent, API-token creation, admin approval, and MTProto
+              session authorization still require customer action. After that,
+              Fyralis automates finalize, trigger creation, sync status, and
+              observation verification.
+            </p>
+          </article>
+          <article class="card">
+            <span class="tag">Done</span>
+            <h3>Multi-source setup-owner UI</h3>
+            <p>
+              Slack, GitHub, Discord, Notion, Jira, and Telegram now share the
+              same automated setup panel with real provider URLs, local secret
+              handling, gateway polling, and observation display.
+            </p>
+          </article>
+        </div>
+
+        <p class="note">
+          Live AWS mutations are still outside the zero-spend path. The real
+          execution path is guarded by
+          <code>--confirm-cost-and-mutation</code> and uses customer-local AWS
+          credentials, kubeconfig, and source secret refs.
+        </p>
+      </section>
+    </main>
+
+    <footer>
+      <div class="shell">
+        Fyralis BYOC onboarding summary. Static explainer for the current
+        prototype state.
+      </div>
+    </footer>
+  </body>
+</html>

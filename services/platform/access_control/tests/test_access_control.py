@@ -780,6 +780,44 @@ async def test_shared_channel_grants_observation_visibility(tx_conn, tenant):
     assert d.reason == "observation_shared_channel"
 
 
+async def test_unknown_source_acl_denies_even_the_observation_author(
+    tx_conn, tenant
+):
+    author = await insert_actor(tx_conn, tenant)
+    observation_id = await insert_observation(tx_conn, tenant, author)
+    evidence_id = uuid7()
+    await tx_conn.execute(
+        """
+        INSERT INTO source_evidence (
+          id, tenant_id, source, installation_scope, source_channel,
+          source_object_type, source_object_id, source_revision_id, operation,
+          source_recorded_at, content_hash, raw_ingested_at, normalized_at,
+          ingress_kind, contract_version, connector_version, parser_version,
+          normalizer_version, raw_retention_state, access_policy
+        ) VALUES (
+          $1, $2, 'slack', 'stateless:slack', 'slack:message',
+          'message', 'private-message', 'r1', 'snapshot', now(),
+          repeat('a', 40), now(), now(), 'webhook', 1, 'test', 'test',
+          'test', 'not_stored',
+          '{"visibility":"unknown","audience":[],"source_acl_version":"not-captured"}'::jsonb
+        )
+        """,
+        evidence_id,
+        tenant,
+    )
+    await tx_conn.execute(
+        "UPDATE observations SET evidence_id = $1 WHERE id = $2",
+        evidence_id,
+        observation_id,
+    )
+
+    decision = await can_read_by_id(
+        author, "observation", observation_id, conn=tx_conn, tenant_id=tenant
+    )
+    assert not decision.allowed
+    assert decision.reason == "evidence_acl_unknown"
+
+
 # =====================================================================
 # Test 22 — HR channel NEVER leaks through manager chain
 # =====================================================================

@@ -198,11 +198,19 @@ async def test_rls_blocks_cross_tenant_select(
                 "ON CONFLICT DO NOTHING",
                 tenant_a, tenant_b,
             )
+            await conn.execute(
+                "SELECT set_config('app.current_tenant', $1, true)",
+                str(tenant_a),
+            )
             mid_a = await _seed_model(conn, tenant_a)
-            mid_b = await _seed_model(conn, tenant_b)
             await _insert_reading(
                 conn, model_id=mid_a, tenant=tenant_a, reading_kind="confirm",
             )
+            await conn.execute(
+                "SELECT set_config('app.current_tenant', $1, true)",
+                str(tenant_b),
+            )
+            mid_b = await _seed_model(conn, tenant_b)
             await _insert_reading(
                 conn, model_id=mid_b, tenant=tenant_b, reading_kind="contest",
             )

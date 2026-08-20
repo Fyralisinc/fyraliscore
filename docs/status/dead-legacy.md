@@ -16,7 +16,8 @@ What's superseded, what has no references, and what only tests reach.
 
 | Item | What it is | Status |
 |------|------------|--------|
-| `db/migrations/0021_review1_remediation.sql` → `anomaly_thresholds`, `dedup_keys_seen` | Tables from an early review remediation | **Orphan tables** — zero refs in `services`/`lib`/`tests`. |
+| `db/migrations/0021_review1_remediation.sql` → `anomaly_thresholds`, `dedup_keys_seen` | Tables from an early review remediation | **Dropped by `0155`** after zero refs in `services`/`lib`/`tests`. |
+| `db/migrations/0077`–`0079` → host-owned GitHub/code-intel tables | Pre-extension GitHub intelligence and code graph tables | **Dropped by `0156`**. GitHub/code intelligence is extension-owned, not core schema. |
 | `db/migrations/0032_topology_layer.sql` → `topo_dirty_queue` | Dirty-queue for the retired accepted-memory topology | **Retired** — zero non-test refs (only a test conftest `DELETE`). |
 | `db/migrations/0032` → `model_neighborhoods`, `model_neighborhood_membership` | Accepted-memory neighborhood tables | **Compat-only read path**: read live by the CEO Map routes, but written only by the *undeployed* topology workers (topology relocated to `services/reasoning/topology` + the sweeper). |
 

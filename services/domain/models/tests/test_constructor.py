@@ -69,6 +69,33 @@ def test_construct_model_adds_addressable_core_without_new_memory_layer() -> Non
     assert constructed.runtime.activation_coefficient == 1.0
 
 
+def test_construct_model_derives_semantic_terms_as_model_field() -> None:
+    constructed = construct_model(
+        _mc(
+            proposition={
+                "kind": "belief",
+                "subject": "Beacon",
+                "assertion": "partial refund edge case creates duplicate invoice reversal",
+                "domain_tags": ["payments"],
+                "semantic_terms": [
+                    "partial refund edge case",
+                    "Beacon",
+                    "payments",
+                ],
+            },
+            natural="Beacon partial refund edge case creates duplicate invoice reversal.",
+        )
+    )
+
+    terms = constructed.proposed.semantic_terms
+    assert "semantic_terms" not in constructed.proposed.proposition
+    assert "partial refund edge case" in terms
+    assert "duplicate invoice reversal" in terms
+    assert "beacon" not in terms
+    assert "payments" not in terms
+    assert constructed.projection.semantic_terms == tuple(terms)
+
+
 def test_construct_model_rejects_runtime_fields_inside_proposition() -> None:
     with pytest.raises(ValidationError) as exc:
         construct_model(

@@ -39,11 +39,10 @@ S3-WRITE-BEFORE-PUBLISH (M6.7 / A27.1)
 M6.7 makes ShardFetch a real backfill PRODUCER: each fetched record
 is written to the raw tier (S3, content-addressed via PutIfAbsent),
 then a `RawEnvelope(ingress_kind="backfill", raw_s3_key, content_hash)`
-pointer is published to `ingestion.raw` — the SAME envelope shape the
-webhook/gateway/pubsub shadow path publishes (see
-`services/ingest/ingestion/shadow_write.py`). The normalizer consumes the
-pointer, fetches the blob, and dispatches it through the handler
-registry exactly as for live traffic.
+pointer is published to `ingestion.raw` — the same envelope shape the
+connector webhook/gateway/pubsub paths publish through the host raw-emission
+port. The normalizer consumes the pointer and resolves semantic behavior through
+the connector registry exactly as for live traffic.
 
 Ordering extends N1 to "S3-write → publish → flush → advance":
   1. For each record: write the content-addressed blob to S3
@@ -221,11 +220,10 @@ PATTERN-ALIGNMENT MAPPING
     producer (`shard_fetch_completed`). All via the substrate.
 
   Rule 5 (no cross-workflow shared state):
-    No module-level mutable state in this file. `FETCHER_DISPATCH`
-    in `services/ingest/ingestion/fetchers/__init__.py` is ALL_CAPS
-    (constant-style) and outside the analyzer's `services/ingest/ingestion/
-    workflows/*.py` scope.
+    No module-level mutable state in this file. Fetching resolves through the
+    immutable Source Connector registry.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -238,7 +236,6 @@ from uuid import UUID
 import asyncpg
 import orjson
 
-from services.ingest.ingestion.fetchers import FETCHER_DISPATCH
 from services.ingest.ingestion.kafka.topics import topic_for
 from services.ingest.ingestion.progress.events import ProgressEvent, ShardFetched
 from services.ingest.ingestion.progress.publisher import publish_progress_events
@@ -276,8 +273,8 @@ WORKFLOW_ID_INBOX = "shard_fetch"  # per A13: workflow_id = inbox
 WORKFLOW_ID_DEFAULT = "default"  # diagnostic instance name
 
 # Signal kinds.
-SIGNAL_KIND_REQUESTED = "shard_fetch_requested"   # consumed from SourceOnboarding
-SIGNAL_KIND_COMPLETED = "shard_fetch_completed"   # emitted to SourceOnboarding
+SIGNAL_KIND_REQUESTED = "shard_fetch_requested"  # consumed from SourceOnboarding
+SIGNAL_KIND_COMPLETED = "shard_fetch_completed"  # emitted to SourceOnboarding
 
 # Downstream inbox (per M6.2a's SourceOnboarding).
 SOURCE_ONBOARDING_INBOX_KIND = "source_onboarding"
@@ -286,8 +283,7 @@ SOURCE_ONBOARDING_INBOX_ID = "source_onboarding"
 # Kafka topic for fetched records (LLD §4).
 RAW_TOPIC = "ingestion.raw"
 
-# Raw-tier (S3) defaults — mirror services/ingest/ingestion/shadow_write.py so
-# the backfill producer and the webhook shadow path land bodies under
+# Raw-tier (S3) defaults shared by backfill and connector live ingress so they land under
 # the same key scheme + bucket (A27.1).
 DEFAULT_S3_BUCKET = "fyralis-raw"
 DEFAULT_INGESTION_ENV = "dev"
@@ -368,257 +364,6 @@ SELECT s.id, s.onboarding_run_id, s.tenant_id, s.source, s.shard_kind,
  LIMIT $2
 """
 
-_LOAD_PROVIDER_INSTALL_SQL = """
-SELECT id, tenant_id, provider, installation_id, secret_ref, enabled
-  FROM provider_installations
- WHERE tenant_id = $1 AND provider = $2 AND enabled = TRUE
- LIMIT 1
-"""
-
-_LOAD_GMAIL_INSTALL_SQL = """
-SELECT id, tenant_id, workspace_domain, service_account_email,
-       scope, disabled_at
-  FROM gmail_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-15: Google Calendar is a DWD source like Gmail (not in
-# provider_installations). The fetcher works one calendar at a time via
-# shard_identifier, so the install row only needs scope + id + tenant_id;
-# the impersonated owner_email comes from the shard.
-_LOAD_GCAL_INSTALL_SQL = """
-SELECT id, tenant_id, workspace_domain, service_account_email,
-       scope, disabled_at
-  FROM google_calendar_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-16: Google Drive is a DWD source like Gmail/Calendar (not in
-# provider_installations). The fetcher works one drive at a time via
-# shard_identifier, so the install row only needs scope + id + tenant_id;
-# the impersonated owner_email + drive_id come from the shard.
-_LOAD_GDRIVE_INSTALL_SQL = """
-SELECT id, tenant_id, workspace_domain, service_account_email,
-       scope, disabled_at
-  FROM google_drive_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-17: Jira is a per-site install (not in provider_installations). The
-# fetcher works one project at a time via shard_identifier; the install row
-# carries base_url + account_email + secret_ref the JiraClient needs.
-_LOAD_JIRA_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, account_email, secret_ref, cloud_id,
-       disabled_at
-  FROM jira_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# Finance: Mercury is a per-tenant API-token install (not in
-# provider_installations). The fetcher works one account at a time via
-# shard_identifier; the install row carries base_url + secret_ref the
-# MercuryClient needs.
-_LOAD_MERCURY_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, secret_ref, disabled_at
-  FROM mercury_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# Finance: QuickBooks is a per-tenant OAuth install (not in
-# provider_installations). The fetcher works one entity type at a time via
-# shard_identifier; the install row carries realm_id + base_url + secret_ref
-# (access token) + refresh_secret_ref the QuickBooksClient needs.
-_LOAD_QUICKBOOKS_INSTALL_SQL = """
-SELECT id, tenant_id, realm_id, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
-  FROM quickbooks_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# Grafana is a per-tenant service-account install (not in
-# provider_installations). There is ONE shard per install (annotation/alert
-# state is org-wide), so the fetcher does not need a child row — the install
-# row carries base_url + secret_ref the GrafanaClient needs and base_url for
-# the `_instance_of` external_id namespace. Without this dedicated branch a
-# grafana shard would fall through to the provider_installations lookup, find
-# nothing, and park forever — its install never lands in that table.
-_LOAD_GRAFANA_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, org_id, secret_ref, disabled_at
-  FROM grafana_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-TELEGRAM: Telegram is a per-tenant MTProto-session install (not in
-# provider_installations). The fetcher works one dialog at a time via
-# shard_identifier; the install row carries the api credentials + the persisted
-# session refs the TelegramClient needs. Backfill uses the second authorization
-# (backfill_session_secret_ref); without this dedicated branch a telegram shard
-# would fall through to provider_installations, find nothing, and park forever.
-_LOAD_TELEGRAM_INSTALL_SQL = """
-SELECT id, tenant_id, account_label, api_id, api_hash_secret_ref,
-       session_secret_ref, backfill_session_secret_ref, disabled_at
-  FROM telegram_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-FIN2: Brex is a per-tenant API-token (Bearer) install (Mercury archetype;
-# not in provider_installations). The fetcher works one account at a time via
-# shard_identifier; the install row carries base_url + secret_ref the BrexClient
-# needs. Without this dedicated branch a brex shard would fall through to the
-# provider_installations lookup, find nothing, and park forever.
-_LOAD_BREX_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, secret_ref, disabled_at
-  FROM brex_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-FIN2: Ramp is a per-tenant OAuth install (QuickBooks archetype; not in
-# provider_installations). The fetcher works one entity type at a time via
-# shard_identifier; the install row carries business_id (scope id) + base_url +
-# secret_ref (access token) + refresh_secret_ref the RampClient needs.
-_LOAD_RAMP_INSTALL_SQL = """
-SELECT id, tenant_id, business_id, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
-  FROM ramp_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-FIN2: Gusto is a per-tenant OAuth install (QuickBooks archetype; not in
-# provider_installations). The install row carries company_uuid (scope id) +
-# base_url + secret_ref (access token) + refresh_secret_ref the GustoClient needs.
-_LOAD_GUSTO_INSTALL_SQL = """
-SELECT id, tenant_id, company_uuid, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
-  FROM gusto_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-FIN2: Deel is a per-tenant API-token (Bearer) install (Mercury archetype;
-# not in provider_installations). The install row carries base_url + secret_ref
-# the DeelClient needs.
-_LOAD_DEEL_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, secret_ref, disabled_at
-  FROM deel_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-VERTICALS: Fireflies is a per-tenant API-token (Bearer) install (Brex
-# archetype; not in provider_installations). The install row carries base_url +
-# workspace_id + secret_ref the FirefliesClient + fetcher need. Without this
-# dedicated branch a fireflies shard would fall through to provider_installations,
-# find nothing, and park forever.
-_LOAD_FIREFLIES_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, workspace_id, transcript_cursor, secret_ref,
-       disabled_at
-  FROM fireflies_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-VERTICALS: Signal is a per-tenant linked-device-session install (Telegram
-# archetype; not in provider_installations). The fetcher works one thread at a
-# time via shard_identifier; the install row carries account_label + the
-# persisted session refs the SignalClient needs (backfill uses the second
-# session). NO MTProto api credentials.
-_LOAD_SIGNAL_INSTALL_SQL = """
-SELECT id, tenant_id, account_label, session_secret_ref,
-       backfill_session_secret_ref, disabled_at
-  FROM signal_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-VERTICALS: AWS is a per-tenant (account, region) install (poll-live edge;
-# not in provider_installations). The install row carries account_id + region +
-# credential_kind + secret_ref the AwsClient needs.
-_LOAD_AWS_INSTALL_SQL = """
-SELECT id, tenant_id, account_id, region, credential_kind, secret_ref,
-       events_cursor_ms, disabled_at
-  FROM aws_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-VERTICALS: Miro is a per-tenant API-token (Bearer) install (Brex archetype;
-# not in provider_installations). The fetcher works one board at a time via
-# shard_identifier; the install row carries base_url + org_id + secret_ref the
-# MiroClient needs.
-_LOAD_MIRO_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, org_id, secret_ref, disabled_at
-  FROM miro_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-VERTICALS: Figma is a per-tenant API-token (Bearer) install (Brex archetype;
-# not in provider_installations). The fetcher works one file at a time via
-# shard_identifier; the install row carries base_url + team_id + secret_ref the
-# FigmaClient needs.
-_LOAD_FIGMA_INSTALL_SQL = """
-SELECT id, tenant_id, base_url, team_id, secret_ref, disabled_at
-  FROM figma_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-VERTICALS: Carta is a per-tenant OAuth install (Gusto archetype;
-# not in provider_installations). The install row carries firm_id (scope id) +
-# base_url + secret_ref (access token) + refresh_secret_ref the CartaClient needs.
-_LOAD_CARTA_INSTALL_SQL = """
-SELECT id, tenant_id, firm_id, base_url, secret_ref, refresh_secret_ref,
-       disabled_at
-  FROM carta_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-PEOPLE: HiBob is a per-tenant service-user Basic-auth install (Gusto/Brex
-# archetype; not in provider_installations). The fetcher works one entity type
-# at a time via shard_identifier; the install row carries company_id (scope) +
-# service_user_id (Basic public half) + base_url + secret_ref (token half).
-_LOAD_HIBOB_INSTALL_SQL = """
-SELECT id, tenant_id, company_id, service_user_id, base_url, secret_ref,
-       disabled_at
-  FROM hibob_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-PEOPLE: Ashby is a per-tenant API-key Basic-auth install (Brex/Jira
-# archetype; not in provider_installations). The install row carries org_id
-# (scope) + base_url + secret_ref (the API key Basic username).
-_LOAD_ASHBY_INSTALL_SQL = """
-SELECT id, tenant_id, org_id, base_url, secret_ref, disabled_at
-  FROM ashby_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-# IN-PEOPLE: LinkedIn is a per-tenant OAuth install (Carta archetype; partner-
-# gated, poll-only; not in provider_installations). The install row carries
-# organization_urn (scope) + base_url + secret_ref (access token) +
-# refresh_secret_ref the LinkedinClient needs.
-_LOAD_LINKEDIN_INSTALL_SQL = """
-SELECT id, tenant_id, organization_urn, base_url, secret_ref,
-       refresh_secret_ref, disabled_at
-  FROM linkedin_installations
- WHERE tenant_id = $1 AND disabled_at IS NULL
- LIMIT 1
-"""
-
-
 # ---------------------------------------------------------------------
 # Config.
 # ---------------------------------------------------------------------
@@ -648,13 +393,15 @@ class ShardFetchConfig:
 # Named side-effect functions (Rule 1).
 # ---------------------------------------------------------------------
 async def _load_shard(
-    executor: asyncpg.Pool | asyncpg.Connection, shard_id: UUID,
+    executor: asyncpg.Pool | asyncpg.Connection,
+    shard_id: UUID,
 ) -> asyncpg.Record | None:
     return await executor.fetchrow(_LOAD_SHARD_SQL, shard_id)
 
 
 async def _claim_shard_for_fetch(
-    conn: asyncpg.Connection, shard_id: UUID,
+    conn: asyncpg.Connection,
+    shard_id: UUID,
 ) -> bool:
     """CLAIM-VIA-UPDATE: mark shard 'in_progress' if it's currently
     'pending'. Returns True iff this caller won the claim.
@@ -664,7 +411,8 @@ async def _claim_shard_for_fetch(
 
 
 async def _refresh_shard_lease(
-    conn: asyncpg.Connection, shard_id: UUID,
+    conn: asyncpg.Connection,
+    shard_id: UUID,
 ) -> bool:
     """Extend the lease on an orphan in-progress shard. Returns True
     iff this caller now holds the lease (the UPDATE matched a row
@@ -674,78 +422,59 @@ async def _refresh_shard_lease(
 
 
 async def _mark_shard_done(
-    executor: asyncpg.Pool | asyncpg.Connection, shard_id: UUID,
+    executor: asyncpg.Pool | asyncpg.Connection,
+    shard_id: UUID,
 ) -> None:
     await executor.execute(_MARK_SHARD_DONE_SQL, shard_id)
 
 
 async def _mark_shard_failed(
     executor: asyncpg.Pool | asyncpg.Connection,
-    shard_id: UUID, last_error: str,
+    shard_id: UUID,
+    last_error: str,
 ) -> None:
     await executor.execute(
-        _MARK_SHARD_FAILED_SQL, shard_id, last_error,
+        _MARK_SHARD_FAILED_SQL,
+        shard_id,
+        last_error,
     )
 
 
 async def _load_orphan_shards(
-    pool: asyncpg.Pool, *, lease_timeout_seconds: float, limit: int,
+    pool: asyncpg.Pool,
+    *,
+    lease_timeout_seconds: float,
+    limit: int,
 ) -> list[asyncpg.Record]:
     """Find in-progress shards whose N1 heartbeat is stale."""
-    cutoff = (
-        dt.datetime.now(tz=dt.timezone.utc)
-        - dt.timedelta(seconds=lease_timeout_seconds)
+    cutoff = dt.datetime.now(tz=dt.timezone.utc) - dt.timedelta(
+        seconds=lease_timeout_seconds
     )
     return await pool.fetch(_LOAD_ORPHAN_SHARDS_SQL, cutoff, limit)
 
 
 async def _load_install(
-    pool: asyncpg.Pool, *, tenant_id: UUID, source: str,
+    pool: asyncpg.Pool,
+    *,
+    tenant_id: UUID,
+    source: str,
 ) -> asyncpg.Record | None:
-    """Load the active install row for this (tenant, source)."""
-    if source == "gmail":
-        return await pool.fetchrow(_LOAD_GMAIL_INSTALL_SQL, tenant_id)
-    if source == "google_calendar":
-        return await pool.fetchrow(_LOAD_GCAL_INSTALL_SQL, tenant_id)
-    if source == "google_drive":
-        return await pool.fetchrow(_LOAD_GDRIVE_INSTALL_SQL, tenant_id)
-    if source == "jira":
-        return await pool.fetchrow(_LOAD_JIRA_INSTALL_SQL, tenant_id)
-    if source == "mercury":
-        return await pool.fetchrow(_LOAD_MERCURY_INSTALL_SQL, tenant_id)
-    if source == "quickbooks":
-        return await pool.fetchrow(_LOAD_QUICKBOOKS_INSTALL_SQL, tenant_id)
-    if source == "grafana":
-        return await pool.fetchrow(_LOAD_GRAFANA_INSTALL_SQL, tenant_id)
-    if source == "telegram":
-        return await pool.fetchrow(_LOAD_TELEGRAM_INSTALL_SQL, tenant_id)
-    if source == "brex":
-        return await pool.fetchrow(_LOAD_BREX_INSTALL_SQL, tenant_id)
-    if source == "ramp":
-        return await pool.fetchrow(_LOAD_RAMP_INSTALL_SQL, tenant_id)
-    if source == "gusto":
-        return await pool.fetchrow(_LOAD_GUSTO_INSTALL_SQL, tenant_id)
-    if source == "deel":
-        return await pool.fetchrow(_LOAD_DEEL_INSTALL_SQL, tenant_id)
-    if source == "fireflies":
-        return await pool.fetchrow(_LOAD_FIREFLIES_INSTALL_SQL, tenant_id)
-    if source == "signal":
-        return await pool.fetchrow(_LOAD_SIGNAL_INSTALL_SQL, tenant_id)
-    if source == "aws":
-        return await pool.fetchrow(_LOAD_AWS_INSTALL_SQL, tenant_id)
-    if source == "miro":
-        return await pool.fetchrow(_LOAD_MIRO_INSTALL_SQL, tenant_id)
-    if source == "figma":
-        return await pool.fetchrow(_LOAD_FIGMA_INSTALL_SQL, tenant_id)
-    if source == "carta":
-        return await pool.fetchrow(_LOAD_CARTA_INSTALL_SQL, tenant_id)
-    if source == "hibob":
-        return await pool.fetchrow(_LOAD_HIBOB_INSTALL_SQL, tenant_id)
-    if source == "ashby":
-        return await pool.fetchrow(_LOAD_ASHBY_INSTALL_SQL, tenant_id)
-    if source == "linkedin":
-        return await pool.fetchrow(_LOAD_LINKEDIN_INSTALL_SQL, tenant_id)
-    return await pool.fetchrow(_LOAD_PROVIDER_INSTALL_SQL, tenant_id, source)
+    """Load the active contract installation for this tenant and source."""
+    return await pool.fetchrow(
+        """
+        SELECT id, tenant_id, connector_id,
+               external_installation_id AS installation_id,
+               desired_state, observed_phase, TRUE AS enabled
+          FROM source_connector_installations
+         WHERE tenant_id = $1 AND connector_id = $2
+           AND desired_state = 'Ready'
+           AND observed_phase IN ('Ready', 'Degraded')
+         ORDER BY updated_at DESC
+         LIMIT 1
+        """,
+        tenant_id,
+        f"fyralis/{source}",
+    )
 
 
 async def _write_record_and_build_message(
@@ -753,6 +482,7 @@ async def _write_record_and_build_message(
     *,
     tenant_id: UUID,
     source: str,
+    connector_installation_id: UUID | None,
     shard_id: UUID,
     cursor: dict[str, Any] | None,
     record: dict[str, Any],
@@ -810,6 +540,7 @@ async def _write_record_and_build_message(
         content_hash=content_hash,
         ingested_at=now,
         ingress_kind="backfill",
+        connector_installation_id=connector_installation_id,
     )
     return KafkaMessage(
         # Per-source raw topic so backfill traffic for one source cannot
@@ -825,6 +556,7 @@ class _FetchLoopContext:
     shard_id: UUID
     tenant_id: UUID
     source: str
+    shard_kind: str
     shard_identifier: dict[str, Any]
     loop_started_at: dt.datetime
     records_fetched: int = 0
@@ -833,13 +565,21 @@ class _FetchLoopContext:
     def from_shard(cls, shard: asyncpg.Record) -> "_FetchLoopContext":
         ident_raw = shard["shard_identifier"]
         shard_identifier = (
-            orjson.loads(ident_raw) if isinstance(ident_raw, (str, bytes))
+            orjson.loads(ident_raw)
+            if isinstance(ident_raw, (str, bytes))
             else dict(ident_raw)
         )
+        try:
+            shard_kind = shard["shard_kind"]
+        except KeyError:
+            # Older tests/fixtures predate the selected-column mirror; the
+            # identifier has always carried the source-specific kind.
+            shard_kind = shard_identifier.get("shard_kind", "legacy_shard")
         return cls(
             shard_id=shard["id"],
             tenant_id=shard["tenant_id"],
             source=shard["source"],
+            shard_kind=shard_kind,
             shard_identifier=shard_identifier,
             loop_started_at=dt.datetime.now(tz=dt.timezone.utc),
         )
@@ -851,7 +591,8 @@ class _FetchLoopContext:
 
 
 async def _persist_initial_workflow_state(
-    conn: asyncpg.Connection, shard_id: UUID,
+    conn: asyncpg.Connection,
+    shard_id: UUID,
 ) -> None:
     state = WorkflowState(
         workflow_kind=WORKFLOW_KIND,
@@ -875,7 +616,8 @@ def _log_fetch_install_unavailable(ctx: _FetchLoopContext) -> None:
 
 
 async def _ensure_fetch_loop_state(
-    pool: asyncpg.Pool, ctx: _FetchLoopContext,
+    pool: asyncpg.Pool,
+    ctx: _FetchLoopContext,
 ) -> None:
     # Ensure the N1 home exists before the first advance. Two paths reach this
     # point: signal-driven start bootstraps in the claim transaction;
@@ -892,7 +634,8 @@ async def _ensure_fetch_loop_state(
 
 
 async def _load_fetch_cursor(
-    pool: asyncpg.Pool, ctx: _FetchLoopContext,
+    pool: asyncpg.Pool,
+    ctx: _FetchLoopContext,
 ) -> tuple[WorkflowState | None, dict[str, Any] | None]:
     # Re-read N1 cursor each iteration. Robust against cross-replica handoffs
     # where another replica may have advanced the cursor.
@@ -907,14 +650,22 @@ async def _fetch_page(
     *,
     install: asyncpg.Record,
     cursor: dict[str, Any] | None,
+    connector_router: Any | None = None,
 ) -> Any:
     # FetchPage rate-limit gate (LLD §13): acquire one token for the
     # (source, method) bucket BEFORE the upstream page call. A bounded wait
     # raises RateLimitWaitExceeded, caught by _run_fetch_loop as transient.
     if rate_limiter is not None:
         await rate_limiter.acquire(source=ctx.source, tenant_id=ctx.tenant_id)
-    fetcher = FETCHER_DISPATCH[ctx.source]
-    return await fetcher(install, ctx.shard_identifier, cursor)
+    if connector_router is None:
+        raise RuntimeError("source connector router is unavailable")
+    return await connector_router.fetch(
+        ctx.source,
+        install,
+        ctx.shard_identifier,
+        cursor,
+        shard_kind=ctx.shard_kind,
+    )
 
 
 async def _write_fetch_page_messages(
@@ -924,6 +675,7 @@ async def _write_fetch_page_messages(
     *,
     cursor: dict[str, Any] | None,
     records: list[dict[str, Any]],
+    connector_installation_id: UUID | None = None,
 ) -> list[KafkaMessage] | None:
     if records and s3_client is None:
         raise RuntimeError(
@@ -941,6 +693,7 @@ async def _write_fetch_page_messages(
                     s3_client,
                     tenant_id=ctx.tenant_id,
                     source=ctx.source,
+                    connector_installation_id=connector_installation_id,
                     shard_id=ctx.shard_id,
                     cursor=cursor,
                     record=rec,
@@ -982,8 +735,12 @@ async def _advance_fetch_cursor(
             new_state_data={
                 "cursor": result.next_cursor,
                 "pages_fetched": (
-                    (current_state.state_data.get("pages_fetched", 0)
-                     if current_state else 0) + 1
+                    (
+                        current_state.state_data.get("pages_fetched", 0)
+                        if current_state
+                        else 0
+                    )
+                    + 1
                 ),
                 # Cumulative raw-record count, persisted so a resumed orphan
                 # reports the whole shard's count in `shard.fetched`.
@@ -1017,15 +774,25 @@ async def _run_fetch_pages(
     ctx: _FetchLoopContext,
     *,
     install: asyncpg.Record,
+    connector_router: Any | None = None,
 ) -> bool:
     while True:
         current_state, cursor = await _load_fetch_cursor(pool, ctx)
         result = await _fetch_page(
-            rate_limiter, ctx, install=install, cursor=cursor,
+            rate_limiter,
+            ctx,
+            install=install,
+            cursor=cursor,
+            connector_router=connector_router,
         )
         ctx.records_fetched += len(result.records)
         messages = await _write_fetch_page_messages(
-            s3_client, config, ctx, cursor=cursor, records=result.records,
+            s3_client,
+            config,
+            ctx,
+            cursor=cursor,
+            records=result.records,
+            connector_installation_id=UUID(str(install["id"])),
         )
         if messages is None:
             return False
@@ -1045,7 +812,8 @@ async def _run_fetch_pages(
 
 
 def _log_fetch_rate_limited_exit(
-    ctx: _FetchLoopContext, exc: RateLimitWaitExceeded,
+    ctx: _FetchLoopContext,
+    exc: RateLimitWaitExceeded,
 ) -> None:
     log.warning(
         "shard_fetch.rate_limited_exit_loop",
@@ -1059,7 +827,8 @@ def _log_fetch_rate_limited_exit(
 
 
 def _log_recoverable_fetch_error(
-    ctx: _FetchLoopContext, exc: Exception,
+    ctx: _FetchLoopContext,
+    exc: Exception,
 ) -> None:
     log.warning(
         "shard_fetch.recoverable_fetch_error_park",
@@ -1093,6 +862,7 @@ class ShardFetch(LongRunningService):
         config: ShardFetchConfig | None = None,
         s3_client: S3Client | None = None,
         rate_limiter: FetchRateLimiter | None = None,
+        connector_router: Any | None = None,
     ) -> None:
         self._pool = pool
         self._kafka_producer = kafka_producer
@@ -1107,6 +877,7 @@ class ShardFetch(LongRunningService):
         # prior behaviour. When set, one token is consumed per page fetch
         # from the (source, method) bucket before the upstream call.
         self._rate_limiter = rate_limiter
+        self._connector_router = connector_router
 
     @property
     def tick_interval_seconds(self) -> float:
@@ -1190,7 +961,8 @@ class ShardFetch(LongRunningService):
                     # completion in the same transaction to keep the
                     # downstream consumer in sync.
                     await self._emit_shard_completed(
-                        conn, shard=shard,
+                        conn,
+                        shard=shard,
                         status=shard["state"],
                         failure_reason=None,
                     )
@@ -1198,7 +970,8 @@ class ShardFetch(LongRunningService):
 
                 if shard["state"] == "pending":
                     is_new_claim = await _claim_shard_for_fetch(
-                        conn, shard_id,
+                        conn,
+                        shard_id,
                     )
                     if not is_new_claim:
                         # Race: another replica claimed between our
@@ -1252,7 +1025,9 @@ class ShardFetch(LongRunningService):
         return sum(int(r) for r in results)
 
     async def _bootstrap_workflow_state(
-        self, conn: asyncpg.Connection, shard_id: UUID,
+        self,
+        conn: asyncpg.Connection,
+        shard_id: UUID,
     ) -> None:
         """Initialize the N1 home for this shard.
 
@@ -1269,10 +1044,9 @@ class ShardFetch(LongRunningService):
         Per the module docstring: this runs OUTSIDE the claim
         transaction. Each iteration:
           1. Load current cursor from workflow_states (N1 home).
-          2. Load install (from provider_installations or
-             gmail_installations).
-          3. Call FETCHER_DISPATCH[source](install, shard_identifier,
-             cursor) → FetchResult.
+          2. Load the common connector installation.
+          3. Execute the connector historical-pull capability with the shard
+             and cursor.
           4. Build Kafka messages for result.records.
           5. Call advance_cursor_atomic_with_kafka_publish — N1.
           6. If end_of_data: exit loop.
@@ -1293,7 +1067,9 @@ class ShardFetch(LongRunningService):
 
         try:
             install = await _load_install(
-                self._pool, tenant_id=ctx.tenant_id, source=ctx.source,
+                self._pool,
+                tenant_id=ctx.tenant_id,
+                source=ctx.source,
             )
             if install is None:
                 # Install disabled mid-flight — suspended/revoked via the
@@ -1316,6 +1092,7 @@ class ShardFetch(LongRunningService):
                 self._config,
                 ctx,
                 install=install,
+                connector_router=self._connector_router,
             ):
                 return
 
@@ -1330,7 +1107,8 @@ class ShardFetch(LongRunningService):
 
         except NotImplementedError as exc:
             await self._terminate_shard(
-                shard_id=ctx.shard_id, state="failed",
+                shard_id=ctx.shard_id,
+                state="failed",
                 failure_reason=str(exc),
             )
             return
@@ -1344,26 +1122,37 @@ class ShardFetch(LongRunningService):
                 # handling above.
                 _log_recoverable_fetch_error(ctx, exc)
                 return  # stay in_progress; orphan-scan retries
-            log.exception(
-                "shard_fetch.unexpected_exception",
-                extra={"shard_id": str(ctx.shard_id)},
-            )
-            await self._terminate_shard(
-                shard_id=ctx.shard_id, state="failed",
-                failure_reason=f"{type(exc).__name__}: {exc}",
-            )
+            await self._fail_shard_for_exception(ctx, exc)
             return
 
         # Clean end-of-data exit. Pass the fetch metrics so the terminal
         # transition can emit the `shard.fetched` progress event.
         await self._terminate_shard(
-            shard_id=ctx.shard_id, state="done", failure_reason=None,
+            shard_id=ctx.shard_id,
+            state="done",
+            failure_reason=None,
             observation_count=ctx.records_fetched,
             fetched_in_seconds=ctx.fetched_in_seconds(),
         )
 
+    async def _fail_shard_for_exception(
+        self,
+        ctx: _FetchLoopContext,
+        exc: Exception,
+    ) -> None:
+        log.exception(
+            "shard_fetch.unexpected_exception",
+            extra={"shard_id": str(ctx.shard_id)},
+        )
+        await self._terminate_shard(
+            shard_id=ctx.shard_id,
+            state="failed",
+            failure_reason=f"{type(exc).__name__}: {exc}",
+        )
+
     async def _terminate_shard(
-        self, *,
+        self,
+        *,
         shard_id: UUID,
         state: str,  # 'done' or 'failed'
         failure_reason: str | None,
@@ -1393,28 +1182,36 @@ class ShardFetch(LongRunningService):
                     await _mark_shard_done(conn, shard_id)
                 else:
                     await _mark_shard_failed(
-                        conn, shard_id, failure_reason or "<unknown>",
+                        conn,
+                        shard_id,
+                        failure_reason or "<unknown>",
                     )
                 # Re-load to get the shard's run/source for the signal.
                 shard = await _load_shard(conn, shard_id)
                 if shard is None:
                     return
                 await self._emit_shard_completed(
-                    conn, shard=shard, status=state,
+                    conn,
+                    shard=shard,
+                    status=state,
                     failure_reason=failure_reason,
                 )
                 if state == "done" and observation_count is not None:
-                    events.append(ShardFetched(
-                        tenant_id=shard["tenant_id"],
-                        source=shard["source"],
-                        shard_id=shard["id"],
-                        observation_count=observation_count,
-                        fetched_in_seconds=fetched_in_seconds or 0.0,
-                    ))
+                    events.append(
+                        ShardFetched(
+                            tenant_id=shard["tenant_id"],
+                            source=shard["source"],
+                            shard_id=shard["id"],
+                            observation_count=observation_count,
+                            fetched_in_seconds=fetched_in_seconds or 0.0,
+                        )
+                    )
         await publish_progress_events(self._kafka_producer, events)
 
     async def _emit_shard_completed(
-        self, conn: asyncpg.Connection, *,
+        self,
+        conn: asyncpg.Connection,
+        *,
         shard: asyncpg.Record,
         status: str,
         failure_reason: str | None,
@@ -1444,13 +1241,18 @@ class ShardFetch(LongRunningService):
         )
 
     async def _persist_scan_state(
-        self, *, signals_processed: int, orphans_resumed: int,
+        self,
+        *,
+        signals_processed: int,
+        orphans_resumed: int,
     ) -> None:
         """Diagnostic state row for ops queries. Not load-bearing for
         correctness; the per-shard `workflow_states` row (keyed by
         shard_id) is the N1 home and IS load-bearing."""
         existing = await load_state(
-            self._pool, WORKFLOW_KIND, self._config.instance_name,
+            self._pool,
+            WORKFLOW_KIND,
+            self._config.instance_name,
         )
         state = WorkflowState(
             workflow_kind=WORKFLOW_KIND,
@@ -1461,13 +1263,19 @@ class ShardFetch(LongRunningService):
                 "last_signals_processed": signals_processed,
                 "last_orphans_resumed": orphans_resumed,
                 "lifetime_signals_processed": (
-                    (existing.state_data.get("lifetime_signals_processed", 0)
-                     if existing else 0)
+                    (
+                        existing.state_data.get("lifetime_signals_processed", 0)
+                        if existing
+                        else 0
+                    )
                     + signals_processed
                 ),
                 "lifetime_orphans_resumed": (
-                    (existing.state_data.get("lifetime_orphans_resumed", 0)
-                     if existing else 0)
+                    (
+                        existing.state_data.get("lifetime_orphans_resumed", 0)
+                        if existing
+                        else 0
+                    )
                     + orphans_resumed
                 ),
             },
@@ -1509,25 +1317,37 @@ async def _run_service() -> None:
     )
     from services.ingest.ingestion.rate_limit import RateLimiter
     from services.ingest.ingestion.workflows.runtime import make_workflow_pool
+    from services.ingest.connector_platform.workflow_wiring import (
+        build_workflow_connector_wiring,
+    )
 
     pool = await make_workflow_pool(os.environ["DATABASE_URL"])
-    producer = IdempotentProducer(ProducerConfig(
-        bootstrap_servers=os.environ.get(
-            "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092",
-        ),
-        client_id="workflow-shard_fetch",
-    ))
+    producer = IdempotentProducer(
+        ProducerConfig(
+            bootstrap_servers=os.environ.get(
+                "KAFKA_BOOTSTRAP_SERVERS",
+                "localhost:9092",
+            ),
+            client_id="workflow-shard_fetch",
+        )
+    )
     await producer.start()
 
     # Raw-tier S3 client for the backfill producer (A27.1). S3_ENDPOINT_URL
     # is optional (None → real AWS); S3_RAW_BUCKET defaults to fyralis-raw,
-    # matching the webhook shadow path.
+    # matching the connector webhook path.
     s3_client = S3Client(
         os.environ.get("S3_RAW_BUCKET", DEFAULT_S3_BUCKET),
         endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
         region_name=os.environ.get("S3_REGION_NAME", "auto"),
     )
     await s3_client.connect()
+    connector_wiring = build_workflow_connector_wiring(
+        pool=pool,
+        s3_raw_client=s3_client,
+        kafka_producer=producer,
+    )
+    await connector_wiring.refresh_routing()
 
     config = ShardFetchConfig(
         tick_interval_seconds=float(
@@ -1543,7 +1363,8 @@ async def _run_service() -> None:
             os.environ.get("SHARD_FETCH_FLUSH_SEC", "5.0"),
         ),
         instance_name=os.environ.get(
-            "SHARD_FETCH_INSTANCE", DEFAULT_DIAGNOSTIC_INSTANCE,
+            "SHARD_FETCH_INSTANCE",
+            DEFAULT_DIAGNOSTIC_INSTANCE,
         ),
         ingestion_env=os.environ.get("INGESTION_ENV", DEFAULT_INGESTION_ENV),
         rate_limit_max_wait_seconds=float(
@@ -1575,11 +1396,16 @@ async def _run_service() -> None:
         log.info("workflow.shard_fetch.rate_limit_enabled")
 
     service = ShardFetch(
-        pool, producer, config=config, s3_client=s3_client,
+        pool,
+        producer,
+        config=config,
+        s3_client=s3_client,
         rate_limiter=rate_limiter,
+        connector_router=connector_wiring.router,
     )
 
     stop_event = asyncio.Event()
+    rollout_task = asyncio.create_task(connector_wiring.watch_routing(stop_event))
     loop = asyncio.get_event_loop()
     for s in (sig_module.SIGTERM, sig_module.SIGINT):
         loop.add_signal_handler(s, stop_event.set)
@@ -1598,17 +1424,23 @@ async def _run_service() -> None:
     health = start_health_server(get_metrics=dict, heartbeat=heartbeat)
     ticker = asyncio.ensure_future(run_heartbeat_ticker(heartbeat, stop_event))
 
-    log.info("workflow.shard_fetch.started", extra={
-        "instance": config.instance_name,
-    })
+    log.info(
+        "workflow.shard_fetch.started",
+        extra={
+            "instance": config.instance_name,
+        },
+    )
     try:
         await service.run(stop_event=stop_event)
     finally:
         log.info("workflow.shard_fetch.shutting_down")
+        rollout_task.cancel()
+        await asyncio.gather(rollout_task, return_exceptions=True)
         ticker.cancel()
         await asyncio.gather(ticker, return_exceptions=True)
         if health is not None:
             health.shutdown()
+        await connector_wiring.close()
         await producer.stop()
         await s3_client.close()
         if redis is not None:
@@ -1620,6 +1452,7 @@ async def _run_service() -> None:
 def main() -> None:
     import asyncio
     import os
+
     logging.basicConfig(
         level=os.environ.get("WORKFLOWS_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",

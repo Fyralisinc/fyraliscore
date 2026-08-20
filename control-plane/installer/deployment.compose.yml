@@ -1,0 +1,249 @@
+# ============================================================================
+# WS-INSTALLER — per-tenant deployment overlay (customer-VPC side)
+# ----------------------------------------------------------------------------
+# Brings up, FOR ONE TENANT, a minimal single-host BYOC data-plane deployment:
+#
+#   1. data-plane stack  — a minimal, runnable subset of the repo-root
+#                          docker-compose.yml services (postgres / redis / kafka
+#                          + their prometheus exporters). The boundary collector
+#                          scrapes the exporters; the full worker fleet is left to
+#                          the root compose (see README → "Data-plane coupling").
+#   2. boundary          — the OTel Collector from control-plane/boundary. Scrapes
+#                          the data-plane exporters, enforces tier policy (I1),
+#                          stamps deployment identity, and remote-writes filtered
+#                          metrics OUTBOUND to the vendor auth-proxy over mTLS.
+#   3. agent             — the outbound-only dial-home agent from control-plane/
+#                          agent. Verifies signed config/license before apply
+#                          (I6), validates the license expiry, and heartbeats the
+#                          C4 DeploymentRecord to the console — buffering on
+#                          console outage (I3). Opens NO inbound listener (I2).
+#
+# Everything tenant-specific comes from the AGENT BUNDLE, mounted read-only and
+# parameterized via the ${...} variables below. `install.sh` renders a .env file
+# from the bundle and launches this overlay with it; nothing here is hard-coded
+# to a tenant.
+#
+# Self-test / preview:
+#   docker compose -f deployment.compose.yml --env-file <rendered>.env config
+#
+# This is the MINIMAL LOCAL installer. Production uses Helm/Terraform — see
+# README.md → "Production path".
+# ============================================================================
+
+name: ${FYRALIS_DEPLOYMENT_NAME:-fyralis-dp}
+
+# ---------------------------------------------------------------------------
+# Networks
+#   dp-net : the single-host data-plane network. The boundary collector and the
+#            data-plane services (and the agent) all attach here so the
+#            collector can scrape `postgres-exporter:9187`, `kafka-exporter:9308`,
+#            `redis-exporter:9121` by service name (matches the targets in
+#            control-plane/boundary/otel-collector-config.yaml).
+#
+#   The boundary's egress to the vendor control plane is OUTBOUND ONLY over the
+#   host's default route to ${FYRALIS_AUTH_PROXY_URL}; there is no inbound network
+#   from the control plane into this stack (I2).
+# ---------------------------------------------------------------------------
+networks:
+  dp-net:
+    driver: bridge
+
+volumes:
+  dp-pgdata:
+  dp-redis:
+  dp-kafka:
+  # Agent telemetry/heartbeat buffer — survives a console outage (I3) and a
+  # container restart, so buffered heartbeats are replayed when the console
+  # comes back.
+  agent-buffer:
+
+services:
+  # =========================================================================
+  # 1) DATA PLANE — minimal runnable subset of the repo-root docker-compose.yml
+  # -------------------------------------------------------------------------
+  # A real customer brings up the FULL data plane from the repo root compose
+  # (45 services). For the single-host installer we stand up the stateful core
+  # + the three prometheus exporters the boundary collector scrapes, so the
+  # boundary has live `up`/family series to filter and remote-write. The image
+  # tags mirror the root compose exactly.
+  # =========================================================================
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: ${FYRALIS_DEPLOYMENT_NAME:-fyralis-dp}-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fyralis}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set for the demo data-plane}
+      POSTGRES_DB: ${POSTGRES_DB:-company_os}
+    volumes:
+      - dp-pgdata:/var/lib/postgresql/data
+    networks:
+      - dp-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fyralis} -d ${POSTGRES_DB:-company_os}"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: ${FYRALIS_DEPLOYMENT_NAME:-fyralis-dp}-postgres-exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER:-fyralis}:${POSTGRES_PASSWORD:?set for the demo data-plane}@postgres:5432/${POSTGRES_DB:-company_os}?sslmode=disable"
+    expose:
+      - "9187"
+    networks:
+      - dp-net
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: ${FYRALIS_DEPLOYMENT_NAME:-fyralis-dp}-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - dp-redis:/data
+    networks:
+      - dp-net
+    restart: unless-stopped
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.61.0
+    container_name: ${FYRALIS_DEPLOYMENT_NAME:-fyralis-dp}-redis-exporter
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    expose:
+      - "9121"
+    networks:
+      - dp-net
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  kafka:
+    image: apache/kafka:4.0.2
+    container_name: ${FYRALIS_DEPLOYMENT_NAME:-fyralis-dp}-kafka
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: "broker,controller"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_CONTROLLER_LISTENER_NAMES: "CONTROLLER"
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      CLUSTER_ID: "${KAFKA_CLUSTER_ID:-fyralis-dp-cluster-0001}"
+    volumes:
+      - dp-kafka:/var/lib/kafka/data
+    networks:
+      - dp-net
+    restart: unless-stopped
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.7.0
+    container_name: ${FYRALIS_DEPLOYMENT_NAME:-fyralis-dp}-kafka-exporter
+    command: ["--kafka.server=kafka:9092"]
+    expose:
+      - "9308"
+    networks:
+      - dp-net
+    depends_on:
+      - kafka
+    restart: unless-stopped
+
+  # =========================================================================
+  # 2) BOUNDARY — OTel Collector (control-plane/boundary), tier enforcement +
+  #    OUTBOUND metrics egress through the vendor auth-proxy over mTLS.
+  # -------------------------------------------------------------------------
+  # Mounts (read-only):
+  #   - the validated T1 collector config from control-plane/boundary
+  #   - the CA cert from the bundle  -> /etc/fyralis/ca/ca.crt
+  #   - the per-tenant client cert+key from the bundle -> /etc/fyralis/agent/
+  # Identity (tenant_id/deployment_id/region/tier) + the auth-proxy URL come from
+  # the bundle env. The collector NEVER sets X-Scope-OrgID (I4) — the proxy
+  # derives it from the verified cert SAN.
+  # =========================================================================
+  boundary:
+    image: otel/opentelemetry-collector-contrib:${FYRALIS_OTELCOL_TAG:-0.103.1}
+    container_name: ${FYRALIS_DEPLOYMENT_NAME:-fyralis-dp}-boundary
+    command: ["--config=/etc/otelcol/config.yaml"]
+    environment:
+      # C4 identity stamped on every series (resource processor reads these).
+      FYRALIS_TENANT_ID: ${FYRALIS_TENANT_ID:?bundle must set FYRALIS_TENANT_ID}
+      FYRALIS_DEPLOYMENT_ID: ${FYRALIS_DEPLOYMENT_ID:?bundle must set FYRALIS_DEPLOYMENT_ID}
+      FYRALIS_REGION: ${FYRALIS_REGION:-unknown}
+      FYRALIS_TELEMETRY_TIER: ${FYRALIS_TELEMETRY_TIER:-T1}
+      # OUTBOUND push base: the vendor auth-proxy that fronts Mimir /api/v1/push.
+      FYRALIS_AUTH_PROXY_URL: ${FYRALIS_AUTH_PROXY_URL:?bundle must set FYRALIS_AUTH_PROXY_URL}
+    volumes:
+      # The boundary collector config (committed, owned by the boundary build).
+      - ${FYRALIS_BOUNDARY_CONFIG:-../boundary/otel-collector-config.yaml}:/etc/otelcol/config.yaml:ro
+      # mTLS material FROM THE BUNDLE (tenant cert + CA). Read-only.
+      - ${FYRALIS_BUNDLE_DIR:?bundle dir not set}/ca.crt:/etc/fyralis/ca/ca.crt:ro
+      - ${FYRALIS_BUNDLE_DIR:?bundle dir not set}/client.crt:/etc/fyralis/agent/client.crt:ro
+      - ${FYRALIS_BUNDLE_DIR:?bundle dir not set}/client.key:/etc/fyralis/agent/client.key:ro
+    networks:
+      - dp-net
+    depends_on:
+      - postgres-exporter
+      - redis-exporter
+      - kafka-exporter
+    restart: unless-stopped
+
+  # =========================================================================
+  # 3) AGENT — outbound-only dial-home (control-plane/agent).
+  # -------------------------------------------------------------------------
+  # Pulls signed config/license, VERIFIES against the bundle trust_root before
+  # apply (I6), refuses to operate on an expired license, and heartbeats the C4
+  # DeploymentRecord to the console — buffering to a persistent volume on console
+  # outage (I3). NO inbound port is published (I2): the agent only initiates.
+  #
+  # The agent code is mounted from control-plane/agent (owned by the agent build)
+  # and run on the shared control-plane image so it can import control-plane/lib
+  # + control-plane/signing. The whole control-plane tree is mounted read-only at
+  # /opt/fyralis/control-plane so `lib`, `signing`, and `agent` resolve as a
+  # package set; only the bundle + buffer are writable.
+  # =========================================================================
+  agent:
+    image: ${FYRALIS_AGENT_IMAGE:-python:3.12-slim}
+    container_name: ${FYRALIS_DEPLOYMENT_NAME:-fyralis-dp}-agent
+    working_dir: /opt/fyralis/control-plane
+    # The agent entrypoint is provided by the agent build (control-plane/agent).
+    # We invoke it as a module so it picks up lib/signing as siblings. If the
+    # agent build ships a different entrypoint, override FYRALIS_AGENT_CMD.
+    command: ["sh", "-c", "${FYRALIS_AGENT_CMD:-pip install --quiet cryptography pydantic pyyaml httpx structlog >/dev/null 2>&1 && python -m agent.run || (echo 'agent module not present yet — see installer README; idling' && sleep infinity)}"]
+    environment:
+      # Identity + endpoints (also written into the heartbeat record).
+      FYRALIS_TENANT_ID: ${FYRALIS_TENANT_ID:?bundle must set FYRALIS_TENANT_ID}
+      FYRALIS_DEPLOYMENT_ID: ${FYRALIS_DEPLOYMENT_ID:?bundle must set FYRALIS_DEPLOYMENT_ID}
+      FYRALIS_REGION: ${FYRALIS_REGION:-unknown}
+      FYRALIS_VERSION: ${FYRALIS_VERSION:-0.0.0}
+      FYRALIS_TELEMETRY_TIER: ${FYRALIS_TELEMETRY_TIER:-T1}
+      # Where the agent dials home (outbound only).
+      FYRALIS_AUTH_PROXY_URL: ${FYRALIS_AUTH_PROXY_URL:?bundle must set FYRALIS_AUTH_PROXY_URL}
+      FYRALIS_CONSOLE_URL: ${FYRALIS_CONSOLE_URL:-http://console:8080}
+      # Bundle layout inside the container (all read-only).
+      FYRALIS_BUNDLE_DIR: /etc/fyralis/bundle
+      FYRALIS_TRUST_ROOT: /etc/fyralis/bundle/trust_root.json
+      FYRALIS_LICENSE_PATH: /etc/fyralis/bundle/license.json
+      FYRALIS_CONFIG_PATH: /etc/fyralis/bundle/config.json
+      # Persistent outbound buffer (I3).
+      FYRALIS_BUFFER_DIR: /var/lib/fyralis/buffer
+      PYTHONPATH: /opt/fyralis/control-plane
+    volumes:
+      # Whole control-plane tree (lib + signing + agent), read-only.
+      - ${FYRALIS_CONTROL_PLANE_DIR:-..}:/opt/fyralis/control-plane:ro
+      # The agent bundle, read-only.
+      - ${FYRALIS_BUNDLE_DIR:?bundle dir not set}:/etc/fyralis/bundle:ro
+      # Persistent buffer (survives console outage + restart).
+      - agent-buffer:/var/lib/fyralis/buffer
+    networks:
+      - dp-net
+    depends_on:
+      - boundary
+    restart: unless-stopped
+    # NO `ports:` — I2: outbound only, never an inbound listener.

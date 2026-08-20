@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request, status
 

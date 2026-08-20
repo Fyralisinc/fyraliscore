@@ -1,14 +1,24 @@
-# Figma — ingestion source research
+# Figma — historical ingestion research
 
-> **Status:** Pre-implementation research/scoping — NOT built. Grounded in the [Source Integration Contract](_integration-contract.md). Web-researched + adversarially verified (8/8 claims survived 3-vote verification). Date: 2026-06-08.
+> **Superseded for customer onboarding.** This exploration predates the
+> deployment-owned OAuth implementation. The supported BYOC path is one private
+> Figma OAuth app per customer deployment, configured once by a deployment
+> administrator; users then provide explicit file URLs and approve OAuth. A
+> personal/org access token is a legacy operator fallback, not normal onboarding.
+> Use [the current ingestion flow](../../ingestion/flows/figma-ingestion.md) and
+> [the administrator runbook](../../operations/figma-byoc-oauth-admin.md) for
+> implementation or operating instructions.
 
-**Verdict: clones Jira/Grafana (API-token Bearer archetype) · can-we-gather: YES · effort: M.**
+> **Historical status:** Pre-implementation research/scoping, retained for
+> source-surface research. It is not the current implementation contract.
+
+**Historical exploration verdict: API-token/Bearer archetype candidate · can-we-gather: YES · effort: M.**
 
 ---
 
 ## TL;DR
 
-Figma exposes a REST/JSON API (v1) plus Webhooks V2, giving us design-file trees, named versions, comment threads, project/team enumeration, library publish events, and dev-handoff status changes for any Figma org we own. Auth is granular OAuth 2.0 per-resource (the old broad `files:read` scope is deprecated) or a long-lived org/team access token on a Dev/Full-seat service identity. Backfill enumerates teams → projects → files via `projects:read` endpoints, then fetches each file's full document tree, version history, and comments; the planner emits one shard per file key, matching the Jira/Grafana cursor model. Live capture runs through Figma Webhooks V2, which maps directly onto our HMAC-webhook → Kafka 202 ingress path except for one net-new wrinkle: Figma authenticates callbacks via a shared **PASSCODE inside the JSON body** rather than an HMAC signature header, requiring a new `FigmaVerifier` variant. All other pipeline plumbing (client, fetcher cursor, handler, migration, onboarding) is a direct clone of the Jira/Grafana slices.
+Figma exposes a REST/JSON API (v1) plus Webhooks V2, giving us design-file trees, named versions, comment threads, project/team enumeration, library publish events, and dev-handoff status changes. This document records research options that informed the implementation. The current product deliberately chooses granular OAuth with explicit file URLs rather than broad team enumeration or a long-lived access token. It fetches the selected file's full document tree, version history, and comments; webhook expansion remains separate from normal OAuth onboarding.
 
 ---
 
@@ -55,23 +65,33 @@ Figma is the dominant collaborative design tool for product teams. Almost every 
 | `GET /v2/webhooks/:webhook_id` | Read webhook metadata (`webhooks:read`) |
 | `GET /v1/me` | Authenticated user / connectivity + seat probe |
 
-**Auth mechanism:** OAuth 2.0 with granular per-resource scopes (preferred) or a Figma personal/org access token for simpler setups.
+**Current auth mechanism:** OAuth 2.0 with the deployment-owned app and the five
+documented snapshot scopes. A Figma personal/org access token is a legacy
+operator migration fallback, not a simpler customer setup.
 
-**Required scopes for v1 ingestion:**
-- `file_content:read` — file nodes, editor type
+**Required scopes for the current snapshot path:**
+- `current_user:read` — verify the OAuth grant holder
+- `file_content:read` — file nodes and document content
 - `file_metadata:read`
 - `file_versions:read`
 - `file_comments:read`
-- `projects:read` / `project_metadata:read`
-- `webhooks:read` + `webhooks:write`
+
+**Deferred scope ideas (not requested by current onboarding):**
+`projects:read` / `project_metadata:read`, `webhooks:read`, and
+`webhooks:write`.
 
 **Deprecated scope to avoid:** `files:read` (broad, deprecated — must not be relied on).
 
 **Enterprise/admin-only scopes (out of v1 scope):** `file_variables:*`, `library_analytics:read`, `org:*` admin scopes.
 
-**Org-token vs per-user:** Org/team access token or OAuth on a single **Dev/Full-seat service identity** is strongly preferred — full coverage and avoids the ~6/month Tier-1 rate cap that applies to View/Collab seats. Per-user OAuth fragments coverage and hits seat-tier caps.
+**Historical org-token vs per-user question:** An org/team access token or OAuth
+on a single **Dev/Full-seat service identity** can offer broad coverage, but it
+is not the current customer onboarding model. The current file-scoped OAuth
+grant intentionally limits Fyralis to the files the consenting user selected.
 
-**Admin requirements:** Webhook registration and org/team-wide token issuance typically require a Figma admin (Org/Enterprise plan) and a Dev or Full seat for the token identity.
+**Current admin requirement:** A customer deployment administrator creates the
+private OAuth app and registers the exact callback. Webhook registration and
+org/team-wide token issuance are not requirements for the current snapshot path.
 
 ---
 
@@ -121,9 +141,14 @@ Figma is the dominant collaborative design tool for product teams. Almost every 
 
 **Verdict: Yes.**
 
-As the org that owns the Figma team/org, we can issue an OAuth grant (or org/team token) on a Dev/Full-seat service identity, enumerate our teams/projects/files, read file trees + versions + comments, and register Webhooks V2 for live capture. This is the same **self-owned-account posture** as our Jira (API token), Grafana (service-account), and Mercury sources. No third-party consent is needed beyond our own Figma admin.
+The current implementation uses a customer-owned private OAuth app and a
+consenting user's explicit file URLs. It can read file trees, versions, and
+comments for those files without an organization-wide token or team/project
+enumeration. Webhook registration is not required for initial onboarding.
 
-**Access model:** Org/team access token or OAuth on a single Dev/Full-seat service identity. Webhook creation and broad file access require a Figma admin on an Org/Enterprise plan.
+**Access model:** Deployment-owned OAuth app plus per-user consent, scoped to
+explicitly selected files. A Figma app owner performs the one-time private-app
+setup; OAuth grants are refreshed server-side.
 
 **Legal/ToS:** First-party access to our own org's design data via Figma's documented REST + Webhooks API — within Figma's developer terms. No scraping, no undocumented endpoints. Standard data-processing/retention review applies since we copy file/comment content.
 
@@ -145,10 +170,11 @@ As the org that owns the Figma team/org, we can issue an OAuth grant (or org/tea
 ```
 SOURCE: figma
 
-Auth shape →            API-token Bearer (org/team access token, long-lived)
-                        OR OAuth2 per-resource (granular scopes, refresh path)
-                        token storage: secret_ref on figma_installations
-                        (if OAuth: refresh_secret_ref also on figma_installations)
+Auth shape →            Current: deployment-owned OAuth2, granular scopes,
+                        explicit file URLs, server-side refresh path.
+                        Token storage: encrypted tenant-scoped references on
+                        figma_installations (access + refresh).
+                        Historical PAT alternative: operator-only fallback.
 Install table →         figma_installations (cols: team_id, base_url, secret_ref,
                           webhook_secret_ref, optional oauth refresh_secret_ref)
                         child resource table: figma_files (shard targets: one row
@@ -206,7 +232,11 @@ Effort →                M. Client + cursor + handler + onboarding = direct Jir
                           no E2E crypto, no MTProto complexity.
 ```
 
-**Auth archetype:** Closest exemplar is `GrafanaClient` (Bearer token, lazy secret-store resolution, Retry-After 429 handling, per-instance `base_url`) combined with `JiraClient`'s paged-list helpers and connectivity probe pattern. If we go OAuth, the `quickbooks` refresh-token path applies for token rotation. Onboarding clones `jira/grafana` onboarding.py to register the install row + webhook `secret_ref`, then calls `POST /v2/webhooks` to register `FILE_UPDATE`, `FILE_VERSION_UPDATE`, `FILE_COMMENT`, `FILE_DELETE`, `LIBRARY_PUBLISH`, `DEV_MODE_STATUS_UPDATE`.
+**Current auth implementation:** The deployment-owned OAuth app exchanges and
+refreshes tokens server-side; access and refresh values are held through
+tenant-scoped encrypted references. The initial user flow validates selected
+file URLs and queues polling/snapshot work. It does not register webhooks from
+the OAuth onboarding path.
 
 **Install table:** `figma_installations` (per-tenant, per-team) with a `figma_files` child table (shard targets populated at plan time from project enumeration). RLS + `tenant_isolation` policy on `current_setting('app.current_tenant')::uuid` as per all per-tenant install tables.
 
@@ -235,7 +265,9 @@ Effort →                M. Client + cursor + handler + onboarding = direct Jir
 - **Org-token coverage scope:** Whether an org/team-wide access token can read ALL team files or only files the token identity has been explicitly added to — affects whether we need a coverage-gap representation in the planner for inaccessible files.
 - **`FILE_UPDATE` granularity ceiling:** The 30-min-inactivity debounce means `FILE_UPDATE` is a coarse activity ping. Confirm there is no finer-grained edit/activity API, or accept that `FILE_VERSION_UPDATE` + `FILE_COMMENT` are the ceiling for high-resolution velocity signal.
 - **`FILE_COMMENT` webhook payload completeness:** Does the `FILE_COMMENT` webhook body include full comment content + `client_meta` anchor, or does it require a follow-up `GET /v1/files/:key/comments` to get the full thread context? Affects whether the handler can emit a complete observation inline or needs a fetch-on-event pattern.
-- **Token longevity and rotation:** Long-lived org/team access token (Jira/Grafana static-token path) vs OAuth with refresh (`quickbooks`-style refresh path) — affects install table schema (whether `refresh_secret_ref` is needed) and client-builder complexity.
+- **Token longevity and rotation:** Resolved for the current path: OAuth access
+  and refresh tokens are stored as encrypted tenant-scoped references and
+  refreshed server-side. Long-lived org/team tokens remain legacy-only.
 - **Phase-2 scope (`file_variables:read` / `library_analytics:read`):** Enterprise-only scopes for design-token and component-usage analytics — worth evaluating as a phase-2 signal source if the tenant is on Enterprise plan.
 
 ---

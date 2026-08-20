@@ -19,6 +19,7 @@ import pytest
 from services.ingest.ingestion.normalizer import worker as worker_module
 from services.ingest.ingestion.normalizer.models import NormalizedEnvelope
 from services.ingest.ingestion.raw_tier.envelope import RawEnvelope
+from services.ingest.integrations.instagram.records import build_webhook_record
 
 
 _NOW = dt.datetime.now(tz=dt.timezone.utc).replace(microsecond=0)
@@ -135,6 +136,79 @@ async def test_normalize_slack_webhook_produces_normalized_envelope(
     assert norm.trust_tier == "attested_agent"
     assert norm.ingress_metadata == {"delivery_id": "deliv-1"}
     assert norm.idem_hints == {"hint": "x"}
+
+
+async def test_normalize_instagram_webhook_produces_message_channel(
+    _producer_stub, _s3_stub,
+):
+    tenant = uuid4()
+    record = build_webhook_record(
+        {
+            "sender": {"id": "customer-1"},
+            "recipient": {"id": "ig-business"},
+            "timestamp": 1781000000000,
+            "message": {"mid": "mid-1", "text": "Need help with my order"},
+        },
+        ig_business_account_id="ig-business",
+    )
+    assert record is not None
+    raw_body, envelope_bytes, s3_key = _envelope_for(
+        record,
+        tenant=tenant,
+        source="instagram",
+    )
+    _s3_stub._storage[s3_key] = raw_body
+
+    produced = await worker_module._normalize_one(
+        envelope_bytes, _s3_stub, _producer_stub,
+    )
+
+    assert produced is True
+    _, kwargs = _producer_stub.produce.await_args
+    normalized = NormalizedEnvelope.model_validate(json.loads(kwargs["value"]))
+    assert normalized.source_channel == "instagram:message"
+    assert normalized.external_id == "instagram:ig-business:message:mid-1"
+    assert normalized.source_actor_ref == "instagram:ig-business:user:customer-1"
+
+
+async def test_normalize_instagram_poll_unwraps_shard_fetch_record(
+    _producer_stub, _s3_stub,
+):
+    tenant = uuid4()
+    record = build_webhook_record(
+        {
+            "sender": {"id": "customer-1"},
+            "recipient": {"id": "ig-business"},
+            "timestamp": 1781000000000,
+            "message": {"mid": "mid-1", "text": "poll copy"},
+        },
+        ig_business_account_id="ig-business",
+    )
+    assert record is not None
+    wrapped = {
+        "_fyralis_shard_fetch_wrapper": 1,
+        "record": record,
+        "shard_context": {"shard_id": "shard-1", "cursor": None},
+        "webhook_metadata": {},
+    }
+    raw_body, envelope_bytes, s3_key = _envelope_for(
+        wrapped,
+        tenant=tenant,
+        source="instagram",
+        ingress_kind="poll",
+    )
+    _s3_stub._storage[s3_key] = raw_body
+
+    produced = await worker_module._normalize_one(
+        envelope_bytes, _s3_stub, _producer_stub,
+    )
+
+    assert produced is True
+    _, kwargs = _producer_stub.produce.await_args
+    normalized = NormalizedEnvelope.model_validate(json.loads(kwargs["value"]))
+    assert normalized.source_channel == "instagram:message"
+    assert normalized.ingress_kind == "poll"
+    assert normalized.external_id == "instagram:ig-business:message:mid-1"
 
 
 async def test_normalize_uses_verified_raw_get_when_available(

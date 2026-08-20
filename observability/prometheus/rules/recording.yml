@@ -81,3 +81,63 @@ groups:
       # Worst consumer-group lag (kafka-exporter).
       - record: fyralis:kafka_worst_group_lag
         expr: max by (consumergroup) (kafka_consumergroup_lag_sum)
+
+  - name: fyralis-perception-pipeline
+    interval: 30s
+    rules:
+      - alert: PerceptionPipelineDeadLetteredWork
+        expr: >
+          max({__name__=~"(identity_resolution|perception_knowledge|episode_constructor|episode_handoff)_queue_dead_letter"}) > 0
+        for: 5m
+        labels:
+          severity: critical
+          owner: perception
+        annotations:
+          summary: Durable perception pipeline work is dead-lettered
+          runbook: docs/operations/perception-pipeline-runbook.md
+
+      - alert: PerceptionPipelineWorkerDown
+        expr: >
+          up{job="fyralis-workers",worker=~"identity_resolution_worker|perception_knowledge_worker|episode_constructor_worker|episode_settlement_worker|episode_handoff_worker"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          owner: perception
+        annotations:
+          summary: A required perception pipeline worker is unavailable
+          runbook: docs/operations/perception-pipeline-runbook.md
+
+  - name: fyralis-source-connectors
+    interval: 30s
+    rules:
+      - record: fyralis:source_connector_quarantined
+        expr: max(ingestion_source_connector_lifecycle_quarantined)
+
+      - record: fyralis:source_connector_control_failure_ratio:10m
+        expr: >
+          sum(rate(ingestion_source_connector_lifecycle_control_failures[10m]))
+          /
+          clamp_min(
+            sum(rate(ingestion_source_connector_lifecycle_control_refreshes[10m])),
+            1e-9
+          )
+
+      - alert: SourceConnectorArtifactQuarantined
+        expr: fyralis:source_connector_quarantined > 0
+        for: 5m
+        labels:
+          severity: critical
+          owner: ingestion
+        annotations:
+          summary: A source connector artifact is quarantined
+          runbook: docs/ingestion/source-connectors/operations-runbook.md
+
+      - alert: SourceConnectorControlPlaneDegraded
+        expr: fyralis:source_connector_control_failure_ratio:10m > 0.01
+        for: 10m
+        labels:
+          severity: warning
+          owner: ingestion
+        annotations:
+          summary: Source connector control-plane refreshes exceed the error budget
+          runbook: docs/ingestion/source-connectors/operations-runbook.md

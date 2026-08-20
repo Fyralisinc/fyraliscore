@@ -1,0 +1,10 @@
+Fyralis local BYOC rehearsal chart rendered.
+
+Next local commands:
+  docker build -t {{ .Values.image.repository }}:{{ .Values.image.tag }} .
+  kind create cluster --name fyralis-byoc
+  kind load docker-image {{ .Values.image.repository }}:{{ .Values.image.tag }} --name fyralis-byoc
+  helm upgrade --install {{ .Release.Name }} ./deploy/helm/fyralis --namespace {{ .Release.Namespace }} --create-namespace -f <generated-helm-values.json>
+
+Gateway port-forward:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "fyralis.fullname" . }}-gateway 8000:{{ .Values.gateway.service.port }}

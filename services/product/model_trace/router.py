@@ -32,6 +32,7 @@ from services.platform.access_control.checks import (
     AccessDecision,
     can_read_by_id,
 )
+from services.platform.access_control.authority import Principal, principal_for_actor
 from services.product.model_trace.repo import (
     TraceStep,
     depends_on,
@@ -97,6 +98,17 @@ def _parse_max_depth(raw: str | None, default: int = 4) -> int | None:
     return depth
 
 
+async def _principal_for_auth(conn: Any, auth: Any) -> Principal:
+    try:
+        return await principal_for_actor(
+            auth.actor_id,
+            conn=conn,
+            tenant_id=auth.tenant_id,
+        )
+    except Exception:
+        return Principal(tenant_id=auth.tenant_id, actor_id=auth.actor_id)
+
+
 # ---------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------
@@ -124,10 +136,23 @@ async def get_trace(node_id: str, request: Request) -> JSONResponse:
         access = await _check_model_access(conn, auth, nid)
         if access is not None:
             return access
+        principal = await _principal_for_auth(conn, auth)
         if direction == "back":
-            chain = await trace_back(conn, auth.tenant_id, nid, max_depth)
+            chain = await trace_back(
+                conn,
+                auth.tenant_id,
+                nid,
+                max_depth,
+                principal=principal,
+            )
         else:
-            chain = await trace_forward(conn, auth.tenant_id, nid, max_depth)
+            chain = await trace_forward(
+                conn,
+                auth.tenant_id,
+                nid,
+                max_depth,
+                principal=principal,
+            )
         chain = await _filter_visible_steps(conn, auth, chain)
     return JSONResponse(
         {

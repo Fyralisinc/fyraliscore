@@ -882,6 +882,95 @@ _MEMORY_LIFECYCLE_OP = {
 }
 
 
+_OPEN_QUESTION_OP = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "op",
+        "id",
+        "question_id",
+        "model_id",
+        "question",
+        "question_type",
+        "rationale",
+        "priority",
+        "expected_resolution_signal",
+        "search_signature",
+        "source_model_ids",
+        "resolution_model_id",
+        "resolution_note",
+        "status",
+    ],
+    "properties": {
+        "op": {"type": "string", "enum": ["insert", "resolve", "archive"]},
+        "id": {"anyOf": [_UUID_STR, {"type": "null"}]},
+        "question_id": {"anyOf": [_UUID_STR, {"type": "null"}]},
+        "model_id": {"anyOf": [_UUID_STR, {"type": "null"}]},
+        "question": _NULLABLE_STRING,
+        "question_type": {"type": "string"},
+        "rationale": _NULLABLE_STRING,
+        "priority": {"type": "number"},
+        "expected_resolution_signal": {
+            "type": "object",
+            "additionalProperties": True,
+        },
+        "search_signature": {
+            "type": "object",
+            "additionalProperties": True,
+        },
+        "source_model_ids": {"type": "array", "items": _UUID_STR},
+        "resolution_model_id": {"anyOf": [_UUID_STR, {"type": "null"}]},
+        "resolution_note": _NULLABLE_STRING,
+        "status": {
+            "anyOf": [
+                {
+                    "type": "string",
+                    "enum": [
+                        "resolved",
+                        "stale",
+                        "superseded",
+                        "duplicate",
+                        "archived",
+                    ],
+                },
+                {"type": "null"},
+            ],
+        },
+    },
+}
+
+
+_FORMATION_RESOLUTION_OP = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "op",
+        "candidate_id",
+        "resolution",
+        "rationale",
+        "output_model_ids",
+        "follow_up_question",
+    ],
+    "properties": {
+        "op": {"type": "string", "enum": ["resolve"]},
+        "candidate_id": {"type": "string"},
+        "resolution": {
+            "type": "string",
+            "enum": [
+                "formed",
+                "updated",
+                "deferred",
+                "rejected",
+                "already_covered",
+            ],
+        },
+        "rationale": {"type": "string"},
+        "output_model_ids": {"type": "array", "items": _UUID_STR},
+        "follow_up_question": _NULLABLE_STRING,
+    },
+}
+
+
 RAW_DIFF_STRICT_SCHEMA: dict = {
     "type": "object",
     "additionalProperties": False,
@@ -894,6 +983,8 @@ RAW_DIFF_STRICT_SCHEMA: dict = {
         "relation_frame_ops",
         "edge_ops",
         "ontology_gap_ops",
+        "open_question_ops",
+        "formation_resolutions",
         "resource_ops",
         "new_predictions",
         "reasoning_trace",
@@ -910,6 +1001,11 @@ RAW_DIFF_STRICT_SCHEMA: dict = {
         "relation_frame_ops": {"type": "array", "items": _RELATION_FRAME_OP},
         "edge_ops": {"type": "array", "items": _EDGE_OP},
         "ontology_gap_ops": {"type": "array", "items": _ONTOLOGY_GAP_OP},
+        "open_question_ops": {"type": "array", "items": _OPEN_QUESTION_OP},
+        "formation_resolutions": {
+            "type": "array",
+            "items": _FORMATION_RESOLUTION_OP,
+        },
         "resource_ops": {"type": "array", "items": _RESOURCE_OP},
         "new_predictions": {"type": "array", "items": _CLAIM_OP_INSERT},
         "reasoning_trace": {"type": "string"},
@@ -924,12 +1020,17 @@ RAW_DIFF_CLAIMS_ONLY_STRICT_SCHEMA: dict = {
         "trigger_ref",
         "tenant_id",
         "claim_ops",
+        "formation_resolutions",
         "reasoning_trace",
     ],
     "properties": {
         "trigger_ref": _UUID_STR,
         "tenant_id": _UUID_STR,
         "claim_ops": {"type": "array", "items": _CLAIM_OP_INSERT},
+        "formation_resolutions": {
+            "type": "array",
+            "items": _FORMATION_RESOLUTION_OP,
+        },
         "reasoning_trace": {"type": "string"},
     },
 }

@@ -4,11 +4,12 @@ This module describes the gateway bearer-middleware bypass surface and the
 current access boundary for route inventory checks. It is intentionally about
 transport-level exposure, not fine-grained substrate authorization.
 """
+
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable
 
 from fastapi import FastAPI
 from fastapi.routing import APIRoute, APIWebSocketRoute
@@ -48,7 +49,10 @@ _PUBLIC = RouteAccessPolicy(
 )
 _BOOTSTRAP = RouteAccessPolicy(
     access=RouteAccess.SELF_AUTHENTICATED,
-    reason="session bootstrap endpoint authenticated by X-Bootstrap-Secret when configured",
+    reason=(
+        "session bootstrap endpoint authenticated by X-Bootstrap-Secret when "
+        "configured"
+    ),
     gateway_bearer_required=False,
 )
 _OAUTH_CALLBACK = RouteAccessPolicy(
@@ -68,7 +72,9 @@ _VIEW_TOKEN = RouteAccessPolicy(
 )
 _IN_PROCESS = RouteAccessPolicy(
     access=RouteAccess.INTERNAL,
-    reason="in-process/internal adapter endpoint; must be protected by deployment boundary",
+    reason=(
+        "in-process/internal adapter endpoint; must be protected by deployment boundary"
+    ),
     gateway_bearer_required=False,
 )
 _DEBUG = RouteAccessPolicy(
@@ -90,14 +96,27 @@ _BYOC_CONTROL_PLANE = RouteAccessPolicy(
     ),
     gateway_bearer_required=False,
 )
+_PLATFORM_ONBOARDING = RouteAccessPolicy(
+    access=RouteAccess.SELF_AUTHENTICATED,
+    reason=(
+        "customer-facing hosted onboarding entrypoint creates sanitized "
+        "commercial/BYOC setup metadata before a tenant session exists"
+    ),
+    gateway_bearer_required=False,
+)
 _INTERNAL_BEARER = RouteAccessPolicy(
     access=RouteAccess.INTERNAL,
-    reason="internal API currently protected by gateway bearer auth; deployment boundary still required",
+    reason=(
+        "internal API currently protected by gateway bearer auth; deployment boundary "
+        "still required"
+    ),
     gateway_bearer_required=True,
 )
 _ADMIN_BEARER = RouteAccessPolicy(
     access=RouteAccess.ADMIN,
-    reason="admin/operator API requires gateway bearer auth plus tenant-scoped admin role",
+    reason=(
+        "admin/operator API requires gateway bearer auth plus tenant-scoped admin role"
+    ),
     gateway_bearer_required=True,
 )
 _BEARER = RouteAccessPolicy(
@@ -111,6 +130,7 @@ GATEWAY_BEARER_BYPASS_PATH_POLICIES: dict[str, RouteAccessPolicy] = {
     "/healthz": _PUBLIC,
     "/readyz": _PUBLIC,
     "/metrics": _PUBLIC,
+    "/legal/local-test-privacy": _PUBLIC,
     "/auth/session": _BOOTSTRAP,
     "/integrations/slack/callback": _OAUTH_CALLBACK,
     "/integrations/slack/installed": _OAUTH_CALLBACK,
@@ -124,7 +144,17 @@ GATEWAY_BEARER_BYPASS_PATH_POLICIES: dict[str, RouteAccessPolicy] = {
     "/integrations/notion/callback": _OAUTH_CALLBACK,
     "/integrations/notion/installed": _OAUTH_CALLBACK,
     "/integrations/notion/install-error": _OAUTH_CALLBACK,
+    # Figma returns the browser here with a signed, single-use OAuth state.
+    # Keep the normal start/status/retry routes bearer-protected; only this
+    # provider callback may bypass actor-session authentication.
+    "/integrations/figma/oauth/callback": _OAUTH_CALLBACK,
     "/integrations/whatsapp/webhook": _PROVIDER_SIGNED,
+    "/integrations/facebook_pages/callback": _OAUTH_CALLBACK,
+    "/integrations/facebook_pages/installed": _OAUTH_CALLBACK,
+    "/integrations/facebook_pages/install-error": _OAUTH_CALLBACK,
+    "/integrations/facebook_pages/webhook": _PROVIDER_SIGNED,
+    "/integrations/instagram/callback": _OAUTH_CALLBACK,
+    "/integrations/instagram/webhook": _PROVIDER_SIGNED,
 }
 
 GATEWAY_BEARER_BYPASS_PATHS = frozenset(GATEWAY_BEARER_BYPASS_PATH_POLICIES)
@@ -141,6 +171,7 @@ GATEWAY_BEARER_BYPASS_PREFIX_POLICIES: tuple[
     ("/ext/", _EXTENSION),
     ("/byoc/agent/", _BYOC_CONTROL_PLANE),
     ("/byoc/control-plane/", _BYOC_CONTROL_PLANE),
+    ("/platform/onboarding/", _PLATFORM_ONBOARDING),
 )
 
 GATEWAY_BEARER_BYPASS_PREFIXES = tuple(
@@ -151,11 +182,18 @@ GATEWAY_BEARER_BYPASS_PREFIXES = tuple(
 GATEWAY_BEARER_BYPASS_SPECIAL_PREFIXES = ("/stream",)
 
 
+def _is_connector_callback_path(path: str) -> bool:
+    parts = path.strip("/").split("/")
+    return len(parts) == 3 and parts[0] == "integrations" and parts[2] == "callback"
+
+
 def classify_gateway_route(path: str) -> RouteAccessPolicy:
     """Classify a FastAPI route path by its current transport access boundary."""
     exact = GATEWAY_BEARER_BYPASS_PATH_POLICIES.get(path)
     if exact is not None:
         return exact
+    if _is_connector_callback_path(path):
+        return _OAUTH_CALLBACK
     if path == "/debug" or path.startswith(("/debug/", "/api/debug/")):
         return _DEBUG
     if path.startswith("/api/admin/"):
@@ -168,7 +206,10 @@ def classify_gateway_route(path: str) -> RouteAccessPolicy:
     if path.startswith(GATEWAY_BEARER_BYPASS_SPECIAL_PREFIXES):
         return RouteAccessPolicy(
             access=RouteAccess.SELF_AUTHENTICATED,
-            reason="legacy realtime stream bypass; route must authenticate within the stream protocol",
+            reason=(
+                "legacy realtime stream bypass; route must authenticate within the "
+                "stream protocol"
+            ),
             gateway_bearer_required=False,
         )
     return _BEARER
@@ -178,6 +219,7 @@ def gateway_auth_bypassed(path: str, extension_prefixes: Iterable[str] = ()) -> 
     """Return whether the gateway actor-session middleware should skip a path."""
     return (
         path in GATEWAY_BEARER_BYPASS_PATHS
+        or _is_connector_callback_path(path)
         or path.startswith(GATEWAY_BEARER_BYPASS_SPECIAL_PREFIXES)
         or any(path.startswith(prefix) for prefix in GATEWAY_BEARER_BYPASS_PREFIXES)
         or any(path.startswith(prefix) for prefix in extension_prefixes)
@@ -186,29 +228,57 @@ def gateway_auth_bypassed(path: str, extension_prefixes: Iterable[str] = ()) -> 
 
 def iter_gateway_route_inventory(app: FastAPI) -> list[RouteInventoryEntry]:
     entries: list[RouteInventoryEntry] = []
-    for route in app.routes:
+    for route, path, inherited_tags in _iter_effective_routes(app.routes):
         if isinstance(route, APIRoute):
             methods = tuple(sorted(route.methods or ()))
             entries.append(
                 RouteInventoryEntry(
                     methods=methods,
-                    path=route.path,
+                    path=path,
                     name=route.name,
-                    tags=tuple(str(tag) for tag in (route.tags or ())),
-                    policy=classify_gateway_route(route.path),
+                    tags=inherited_tags + tuple(str(tag) for tag in (route.tags or ())),
+                    policy=classify_gateway_route(path),
                 )
             )
         elif isinstance(route, APIWebSocketRoute):
             entries.append(
                 RouteInventoryEntry(
                     methods=("WEBSOCKET",),
-                    path=route.path,
+                    path=path,
                     name=route.name,
-                    tags=(),
-                    policy=classify_gateway_route(route.path),
+                    tags=inherited_tags,
+                    policy=classify_gateway_route(path),
                 )
             )
     return sorted(entries, key=lambda entry: (entry.path, entry.methods))
+
+
+def _iter_effective_routes(
+    routes: Iterable[object],
+    *,
+    prefix: str = "",
+    inherited_tags: tuple[str, ...] = (),
+) -> Iterator[tuple[APIRoute | APIWebSocketRoute, str, tuple[str, ...]]]:
+    """Walk flat and FastAPI 0.139+ lazy included-router inventories."""
+    for route in routes:
+        if isinstance(route, APIRoute | APIWebSocketRoute):
+            yield route, f"{prefix}{route.path}", inherited_tags
+            continue
+
+        original_router = getattr(route, "original_router", None)
+        include_context = getattr(route, "include_context", None)
+        nested_routes = getattr(original_router, "routes", None)
+        if include_context is None or nested_routes is None:
+            continue
+        nested_prefix = f"{prefix}{getattr(include_context, 'prefix', '')}"
+        nested_tags = inherited_tags + tuple(
+            str(tag) for tag in (getattr(include_context, "tags", ()) or ())
+        )
+        yield from _iter_effective_routes(
+            nested_routes,
+            prefix=nested_prefix,
+            inherited_tags=nested_tags,
+        )
 
 
 __all__ = [

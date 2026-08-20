@@ -1,0 +1,78 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — onboarding CLI fragment (WS-ONBOARD)
+# ----------------------------------------------------------------------------
+# Standalone compose fragment. The integrate step merges this into the master
+# docker-compose.control-plane.yml. Do NOT edit the master file directly.
+#
+# WHAT THIS IS
+#   `onboarding` is an ON-DEMAND OPERATOR CLI, not a long-running service. It is
+#   invoked to atomically enroll (or offboard) a tenant: it issues the tenant
+#   mTLS cert (adding the active row to ca/tenant_registry.json — the proxy
+#   binding), mints + signs the license, assembles the agent BUNDLE the customer
+#   deploys, and confirms the deployment appears in the console. On ANY step
+#   failure it rolls everything back (FR-E).
+#
+#   Because it is one-shot, it is gated behind the `ops` compose profile so a
+#   plain `docker compose up` does NOT start it. Run it explicitly:
+#
+#     docker compose -f docker-compose.control-plane.yml \
+#       run --rm onboarding onboard --tenant acme --region us-east --plan standard \
+#         --console-url http://console:8080
+#
+#     docker compose -f docker-compose.control-plane.yml \
+#       run --rm onboarding offboard --tenant acme --deployment acme-use1-7f3a \
+#         --console-url http://console:8080 --purge-bundle
+#
+# SHARED STATE (mounts) — these MUST be the SAME paths the other CP services use:
+#   * ca/pki                  read-only  : the intermediate CA that signs tenant certs
+#   * ca/tenant_registry.json read-WRITE : the C1 registry the auth-proxy reads;
+#                                          onboarding writes the active row here and
+#                                          offboard/rollback flips/removes it.
+#   * signing/                read-only  : ed25519 trust root + private key to sign
+#                                          the license + agent config (C2/I6).
+#   * onboarding/bundles      read-WRITE : where assembled agent bundles are written
+#                                          (operator copies these to the customer VPC).
+#
+#   The auth-proxy mounts ca/tenant_registry.json read-only (see the master file);
+#   onboarding is the WRITER. They share the one file so a cert issued here is
+#   immediately accepted by the proxy, and a revoke here immediately 403s it.
+#
+# Networks (cp-net) are declared in the master compose file; referenced here as
+# external-by-merge. Uncomment the bottom block to run this fragment standalone.
+# ============================================================================
+
+services:
+  onboarding:
+    build:
+      # Build context is the control-plane ROOT so the image can COPY in the
+      # committed primitives (ca/, signing/, lib/) the CLI imports.
+      context: ..
+      dockerfile: onboarding/Dockerfile
+    image: fyralis/onboarding:dev
+    container_name: cp-onboarding
+    # One-shot operator tool: only runs under `docker compose run` / the `ops`
+    # profile, never on a plain `up`.
+    profiles: ["ops"]
+    environment:
+      # Default console target inside cp-net; override per-invocation with
+      # --console-url, or pass --local-ids to mint ids without a console.
+      CONSOLE_URL: "http://console:8080"
+    volumes:
+      # The CA that issues tenant certs (read-only — onboarding never mutates PKI).
+      - ./ca/pki:/app/ca/pki:ro
+      # The C1 revocation registry — SHARED, READ-WRITE. This is the proxy binding:
+      # the active row written here is what makes the auth-proxy accept the cert.
+      - ./ca/tenant_registry.json:/app/ca/tenant_registry.json
+      # Signing material (trust root + private key) to sign license + agent config.
+      - ./signing:/app/signing:ro
+      # Where assembled agent bundles land (operator ships these to the customer).
+      - ./onboarding/bundles:/app/onboarding/bundles
+    networks:
+      - cp-net
+    # Never auto-restart a one-shot CLI.
+    restart: "no"
+
+# --- Uncomment ONLY to run this fragment standalone (outside the master compose) ---
+# networks:
+#   cp-net:
+#     driver: bridge

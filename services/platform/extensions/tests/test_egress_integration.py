@@ -28,6 +28,14 @@ _SERVER_DSN = os.environ.get(
 async def _make_db() -> str:
     if "://" not in _SERVER_DSN:
         pytest.skip("no DATABASE_URL")
+    from services.platform.extensions.tests._migration_test_helpers import (
+        require_pgvector_server_privilege_or_skip,
+    )
+
+    await require_pgvector_server_privilege_or_skip(
+        _SERVER_DSN,
+        feature="extension egress",
+    )
     admin = await asyncpg.connect(_SERVER_DSN)
     try:
         await admin.execute('DROP DATABASE IF EXISTS fyralis_m3_test WITH (FORCE)')
@@ -41,19 +49,20 @@ async def _make_db() -> str:
 async def wired():
     import lib
     from fastapi import FastAPI
-    from lib.shared.migrations import apply_migrations_dir, schema_bootstrap_lock
     from lib.extensions.host_api.v1 import Capabilities
     from services.app.gateway.db_bootstrap import create_gateway_pool
     from services.app.gateway.extension_router import build_extension_router
     from services.platform.extensions.identity import ExtensionOAuthClientsRepo
     from services.platform.extensions.grants import ExtensionGrantsRepo
+    from services.platform.extensions.tests._migration_test_helpers import (
+        apply_core_migrations_or_skip,
+    )
 
     dsn = await _make_db()
     conn = await asyncpg.connect(dsn)
     try:
         core = pathlib.Path(lib.__file__).resolve().parents[1] / "db" / "migrations"
-        async with schema_bootstrap_lock(conn):
-            await apply_migrations_dir(conn, core)
+        await apply_core_migrations_or_skip(conn, core, feature="extension egress")
     finally:
         await conn.close()
 
@@ -135,8 +144,10 @@ async def test_projection_then_pull(wired):
 async def test_webhook_push_is_signed_and_delivered(wired):
     from services.platform.extensions.egress.projector import run_projection_pass
     from services.platform.extensions.egress.delivery import run_webhook_pass
-    from fyralis_ext.webhooks import verify as verify_sig
-    from services.platform.extensions.egress.webhook import SIGNATURE_HEADER
+    from services.platform.extensions.egress.webhook import (
+        SIGNATURE_HEADER,
+        verify_signature,
+    )
 
     await run_projection_pass(wired.pool)
     captured = {}
@@ -150,8 +161,11 @@ async def test_webhook_push_is_signed_and_delivered(wired):
     result = await run_webhook_pass(wired.pool, http_post=fake_post)
     assert result["delivered"] == 1 and result["failed"] == 0
     assert captured["url"] == "https://ext.example/hook"
-    # the SDK-side verify accepts the host-signed body with the client's webhook secret
-    assert verify_sig(captured["body"], captured["sig"], wired.creds.webhook_secret)
+    # The public verification contract accepts the host-signed body with the
+    # extension client's webhook secret.
+    assert verify_signature(
+        captured["body"], captured["sig"], wired.creds.webhook_secret
+    )
     event = json.loads(captured["body"])
     assert event["type"] == "observation"
     assert event["observation"]["source_channel"] == "github:webhook"

@@ -20,6 +20,17 @@
       "Username": "company_os",
       "SSLMode": "prefer",
       "PassFile": "/pgpass"
+    },
+    "3": {
+      "Name": "Fyralis — Figma onboarding and observations",
+      "Group": "Fyralis",
+      "Host": "postgres",
+      "Port": 5432,
+      "MaintenanceDB": "company_os",
+      "Username": "company_os",
+      "SSLMode": "prefer",
+      "PassFile": "/pgpass",
+      "Comment": "Run ops/pgadmin/inspect_figma.sql after connecting Figma. Shows OAuth installation state, selected files, Figma snapshots, artifact references, and observation landing proof."
     }
   }
 }

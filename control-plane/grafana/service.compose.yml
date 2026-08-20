@@ -1,0 +1,74 @@
+# ============================================================================
+# Fyralis BYOC Control Plane — Grafana service fragment  (P3)
+# ----------------------------------------------------------------------------
+# STANDALONE compose fragment (do NOT edit the shared
+# docker-compose.control-plane.yml directly — the integrate step merges this in).
+#
+# Merge with:
+#   docker compose \
+#     -f docker-compose.control-plane.yml \
+#     -f grafana/service.compose.yml \
+#     up grafana
+#
+# Operator Grafana for the central Mimir/Loki. Datasources (provisioned from
+# grafana/provisioning/datasources/datasources.yaml) query Mimir/Loki DIRECTLY
+# over cp-net and set X-Scope-OrgID themselves — this is the trusted internal
+# OPERATOR QUERY PATH, distinct from the agent mTLS INGEST PATH through the
+# auth-proxy. See the README and datasources.yaml header.
+# ============================================================================
+
+name: fyralis-control-plane
+
+networks:
+  cp-net:
+    driver: bridge
+  dataplane-net:
+    external: true
+
+volumes:
+  grafana-data:
+
+services:
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: cp-grafana
+    restart: unless-stopped
+    # depends_on mimir/loki so datasources resolve on first boot. condition is
+    # service_started because Mimir/Loki readiness is not gated by a healthcheck
+    # in their fragments; Grafana retries datasource health on its own.
+    depends_on:
+      - mimir
+      - loki
+    environment:
+      # ---- operator auth (CHANGE in any real deployment) --------------------
+      GF_SECURITY_ADMIN_USER: ${GF_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:?set by bootstrap.sh (control-plane/.env)}
+      # operator-only console; no public sign-up
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      # ---- fleet/admin org id used by the "(fleet)" datasources -------------
+      # Override the default cross-tenant reader org id here if your Mimir uses
+      # a different admin tenant (see datasources.yaml → Mimir (fleet)).
+      FYRALIS_FLEET_ORG_ID: ${FYRALIS_FLEET_ORG_ID:-__fleet__}
+      # ---- provisioning paths -----------------------------------------------
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      # Server-side env interpolation in provisioning files (so
+      # ${FYRALIS_FLEET_ORG_ID} expands at provision time).
+      GF_FEATURE_TOGGLES_ENABLE: ""
+      # ---- UX -----------------------------------------------------------------
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/fleet/fleet-overview.json
+      GF_DATE_FORMATS_DEFAULT_TIMEZONE: utc
+    volumes:
+      # provisioning (datasources + dashboard providers) — read-only
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      # dashboard JSON tree (fleet/ + tenant/ subdirs the providers point at)
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # persistent Grafana state (annotations, prefs)
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - cp-net
+      # also attach to the local data plane for single-host dev/demo scraping
+      # (production agents push; local dev may scrape directly).
+      - dataplane-net

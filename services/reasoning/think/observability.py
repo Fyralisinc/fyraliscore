@@ -34,6 +34,11 @@ from uuid import UUID
 import asyncpg
 import structlog
 
+from lib.observability.metrics import (
+    THINK_LLM_COST_USD,
+    THINK_VALIDATION_DROPPED_OPS,
+)
+
 
 _log = structlog.get_logger(__name__)
 
@@ -424,6 +429,7 @@ class ThinkRunRecord:
     tenant_id: UUID
     trigger_id: UUID
     trigger_kind: str
+    lane: str | None = None
     started_at: float = field(default_factory=time.monotonic)
 
     def elapsed_ms(self) -> float:
@@ -445,15 +451,16 @@ async def insert_think_run(
     await conn.execute(
         """
         INSERT INTO think_runs
-          (id, tenant_id, trigger_id, trigger_kind,
+          (id, tenant_id, trigger_id, trigger_kind, lane,
            started_at, status,
            region_tenant_hash, region_entity_hash)
-        VALUES ($1, $2, $3, $4, now(), 'running', $5, $6)
+        VALUES ($1, $2, $3, $4, $5, now(), 'running', $6, $7)
         """,
         record.id,
         record.tenant_id,
         record.trigger_id,
         record.trigger_kind,
+        record.lane,
         region_tenant_hash,
         region_entity_hash,
     )
@@ -664,6 +671,11 @@ async def record_think_run_cost(
         output_tokens=int(llm_output_tokens_total),
         llm_calls=int(llm_calls_count),
     )
+    # BYOC §12 G4: mirror live spend onto the default registry so the
+    # fleet-canonical counter is fed alongside the durable think_run_costs row
+    # below (the in-memory cost_usd_by_kind resets on restart; this + the DB
+    # together are the §12 "export to /metrics or rely on think_run_costs").
+    THINK_LLM_COST_USD.inc(float(llm_cost_usd), trigger_kind=trigger_kind)
 
     try:
         async with pool.acquire() as c:
@@ -756,6 +768,10 @@ def log_dropped_op(
         timestamp=datetime.now(timezone.utc).isoformat(),
     )
     METRICS.inc_dropped_op(failure_reason, op_type)
+    # BYOC §12 G4: mirror onto the default registry (fyralis_-prefixed) so the
+    # control plane scraping render_default() sees dropped-op counts even though
+    # the think-local family has no DB backing and resets on restart.
+    THINK_VALIDATION_DROPPED_OPS.inc(reason=failure_reason, op_type=op_type)
 
 
 # ---------------------------------------------------------------------

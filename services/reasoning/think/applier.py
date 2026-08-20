@@ -11,12 +11,13 @@ BEFORE any op runs. If the transaction commits, outcome is updated to
 'success' in the SAME transaction. A second Think run with the same
 trigger_id sees the existing row and short-circuits.
 
-Partial-failure policy: claim apply failures remain transaction-fatal
-because downstream ops may depend on newly-created Models. Domain-invalid
-edge, act, and resource ops discovered late at apply time are classified
-and dropped, matching the validator's partial-accept policy. Unexpected
-errors still propagate and roll back the whole transaction —
-applied_triggers row included.
+Partial-failure policy: domain-invalid non-claim ops discovered late at apply
+time are classified and dropped, matching the validator's partial-accept
+policy. Claim inserts whose generated scope or payload references fail central
+Model validation are also dropped; downstream ops that depended on a dropped
+insert fail closed through their own missing-reference checks. Unexpected
+errors still propagate and roll back the whole transaction — applied_triggers
+row included.
 """
 
 from __future__ import annotations
@@ -24,18 +25,19 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from uuid import UUID
 
 import asyncpg
 
+from lib.observability.metrics import record_doc_memory_model_minted
 from lib.shared.errors import CompanyOSError, InvariantViolation, ValidationError
 from lib.shared.ids import uuid7
 from lib.shared.memory_grammar import derive_memory_grammar
 from lib.shared.types import ModelCreate
-from lib.shared.edge_registry import EdgeRegistryError
+from lib.shared.edge_registry import EdgeRegistryError, get_spec
 from services.domain.acts import commitments as commitments_svc
 from services.domain.acts import decisions as decisions_svc
 from services.domain.acts import goals as goals_svc
@@ -44,12 +46,19 @@ from services.domain.models.propositions import (
     canonicalize_proposition,
     validate_proposition,
 )
+from services.domain.models.open_questions import (
+    ModelOpenQuestionCreate,
+    ModelOpenQuestionsRepo,
+    OpenQuestionStatus,
+)
 from services.domain.models.repo import ModelsRepo
 from services.domain.observations.state_change import emit_state_change
 from services.domain.resources import deployments as deployments_svc
 from services.domain.resources import repo as resources_repo
 from services.domain.resources.transactions import record_transaction
 from services.domain.resources.deployments import release as release_deployment
+from services.reasoning.sage.discovery.negative_memory_repo import NegativeMemoryRepo
+from services.reasoning.sage.discovery.types import NegativeMemory
 
 from .diff_schema import (
     ActOp,
@@ -57,6 +66,7 @@ from .diff_schema import (
     EdgeOp,
     MemoryLifecycleOp,
     OntologyGapOp,
+    OpenQuestionOp,
     RawDiff,
     RelationClaimOp,
     RelationFrameOp,
@@ -81,12 +91,72 @@ def _raise_if_postgres_error(exc: Exception) -> None:
         raise exc
 
 
-_RELATION_CLAIM_SUPPORT_SUPERSEDERS = frozenset({
-    "blocks",
-    "contradicts",
-    "weakens",
-})
+def _doc_memory_source_from_cascade(payload: dict[str, Any] | None) -> str | None:
+    """Return the document source_channel iff this apply is a document-memory mint.
+
+    Under ratified Option A (docs/plans/document-memory-substrate.md §4.1–§4.4),
+    the only document-derived Models are those minted by Think over an enriched
+    T1 trigger — the trigger whose ``seed_signature`` carries the structured
+    document summary. ``apply_diff`` already receives that ``seed_signature`` as
+    ``parent_cascade_payload``, so a non-empty ``doc_structured_summary`` is the
+    provenance marker the worker attached (and is what distinguishes a document
+    Model from any other Model born_from the same observation). The carried
+    ``source_channel`` is returned so the mint counter is keyed by source; a
+    non-document trigger (no ``doc_structured_summary``) returns None and is NOT
+    counted.
+    """
+    if not isinstance(payload, dict):
+        return None
+    structured = payload.get("doc_structured_summary")
+    if not structured:
+        return None
+    source_channel = payload.get("source_channel")
+    return source_channel if isinstance(source_channel, str) else None
+
+
+_RELATION_CLAIM_SUPPORT_SUPERSEDERS = frozenset(
+    {
+        "blocks",
+        "contradicts",
+        "weakens",
+    }
+)
 _NON_OVERRIDABLE_EDGE_PROVENANCE = frozenset({"manual"})
+_NOISE_NOOP_NEGATIVE_MEMORY_TTL = timedelta(days=60)
+_NOISE_NOOP_TRACE_MARKERS = (
+    "discard_as_noise",
+    "empty diff",
+    "no durable diff",
+    "no durable write",
+)
+_NOISE_NOOP_OBSERVATION_MARKERS = (
+    "general operational chatter",
+    "lunch logistics",
+    "duplicated dashboard links",
+    "duplicate dashboard links",
+    "non-actionable reminder",
+    "non actionable reminder",
+    "should not dominate memory",
+)
+_NOISE_NOOP_ACTIONABLE_MARKERS = (
+    "approval",
+    "blocked",
+    "blocker",
+    "capacity",
+    "churn",
+    "customer",
+    "deadline",
+    "decision",
+    "exception",
+    "implementation",
+    "incident",
+    "launch",
+    "procurement",
+    "renewal",
+    "risk",
+    "security",
+    "slip",
+)
 
 
 class ApplierError(CompanyOSError):
@@ -126,6 +196,12 @@ def hash_diff(diff: ValidatedDiff | RawDiff) -> str:
         "edge_ops": [op.model_dump(mode="json") for op in diff.edge_ops],
         "ontology_gap_ops": [
             op.model_dump(mode="json") for op in diff.ontology_gap_ops
+        ],
+        "open_question_ops": [
+            op.model_dump(mode="json") for op in diff.open_question_ops
+        ],
+        "formation_resolutions": [
+            op.model_dump(mode="json") for op in diff.formation_resolutions
         ],
         "act_ops": [op.model_dump(mode="json") for op in diff.act_ops],
         "resource_ops": [op.model_dump(mode="json") for op in diff.resource_ops],
@@ -539,6 +615,67 @@ async def _apply_ontology_gap_ops_for_diff(
     return applied_ops
 
 
+async def _apply_open_question_ops_for_diff(
+    *,
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    pending_model_ids_by_event_id: dict[UUID, UUID],
+    trigger_cause_event_id: UUID | None,
+    ops_summary: dict[str, Any],
+) -> tuple[list[OpenQuestionOp], int]:
+    applied_ops: list[OpenQuestionOp] = []
+    state_changes_emitted = 0
+    repo = ModelOpenQuestionsRepo()
+    for op in diff.open_question_ops:
+        op = _resolve_pending_open_question_model_refs(
+            op,
+            pending_model_ids_by_event_id,
+        )
+        try:
+            result = await _apply_open_question_op(
+                op,
+                conn,
+                repo,
+                diff.tenant_id,
+                cause_event_id=trigger_cause_event_id,
+            )
+        except (ValidationError, ValueError) as exc:
+            reason = _classify_apply_open_question_drop_reason(exc)
+            message = getattr(exc, "message", str(exc))
+            log_dropped_op(
+                trigger_id=diff.trigger_ref,
+                tenant_id=diff.tenant_id,
+                op_kind=op.op,
+                op_type="open_question",
+                failure_reason=reason,
+                original_op=op,
+            )
+            await _record_apply_drop(
+                conn,
+                tenant_id=diff.tenant_id,
+                op_type="open_question",
+                op_kind=op.op,
+                reason=reason,
+                message=message,
+            )
+            ops_summary["apply_dropped_op_count"] += 1
+            ops_summary["apply_dropped_op_errors"].append(message)
+            ops_summary["open_question_ops"].append(
+                {
+                    "op": "skip",
+                    "open_question_op": op.op,
+                    "model_id": str(op.model_id) if op.model_id else None,
+                    "reason": reason,
+                    "message": message,
+                }
+            )
+            continue
+        ops_summary["open_question_ops"].append(result["summary"])
+        state_changes_emitted += int(result.get("state_changes", 0))
+        applied_ops.append(op)
+    return applied_ops, state_changes_emitted
+
+
 async def _enqueue_belief_updated_for_applied_models(
     *,
     conn: asyncpg.Connection,
@@ -583,6 +720,7 @@ async def _apply_claim_ops_for_diff(
     trigger_evidence_ids: list[UUID],
     think_run_id: UUID | None,
     ops_summary: dict[str, Any],
+    doc_memory_source: str | None = None,
 ) -> _ClaimOpsApplyResult:
     from .reconciler import reconcile_claim_op
 
@@ -630,6 +768,7 @@ async def _apply_claim_ops_for_diff(
             group_member_ids=group_member_ids,
             ops_summary=ops_summary,
             result=result,
+            doc_memory_source=doc_memory_source,
         )
 
     ops_summary["reconcile_summary"] = reconcile_summary
@@ -655,6 +794,7 @@ async def _apply_one_expanded_claim_op(
     group_member_ids: dict[int, list[UUID]],
     ops_summary: dict[str, Any],
     result: _ClaimOpsApplyResult,
+    doc_memory_source: str | None = None,
 ) -> None:
     op = expanded_op
     recon_result = None
@@ -751,15 +891,49 @@ async def _apply_one_expanded_claim_op(
         and recon_result.decision == "auto_merge"
         and recon_result.replacement_op is not None
     )
-    apply_result = await _apply_claim_op(
-        op,
-        conn,
-        models_repo,
-        diff.tenant_id,
-        cause_event_id=trigger_cause_event_id,
-        trigger_supporting_event_ids=trigger_evidence_ids,
-        audit_cause_override=("reconciliation_merge" if is_recon_merge else None),
-    )
+    try:
+        apply_result = await _apply_claim_op(
+            op,
+            conn,
+            models_repo,
+            diff.tenant_id,
+            cause_event_id=trigger_cause_event_id,
+            trigger_supporting_event_ids=trigger_evidence_ids,
+            audit_cause_override=("reconciliation_merge" if is_recon_merge else None),
+            doc_memory_source=doc_memory_source,
+        )
+    except ValidationError as exc:
+        if op.op != "insert":
+            raise
+        reason = _classify_apply_claim_drop_reason(exc)
+        message = getattr(exc, "message", str(exc))
+        log_dropped_op(
+            trigger_id=diff.trigger_ref,
+            tenant_id=diff.tenant_id,
+            op_kind=op.op,
+            op_type="claim",
+            failure_reason=reason,
+            original_op=op,
+        )
+        await _record_apply_drop(
+            conn,
+            tenant_id=diff.tenant_id,
+            op_type="claim",
+            op_kind=op.op,
+            reason=reason,
+            message=message,
+        )
+        ops_summary["apply_dropped_op_count"] += 1
+        ops_summary["apply_dropped_op_errors"].append(message)
+        ops_summary["claim_ops"].append(
+            {
+                "op": "skip",
+                "claim_op": op.op,
+                "reason": reason,
+                "message": message,
+            }
+        )
+        return
     _annotate_claim_result_summary(
         apply_result["summary"],
         recon_result=recon_result,
@@ -1163,8 +1337,7 @@ async def _compile_memory_lifecycle_update(
 
     outcome = _lifecycle_resolution_outcome(op)
     is_prediction = (
-        row["proposition_kind"] == "prediction"
-        or row["claim_role"] == "prediction"
+        row["proposition_kind"] == "prediction" or row["claim_role"] == "prediction"
     )
     if outcome is not None and (is_prediction or op.action == "falsify"):
         changes["resolution_outcome"] = outcome
@@ -1191,9 +1364,8 @@ async def _apply_memory_lifecycle_ops_for_diff(
                 claim_op = ClaimOp(
                     op="archive",
                     model_id=op.model_id,
-                    reason=op.reason or (
-                        "superseded" if op.action == "supersede" else "decay"
-                    ),
+                    reason=op.reason
+                    or ("superseded" if op.action == "supersede" else "decay"),
                 )
                 apply_result = await _apply_claim_archive(
                     claim_op,
@@ -1262,6 +1434,10 @@ async def _apply_memory_lifecycle_ops_for_diff(
             "compiled_op": apply_result["summary"].get("op"),
             "changed": apply_result["summary"].get("changed", []),
             "archive_reason": apply_result["summary"].get("reason"),
+            "support_relation_drops": apply_result["summary"].get(
+                "support_relation_drops",
+                [],
+            ),
             "resolution_outcome": _lifecycle_resolution_outcome(op),
             "superseded_by_model_id": (
                 str(op.superseded_by_model_id)
@@ -1274,6 +1450,325 @@ async def _apply_memory_lifecycle_ops_for_diff(
             applied_model_ids.append(apply_result["model_id"])
         state_changes_emitted += int(apply_result.get("state_changes", 0))
     return applied_model_ids, state_changes_emitted
+
+
+def _diff_is_noise_noop(diff: ValidatedDiff) -> bool:
+    if (
+        diff.claim_ops
+        or diff.memory_lifecycle_ops
+        or diff.relation_claim_ops
+        or diff.relation_frame_ops
+        or diff.edge_ops
+        or diff.ontology_gap_ops
+        or diff.open_question_ops
+        or diff.formation_resolutions
+        or diff.act_ops
+        or diff.resource_ops
+        or diff.new_predictions
+    ):
+        return False
+    trace = (diff.reasoning_trace or "").lower()
+    return any(marker in trace for marker in _NOISE_NOOP_TRACE_MARKERS)
+
+
+def _rows_confirm_noise_noop(rows: list[Any]) -> bool:
+    if not rows:
+        return False
+    texts: list[str] = []
+    channels: list[str] = []
+    for row in rows:
+        channel = _row_get(row, "source_channel")
+        if channel is not None:
+            channels.append(str(channel))
+        text = _row_get(row, "content_text")
+        if text is not None:
+            texts.append(str(text))
+    combined = "\n".join(texts).lower()
+    if any(marker in combined for marker in _NOISE_NOOP_ACTIONABLE_MARKERS):
+        return False
+    marker_hits = sum(
+        1 for marker in _NOISE_NOOP_OBSERVATION_MARKERS if marker in combined
+    )
+    if channels and all("noise" in channel.lower() for channel in channels):
+        return marker_hits >= 1
+    return marker_hits >= 3
+
+
+def _row_get(row: Any, key: str) -> Any:
+    try:
+        return row[key]
+    except (KeyError, TypeError):
+        return getattr(row, key, None)
+
+
+def _noise_noop_signature(rows: list[Any]) -> dict[str, Any]:
+    channels = sorted(
+        {
+            str(channel)
+            for row in rows
+            if (channel := _row_get(row, "source_channel")) is not None
+        }
+    )
+    signature: dict[str, Any] = {
+        "signal_type": "noise_noop",
+        "question_primitive": "NOISE_SUPPRESSION",
+    }
+    if channels:
+        signature["entities"] = [f"channel:{channel}" for channel in channels[:8]]
+    return signature
+
+
+def _noise_noop_evidence_hash(rows: list[Any]) -> str:
+    payload = [
+        {
+            "id": str(_row_get(row, "id") or ""),
+            "source_channel": str(_row_get(row, "source_channel") or ""),
+            "content_text": str(_row_get(row, "content_text") or ""),
+        }
+        for row in rows
+    ]
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+async def _record_noise_noop_negative_memory(
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    *,
+    trigger_evidence_ids: list[UUID],
+    ops_summary: dict[str, Any],
+) -> int:
+    if not _diff_is_noise_noop(diff) or not trigger_evidence_ids:
+        return 0
+    observation_ids = list(dict.fromkeys(trigger_evidence_ids))
+    signature: dict[str, Any] | None = None
+    row_list: list[Any] = []
+    try:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                SELECT id, source_channel, content_text
+                FROM observations
+                WHERE tenant_id = $1
+                  AND id = ANY($2::uuid[])
+                ORDER BY occurred_at ASC, id ASC
+                """,
+                diff.tenant_id,
+                observation_ids,
+            )
+            row_list = list(rows)
+            if not _rows_confirm_noise_noop(row_list):
+                return 0
+            signature = _noise_noop_signature(row_list)
+            memory = NegativeMemory(
+                id=uuid7(),
+                tenant_id=diff.tenant_id,
+                memory_type="noisy_path",
+                signature=signature,
+                rejected_claim=None,
+                rejected_path={
+                    "route": "t1_noise_noop",
+                    "trigger_ref": str(diff.trigger_ref),
+                    "observation_ids": [str(oid) for oid in observation_ids],
+                    "source_channels": sorted(
+                        {str(_row_get(row, "source_channel") or "") for row in row_list}
+                    ),
+                },
+                reason="noise_only_trigger_discarded_without_durable_write",
+                evidence_snapshot_hash=_noise_noop_evidence_hash(row_list),
+                confidence=0.8,
+                expires_at=datetime.now(timezone.utc) + _NOISE_NOOP_NEGATIVE_MEMORY_TTL,
+            )
+            await NegativeMemoryRepo(
+                None,
+                tenant_id=diff.tenant_id,
+            ).insert(memory, conn=conn)
+    except Exception as exc:  # noqa: BLE001
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "think.noise_noop_negative_memory_failed",
+            trigger_ref=str(diff.trigger_ref),
+            error=str(exc),
+        )
+        return 0
+    ops_summary.setdefault("negative_memory_ops", []).append(
+        {
+            "memory_type": "noisy_path",
+            "signature": signature,
+            "reason": "noise_only_trigger_discarded_without_durable_write",
+        }
+    )
+    await _emit_noise_noop_experience_event(
+        signature=signature or {},
+        observation_ids=observation_ids,
+        rows=row_list,
+    )
+    return 1
+
+
+async def _emit_noise_noop_experience_event(
+    *,
+    signature: dict[str, Any],
+    observation_ids: list[UUID],
+    rows: list[Any],
+) -> None:
+    try:
+        from services.reasoning.sage.inquiry_traces.emitter import emit_event
+    except Exception:  # noqa: BLE001
+        return
+
+    channels = sorted(
+        {
+            str(_row_get(row, "source_channel") or "")
+            for row in rows
+            if _row_get(row, "source_channel")
+        }
+    )
+    await emit_event(
+        "outcome_quality_assessed",
+        {
+            "experience_kind": "noise_noop_negative_memory",
+            "signal_type": "noise_noop",
+            "question_primitive": "NOISE_SUPPRESSION",
+            "objective_alignment_score": 1.0,
+            "quality_score": 1.0,
+            "failure_modes": [],
+            "policy_effects": {"negative_memory_inserts": 1},
+            "future_behavior_levers": ["negative_memory"],
+            "signature": signature,
+            "observation_ids": [str(oid) for oid in observation_ids],
+            "source_channels": channels,
+            "reason": "noise_only_trigger_discarded_without_durable_write",
+        },
+    )
+
+
+@dataclass(slots=True)
+class _ApplyDiffMutationResult:
+    applied_model_ids: list[UUID]
+    state_changes_emitted: int
+    claim_result: _ClaimOpsApplyResult
+    applied_open_question_ops: list[Any]
+    applied_relation_claim_ops: list[Any]
+    applied_relation_frame_ops: list[Any]
+    applied_edge_ops: list[Any]
+    applied_ontology_gap_ops: list[Any]
+
+
+async def _apply_diff_mutation_ops(
+    *,
+    diff: ValidatedDiff,
+    conn: asyncpg.Connection,
+    models_repo: ModelsRepo,
+    trigger_cause_event_id: UUID | None,
+    trigger_evidence_ids: list[UUID],
+    think_run_id: UUID | None,
+    parent_cascade_payload: dict[str, Any] | None,
+    doc_memory_source: str | None,
+    ops_summary: dict[str, Any],
+) -> _ApplyDiffMutationResult:
+    claim_result = await _apply_claim_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        models_repo=models_repo,
+        trigger_cause_event_id=trigger_cause_event_id,
+        trigger_evidence_ids=trigger_evidence_ids,
+        think_run_id=think_run_id,
+        ops_summary=ops_summary,
+        doc_memory_source=doc_memory_source,
+    )
+    applied_model_ids = list(claim_result.applied_model_ids)
+    pending_model_ids_by_event_id = claim_result.pending_model_ids_by_event_id
+    state_changes_emitted = claim_result.state_changes_emitted
+
+    (
+        applied_open_question_ops,
+        open_question_state_changes,
+    ) = await _apply_open_question_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        ops_summary=ops_summary,
+    )
+    state_changes_emitted += open_question_state_changes
+
+    (
+        lifecycle_model_ids,
+        lifecycle_state_changes,
+    ) = await _apply_memory_lifecycle_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        models_repo=models_repo,
+        trigger_cause_event_id=trigger_cause_event_id,
+        trigger_evidence_ids=trigger_evidence_ids,
+        ops_summary=ops_summary,
+    )
+    applied_model_ids.extend(lifecycle_model_ids)
+    state_changes_emitted += lifecycle_state_changes
+
+    applied_relation_claim_ops = await _apply_relation_claim_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        think_run_id=think_run_id,
+        ops_summary=ops_summary,
+    )
+    applied_relation_frame_ops = await _apply_relation_frame_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        think_run_id=think_run_id,
+        ops_summary=ops_summary,
+    )
+    applied_edge_ops = await _apply_edge_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        ops_summary=ops_summary,
+    )
+    applied_ontology_gap_ops = await _apply_ontology_gap_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        ops_summary=ops_summary,
+    )
+
+    state_changes_emitted += await _apply_act_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
+        trigger_cause_event_id=trigger_cause_event_id,
+        ops_summary=ops_summary,
+    )
+    state_changes_emitted += await _apply_resource_ops_for_diff(
+        diff=diff,
+        conn=conn,
+        trigger_cause_event_id=trigger_cause_event_id,
+        ops_summary=ops_summary,
+    )
+    await _enqueue_belief_updated_for_applied_models(
+        conn=conn,
+        tenant_id=diff.tenant_id,
+        model_ids=claim_result.belief_updated_model_ids,
+        source_observation_id=trigger_cause_event_id,
+        parent_payload=parent_cascade_payload,
+    )
+    return _ApplyDiffMutationResult(
+        applied_model_ids=applied_model_ids,
+        state_changes_emitted=state_changes_emitted,
+        claim_result=claim_result,
+        applied_open_question_ops=applied_open_question_ops,
+        applied_relation_claim_ops=applied_relation_claim_ops,
+        applied_relation_frame_ops=applied_relation_frame_ops,
+        applied_edge_ops=applied_edge_ops,
+        applied_ontology_gap_ops=applied_ontology_gap_ops,
+    )
 
 
 async def apply_diff(
@@ -1309,8 +1804,6 @@ async def apply_diff(
     """
     diff_hash = await _prepare_apply_transaction(diff, conn, trigger_kind)
 
-    applied_model_ids: list[UUID] = []
-    state_changes_emitted = 0
     ops_summary: dict[str, Any] = {
         "claim_ops": [],
         "memory_lifecycle_ops": [],
@@ -1318,6 +1811,10 @@ async def apply_diff(
         "relation_frame_ops": [],
         "edge_ops": [],
         "ontology_gap_ops": [],
+        "open_question_ops": [],
+        "formation_resolutions": [
+            op.model_dump(mode="json") for op in diff.formation_resolutions
+        ],
         "act_ops": [],
         "resource_ops": [],
         "synthesis_decisions": summarize_synthesis_decisions(diff),
@@ -1325,11 +1822,15 @@ async def apply_diff(
         "apply_dropped_op_count": 0,
         "apply_dropped_op_errors": [],
     }
-    pending_model_ids_by_event_id: dict[UUID, UUID] = {}
     trigger_evidence_ids = _merge_event_ids(
         trigger_supporting_event_ids or (),
         (trigger_cause_event_id,) if trigger_cause_event_id is not None else (),
     )
+    # Document-memory provenance (Option A, §4.4): when the trigger that drove
+    # this apply carried a structured document summary, every Model minted here
+    # is document-derived — count each successful insert at the real mint site
+    # (`_apply_claim_insert`), keyed by the document's source channel.
+    doc_memory_source = _doc_memory_source_from_cascade(parent_cascade_payload)
 
     if models_repo is None:
         models_repo = ModelsRepo(  # type: ignore[arg-type]
@@ -1337,128 +1838,50 @@ async def apply_diff(
             run_topology_on_insert=False,
         )
 
-    # --- 1. claim_ops ---------------------------------------------
-    claim_result = await _apply_claim_ops_for_diff(
+    mutation_result = await _apply_diff_mutation_ops(
         diff=diff,
         conn=conn,
         models_repo=models_repo,
         trigger_cause_event_id=trigger_cause_event_id,
         trigger_evidence_ids=trigger_evidence_ids,
         think_run_id=think_run_id,
+        parent_cascade_payload=parent_cascade_payload,
         ops_summary=ops_summary,
-    )
-    applied_model_ids = claim_result.applied_model_ids
-    pending_model_ids_by_event_id = claim_result.pending_model_ids_by_event_id
-    state_changes_emitted = claim_result.state_changes_emitted
-
-    # --- 2. memory_lifecycle_ops ----------------------------------
-    lifecycle_model_ids, lifecycle_state_changes = await _apply_memory_lifecycle_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        models_repo=models_repo,
-        trigger_cause_event_id=trigger_cause_event_id,
-        trigger_evidence_ids=trigger_evidence_ids,
-        ops_summary=ops_summary,
-    )
-    applied_model_ids.extend(lifecycle_model_ids)
-    state_changes_emitted += lifecycle_state_changes
-
-    # --- 3. relation_claim_ops ------------------------------------
-    applied_relation_claim_ops = await _apply_relation_claim_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
-        trigger_cause_event_id=trigger_cause_event_id,
-        think_run_id=think_run_id,
-        ops_summary=ops_summary,
+        doc_memory_source=doc_memory_source,
     )
 
-    # --- 4. relation_frame_ops ------------------------------------
-    applied_relation_frame_ops = await _apply_relation_frame_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
-        trigger_cause_event_id=trigger_cause_event_id,
-        think_run_id=think_run_id,
-        ops_summary=ops_summary,
-    )
-
-    # --- 5. edge_ops ----------------------------------------------
-    applied_edge_ops = await _apply_edge_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
-        trigger_cause_event_id=trigger_cause_event_id,
-        ops_summary=ops_summary,
-    )
-
-    # --- 6. ontology_gap_ops --------------------------------------
-    applied_ontology_gap_ops = await _apply_ontology_gap_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
-        trigger_cause_event_id=trigger_cause_event_id,
-        ops_summary=ops_summary,
-    )
-
-    # --- 7. act_ops -----------------------------------------------
-    state_changes_emitted += await _apply_act_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        pending_model_ids_by_event_id=pending_model_ids_by_event_id,
-        trigger_cause_event_id=trigger_cause_event_id,
-        ops_summary=ops_summary,
-    )
-
-    # --- 8. resource_ops ------------------------------------------
-    state_changes_emitted += await _apply_resource_ops_for_diff(
-        diff=diff,
-        conn=conn,
-        trigger_cause_event_id=trigger_cause_event_id,
-        ops_summary=ops_summary,
-    )
-
-    # --- 9. Enqueue T2:belief_updated for each new state/concern model ----
-    await _enqueue_belief_updated_for_applied_models(
-        conn=conn,
-        tenant_id=diff.tenant_id,
-        model_ids=claim_result.belief_updated_model_ids,
-        source_observation_id=trigger_cause_event_id,
-        parent_payload=parent_cascade_payload,
-    )
-
-    # --- 10. Mark applied_triggers success (still in same tx) ------
     ops_summary["memory_aggregation"] = _summarize_memory_aggregation(
         ops_summary,
         original_claim_op_count=len(diff.claim_ops),
-        expanded_claim_op_count=claim_result.expanded_claim_op_count,
+        expanded_claim_op_count=mutation_result.claim_result.expanded_claim_op_count,
     )
+    noise_negative_memory_inserts = await _record_noise_noop_negative_memory(
+        diff,
+        conn,
+        trigger_evidence_ids=list(trigger_evidence_ids),
+        ops_summary=ops_summary,
+    )
+    if noise_negative_memory_inserts:
+        ops_summary["negative_memory_inserts"] = noise_negative_memory_inserts
 
     await conn.execute(
         "UPDATE applied_triggers SET outcome = 'success' WHERE trigger_id = $1",
         diff.trigger_ref,
     )
 
-    # --- 11. Phase 1 outcome events -------------------------------
-    # The apply succeeded (we just updated applied_triggers to
-    # 'success'), so every model_id referenced by the validated diff
-    # got "used in a valid diff" for the topology optimizer's
-    # bookkeeping. We also emit one event per pair of model_ids that
-    # the diff connected via an existing model_edges edge. Both emits
-    # are best-effort and require an active TraceContext (installed by
-    # the inquiry runtime); when none is set they are no-ops.
     feedback_diff = diff.model_copy(
         update={
-            "edge_ops": applied_edge_ops,
+            "edge_ops": mutation_result.applied_edge_ops,
             "memory_lifecycle_ops": diff.memory_lifecycle_ops,
-            "relation_claim_ops": applied_relation_claim_ops,
-            "relation_frame_ops": applied_relation_frame_ops,
-            "ontology_gap_ops": applied_ontology_gap_ops,
+            "relation_claim_ops": mutation_result.applied_relation_claim_ops,
+            "relation_frame_ops": mutation_result.applied_relation_frame_ops,
+            "ontology_gap_ops": mutation_result.applied_ontology_gap_ops,
+            "open_question_ops": mutation_result.applied_open_question_ops,
         }
     )
     await _emit_valid_diff_outcome_events(
         feedback_diff,
-        applied_model_ids=applied_model_ids,
+        applied_model_ids=mutation_result.applied_model_ids,
         conn=conn,
         ops_summary=ops_summary,
         source_observation_id=trigger_cause_event_id,
@@ -1466,8 +1889,8 @@ async def apply_diff(
 
     return {
         **ops_summary,
-        "applied_model_ids": applied_model_ids,
-        "state_changes_emitted": state_changes_emitted,
+        "applied_model_ids": mutation_result.applied_model_ids,
+        "state_changes_emitted": mutation_result.state_changes_emitted,
         "reasoning_trace": diff.reasoning_trace,
     }
 
@@ -1540,6 +1963,18 @@ async def _emit_valid_diff_outcome_events(
         for model_id in getattr(op, "evidence_model_ids", None) or []:
             if isinstance(model_id, UUID):
                 node_ids.add(model_id)
+    for op in diff.open_question_ops:
+        if isinstance(getattr(op, "model_id", None), UUID):
+            node_ids.add(op.model_id)
+        if isinstance(getattr(op, "resolution_model_id", None), UUID):
+            node_ids.add(op.resolution_model_id)
+        for model_id in getattr(op, "source_model_ids", None) or []:
+            if isinstance(model_id, UUID):
+                node_ids.add(model_id)
+    for op in diff.formation_resolutions:
+        for model_id in getattr(op, "output_model_ids", None) or []:
+            if isinstance(model_id, UUID):
+                node_ids.add(model_id)
     for op in diff.act_ops:
         basis = getattr(op, "confidence_basis", None)
         if isinstance(basis, UUID):
@@ -1583,13 +2018,20 @@ async def _emit_valid_diff_outcome_events(
         source_observation_id=source_observation_id,
     )
 
-    if not emission_enabled() or ctx is None:
-        return
-
     entities = [
         str(e) for e in (ctx_meta.get("entities") or []) if e is not None and str(e)
     ]
     signal_type = ctx_meta.get("signal_type") or ctx_meta.get("trigger_kind")
+
+    if not emission_enabled() or ctx is None:
+        await _upsert_question_policy_valid_diff_stats(
+            diff,
+            conn=conn,
+            ops_summary=ops_summary or {},
+            signal_type=str(signal_type or "unknown"),
+            question_primitive=default_primitive,
+        )
+        return
 
     await _emit_question_policy_valid_diff_feedback(
         diff,
@@ -1704,7 +2146,9 @@ async def _emit_valid_diff_outcome_events(
             )
 
 
-_QUESTION_POLICY_FEEDBACK_TAGS = frozenset({"question_policy", "capability_probe"})
+_QUESTION_POLICY_FEEDBACK_SOURCE_TAGS = frozenset(
+    {"capability_probe", "lifecycle_obligation"}
+)
 
 
 def _accepted_question_policy_probe_model_ids(
@@ -1716,7 +2160,10 @@ def _accepted_question_policy_probe_model_ids(
         if not isinstance(item, dict):
             continue
         tags = {str(tag) for tag in (item.get("domain_tags") or [])}
-        if not _QUESTION_POLICY_FEEDBACK_TAGS <= tags:
+        if (
+            "question_policy" not in tags
+            or not tags & _QUESTION_POLICY_FEEDBACK_SOURCE_TAGS
+        ):
             continue
         model_id = _coerce_uuid_or_none(item.get("model_id"))
         if model_id is None or model_id in seen:
@@ -1724,6 +2171,68 @@ def _accepted_question_policy_probe_model_ids(
         seen.add(model_id)
         model_ids.append(model_id)
     return model_ids
+
+
+async def _upsert_question_policy_valid_diff_stats(
+    diff: ValidatedDiff,
+    *,
+    conn: asyncpg.Connection,
+    ops_summary: dict[str, Any],
+    signal_type: str,
+    question_primitive: str | None,
+) -> bool:
+    if not _accepted_question_policy_probe_model_ids(ops_summary):
+        return False
+    primitive = str(question_primitive or "DEPENDENCY").upper()
+    try:
+        async with conn.transaction():
+            stats_table_name = await conn.fetchval(
+                "SELECT to_regclass('public.sage_question_policy_stats')"
+            )
+            if stats_table_name is None:
+                return False
+            await conn.execute(
+                """
+                INSERT INTO sage_question_policy_stats (
+                  id, tenant_id, signal_type, question_primitive,
+                  attempts, successes, total_credit, total_cost,
+                  utility_score, last_credit_at, updated_at
+                ) VALUES (
+                  $1, $2, $3, $4,
+                  1, 1, 0.7, 0.05,
+                  0.65, now(), now()
+                )
+                ON CONFLICT (tenant_id, signal_type, question_primitive)
+                DO UPDATE SET
+                  attempts = sage_question_policy_stats.attempts + 1,
+                  successes = sage_question_policy_stats.successes + 1,
+                  total_credit = sage_question_policy_stats.total_credit + 0.7,
+                  total_cost = sage_question_policy_stats.total_cost + 0.05,
+                  utility_score = (
+                    (sage_question_policy_stats.total_credit + 0.7)
+                    - (sage_question_policy_stats.total_cost + 0.05)
+                  ) / GREATEST(sage_question_policy_stats.attempts + 1, 1),
+                  last_credit_at = now(),
+                  updated_at = now()
+                """,
+                uuid7(),
+                diff.tenant_id,
+                signal_type,
+                primitive,
+            )
+    except Exception as exc:  # noqa: BLE001 — stats bridge is best-effort
+        _raise_if_postgres_error(exc)
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "sage_trace.question_policy_stats_upsert_failed",
+            error=str(exc),
+        )
+        return False
+    ops_summary["question_policy_updates"] = (
+        int(ops_summary.get("question_policy_updates") or 0) + 1
+    )
+    return True
 
 
 async def _emit_question_policy_valid_diff_feedback(
@@ -1746,6 +2255,13 @@ async def _emit_question_policy_valid_diff_feedback(
     question = (
         "Would asking for the missing approval owner before writing a strong "
         "relation improve precision?"
+    )
+    await _upsert_question_policy_valid_diff_stats(
+        diff,
+        conn=conn,
+        ops_summary=ops_summary,
+        signal_type=signal_type,
+        question_primitive=primitive,
     )
     try:
         async with conn.transaction():
@@ -1997,9 +2513,7 @@ async def _record_edge_intelligence_valid_diff(
                     RelationEvidence(
                         tenant_id=diff.tenant_id,
                         source_observation_id=(
-                            op.evidence_event_ids[0]
-                            if op.evidence_event_ids
-                            else None
+                            op.evidence_event_ids[0] if op.evidence_event_ids else None
                         ),
                         source_model_id=op.source_model_id,
                         target_model_id=op.target_model_id,
@@ -2036,9 +2550,7 @@ async def _record_edge_intelligence_valid_diff(
                 if op.source_model_id is None or op.target_model_id is None:
                     continue
                 direction = (
-                    "source_to_target"
-                    if op.direction == "unknown"
-                    else op.direction
+                    "source_to_target" if op.direction == "unknown" else op.direction
                 )
                 await repo.insert_relation_evidence(
                     conn,
@@ -2272,6 +2784,155 @@ async def _record_edge_intelligence_valid_diff(
 # ---------------------------------------------------------------------
 
 
+async def _apply_open_question_op(
+    op: OpenQuestionOp,
+    conn: asyncpg.Connection,
+    repo: ModelOpenQuestionsRepo,
+    tenant_id: UUID,
+    *,
+    cause_event_id: UUID | None,
+) -> dict[str, Any]:
+    if op.model_id is None:
+        raise ValidationError("open_question_op requires model_id")
+    if not await _model_id_exists(conn, tenant_id=tenant_id, model_id=op.model_id):
+        raise ValidationError("open_question_op target model not found")
+    if op.op == "insert":
+        if not op.question:
+            raise ValidationError("open_question_op insert requires question")
+        row = await repo.insert(
+            conn,
+            ModelOpenQuestionCreate(
+                id=op.id,
+                tenant_id=tenant_id,
+                model_id=op.model_id,
+                question=op.question,
+                question_type=op.question_type,
+                rationale=op.rationale,
+                priority=op.priority,
+                expected_resolution_signal=op.expected_resolution_signal,
+                search_signature=op.search_signature,
+                source_event_id=cause_event_id,
+                source_model_ids=_merge_event_ids(op.model_id, op.source_model_ids),
+            ),
+        )
+        await _emit_open_question_change(
+            conn,
+            tenant_id=tenant_id,
+            model_id=op.model_id,
+            question_id=row.id,
+            op_kind="insert",
+            cause_event_id=cause_event_id,
+        )
+        return {
+            "summary": {
+                "op": "insert",
+                "open_question_id": str(row.id),
+                "model_id": str(row.model_id),
+                "question_type": row.question_type,
+                "priority": row.priority,
+                "dedupe_key": row.dedupe_key,
+            },
+            "model_id": row.model_id,
+            "open_question_id": row.id,
+            "state_changes": 1,
+        }
+
+    question_id = op.question_id or op.id
+    if question_id is None:
+        raise ValidationError(f"open_question_op {op.op} requires question_id")
+    status: OpenQuestionStatus = op.status or (
+        "resolved" if op.op == "resolve" else "archived"
+    )  # type: ignore[assignment]
+    row = await repo.resolve(
+        conn,
+        tenant_id=tenant_id,
+        question_id=question_id,
+        resolution_model_id=op.resolution_model_id,
+        resolution_note=op.resolution_note,
+        status=status,
+    )
+    if row is None:
+        raise ValidationError("open_question_op target question not found")
+    await _emit_open_question_change(
+        conn,
+        tenant_id=tenant_id,
+        model_id=row.model_id,
+        question_id=row.id,
+        op_kind=op.op,
+        cause_event_id=cause_event_id,
+    )
+    return {
+        "summary": {
+            "op": op.op,
+            "open_question_id": str(row.id),
+            "model_id": str(row.model_id),
+            "question_type": row.question_type,
+            "status": row.status,
+            "resolution_model_id": (
+                str(row.resolution_model_id) if row.resolution_model_id else None
+            ),
+        },
+        "model_id": row.model_id,
+        "open_question_id": row.id,
+        "state_changes": 1,
+    }
+
+
+async def _emit_open_question_change(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID,
+    question_id: UUID,
+    op_kind: str,
+    cause_event_id: UUID | None,
+) -> None:
+    await emit_state_change(
+        conn,
+        kind="model_open_question_changed",
+        entity_id=model_id,
+        tenant_id=tenant_id,
+        cause_event_id=cause_event_id,
+        entity_kind="model",
+        metadata={
+            "open_question_id": str(question_id),
+            "open_question_op": op_kind,
+        },
+    )
+    from services.domain.models.events import (  # noqa: WPS433
+        MODEL_EVENT_OPEN_QUESTION_CHANGED,
+        emit_model_event_from_db,
+    )
+
+    await emit_model_event_from_db(
+        conn,
+        model_id=model_id,
+        event_type=MODEL_EVENT_OPEN_QUESTION_CHANGED,
+        changed_fields=["open_questions"],
+        source_event_id=cause_event_id,
+    )
+
+
+def _resolve_pending_open_question_model_refs(
+    op: OpenQuestionOp,
+    pending_model_ids_by_event_id: dict[UUID, UUID],
+) -> OpenQuestionOp:
+    updates: dict[str, Any] = {}
+    if op.model_id in pending_model_ids_by_event_id:
+        updates["model_id"] = pending_model_ids_by_event_id[op.model_id]
+    if op.resolution_model_id in pending_model_ids_by_event_id:
+        updates["resolution_model_id"] = pending_model_ids_by_event_id[
+            op.resolution_model_id
+        ]
+    source_model_ids = [
+        pending_model_ids_by_event_id.get(model_id, model_id)
+        for model_id in op.source_model_ids
+    ]
+    if source_model_ids != op.source_model_ids:
+        updates["source_model_ids"] = source_model_ids
+    return op.model_copy(update=updates) if updates else op
+
+
 def _resolve_pending_edge_model_refs(
     op: EdgeOp,
     pending_model_ids_by_event_id: dict[UUID, UUID],
@@ -2413,6 +3074,23 @@ def _classify_apply_act_drop_reason(exc: Exception) -> str:
     return "unclassified"
 
 
+def _classify_apply_claim_drop_reason(exc: Exception) -> str:
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "scope_actors reference" in msg or "non-existent actor" in msg:
+        return "invalid_scope_actor_reference"
+    if "scope_entities reference" in msg or "unknown entity kind" in msg:
+        return "invalid_scope_entity_reference"
+    if "model" in msg and "not found" in msg:
+        return "missing_model_reference"
+    if "falsifier" in msg:
+        return "inadequate_falsifier"
+    if "embedding dim" in msg:
+        return "invalid_embedding"
+    if "proposition" in msg or "requires" in msg:
+        return "invalid_shape"
+    return "apply_validation_error"
+
+
 def _classify_apply_edge_drop_reason(exc: Exception) -> str:
     msg = str(getattr(exc, "message", exc)).lower()
     if "cycle" in msg:
@@ -2441,6 +3119,17 @@ def _classify_apply_ontology_gap_drop_reason(exc: Exception) -> str:
     return "unclassified"
 
 
+def _classify_apply_open_question_drop_reason(exc: Exception) -> str:
+    msg = str(getattr(exc, "message", exc)).lower()
+    if "not found" in msg or "missing model" in msg:
+        return "missing_model_reference"
+    if "requires" in msg or "question" in msg:
+        return "invalid_shape"
+    if "conflicted" in msg:
+        return "facet_persistence_failed"
+    return "unclassified"
+
+
 def _classify_apply_resource_drop_reason(exc: Exception) -> str:
     msg = str(getattr(exc, "message", exc)).lower()
     if "invalid transaction_type" in msg or "invalid kind" in msg:
@@ -2464,6 +3153,7 @@ _ALLOWED_MODEL_UPDATE_COLUMNS = {
     "resolution_outcome",
     "proposition",
     "domain_tags",
+    "semantic_terms",
     "contributing_models",
     "supporting_event_ids",
     "supporting_model_ids",
@@ -2474,6 +3164,7 @@ _ALLOWED_MODEL_UPDATE_COLUMNS = {
 class _ClaimUpdatePreparation:
     changes: dict[str, Any]
     changed_fields_for_summary: set[str]
+    support_relation_drops: list[dict[str, Any]] = field(default_factory=list)
     situation_merge_payload: dict[str, Any] | None = None
     resolution_update_dropped: bool = False
 
@@ -2620,7 +3311,7 @@ def _coerce_update_value(column: str, value: Any) -> Any:
         raise ValidationError(
             f"apply_claim_op update: proposition must be a dict; got {value!r}"
         )
-    if column == "domain_tags":
+    if column in ("domain_tags", "semantic_terms"):
         values = value if isinstance(value, (list, tuple, set)) else (value,)
         tags = [str(tag).strip() for tag in values if str(tag).strip()]
         return tags
@@ -3361,12 +4052,11 @@ def _summarize_memory_aggregation(
         "evidence_attachments": len(evidence_attachments),
         "near_duplicate_absorptions": len(near_duplicate_absorptions),
         "skipped_claim_writes": len(skipped),
-        "memory_lifecycle_ops": len(
-            ops_summary.get("memory_lifecycle_ops") or []
-        ),
+        "memory_lifecycle_ops": len(ops_summary.get("memory_lifecycle_ops") or []),
         "relation_claim_ops": len(ops_summary.get("relation_claim_ops") or []),
         "edge_ops": len(ops_summary.get("edge_ops") or []),
         "ontology_gap_ops": len(ops_summary.get("ontology_gap_ops") or []),
+        "open_question_ops": len(ops_summary.get("open_question_ops") or []),
         "act_ops": len(ops_summary.get("act_ops") or []),
         "resource_ops": len(ops_summary.get("resource_ops") or []),
         "new_model_pressure": (len(inserts) / expanded if expanded else 0.0),
@@ -3803,6 +4493,7 @@ async def _apply_claim_op(
     cause_event_id: UUID | None,
     trigger_supporting_event_ids: list[UUID],
     audit_cause_override: str | None = None,
+    doc_memory_source: str | None = None,
 ) -> dict[str, Any]:
     if op.op == "insert":
         return await _apply_claim_insert(
@@ -3812,6 +4503,7 @@ async def _apply_claim_op(
             tenant_id,
             cause_event_id=cause_event_id,
             trigger_supporting_event_ids=trigger_supporting_event_ids,
+            doc_memory_source=doc_memory_source,
         )
     if op.op == "update":
         return await _apply_claim_update(
@@ -3841,6 +4533,7 @@ async def _apply_claim_insert(
     *,
     cause_event_id: UUID | None,
     trigger_supporting_event_ids: list[UUID],
+    doc_memory_source: str | None = None,
 ) -> dict[str, Any]:
     proposed = _prepare_claim_insert_model(
         op,
@@ -3853,6 +4546,14 @@ async def _apply_claim_insert(
         conn=conn,
         apply_confidence_calibration=False,
     )
+    # Document-memory mint counter (Option A, §4.4): the Model is now durably
+    # inserted, and `doc_memory_source` is set only when this apply was driven by
+    # an enriched-T1 document trigger — so this Model is document-derived. Count
+    # it once per genuine insert, keyed by the document's source channel. Bumped
+    # only on the success path (after `insert` returns); a non-document trigger
+    # leaves `doc_memory_source` None and is never counted.
+    if doc_memory_source is not None:
+        record_doc_memory_model_minted(doc_memory_source)
     prediction_row_id = await materialize_model_prediction(conn, model=row)
     return {
         "summary": {
@@ -3992,6 +4693,12 @@ async def _prepare_claim_update(
         cause_event_id=cause_event_id,
         trigger_supporting_event_ids=trigger_supporting_event_ids,
     )
+    support_relation_drops = await _prune_conflicting_supporting_model_ids(
+        changes,
+        conn,
+        tenant_id=tenant_id,
+        model_id=op.model_id,
+    )
     resolution_update_dropped = _drop_inconsistent_resolution_update(
         changes,
         user_change_keys,
@@ -3999,6 +4706,7 @@ async def _prepare_claim_update(
     return _ClaimUpdatePreparation(
         changes=changes,
         changed_fields_for_summary=set(changes.keys()),
+        support_relation_drops=support_relation_drops,
         situation_merge_payload=situation_merge_payload,
         resolution_update_dropped=resolution_update_dropped,
     )
@@ -4042,6 +4750,68 @@ async def _merge_supporting_update_ids(
         changes["supporting_event_ids"] = merged_supporting_ids
     else:
         changes.pop("supporting_event_ids", None)
+
+
+async def _prune_conflicting_supporting_model_ids(
+    changes: dict[str, Any],
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    model_id: UUID | None,
+) -> list[dict[str, Any]]:
+    if model_id is None or "supporting_model_ids" not in changes:
+        return []
+
+    desired_supports = _merge_event_ids(changes.get("supporting_model_ids"))
+    if not desired_supports:
+        changes["supporting_model_ids"] = []
+        return []
+
+    mutually_exclusive = get_spec("supports").mutually_exclusive_with
+    if not mutually_exclusive:
+        changes["supporting_model_ids"] = desired_supports
+        return []
+
+    rows = await conn.fetch(
+        """
+        SELECT source_model_id, edge_kind
+        FROM model_edges
+        WHERE tenant_id = $1
+          AND source_model_id = ANY($2::uuid[])
+          AND target_model_id = $3
+          AND status = 'active'
+          AND review_status != 'rejected'
+          AND edge_kind = ANY($4::text[])
+        """,
+        tenant_id,
+        desired_supports,
+        model_id,
+        list(mutually_exclusive),
+    )
+    conflicts_by_source: dict[UUID, str] = {}
+    for row in rows:
+        conflicts_by_source.setdefault(row["source_model_id"], row["edge_kind"])
+    if not conflicts_by_source:
+        changes["supporting_model_ids"] = desired_supports
+        return []
+
+    kept_supports = [
+        source for source in desired_supports if source not in conflicts_by_source
+    ]
+    changes["supporting_model_ids"] = kept_supports
+    return [
+        {
+            "op": "skip",
+            "edge_kind": "supports",
+            "source_model_id": str(source),
+            "target_model_id": str(model_id),
+            "reason": "mutually_exclusive_edge",
+            "conflicting_edge_kind": conflicts_by_source[source],
+            "source": "claim_update_relation_sync",
+        }
+        for source in desired_supports
+        if source in conflicts_by_source
+    ]
 
 
 def _drop_inconsistent_resolution_update(
@@ -4145,6 +4915,19 @@ async def _apply_model_column_updates(
         cause_id=cause_event_id,
         changed_fields=sorted(list(changes.keys())),
     )
+    from services.domain.models.events import (  # noqa: WPS433
+        MODEL_EVENT_UPDATED,
+        emit_model_event_from_db,
+    )
+
+    await emit_model_event_from_db(
+        conn,
+        model_id=model_id,
+        event_type=MODEL_EVENT_UPDATED,
+        changed_fields=sorted(list(changes.keys())),
+        previous_snapshot=pre_snapshot or None,
+        source_event_id=cause_event_id,
+    )
     await _apply_model_update_side_effects(
         conn,
         tenant_id=tenant_id,
@@ -4163,14 +4946,27 @@ async def _snapshot_model_update_columns(
     model_id: UUID,
     changes: dict[str, Any],
 ) -> tuple[dict[str, Any], Any]:
-    cols_csv = ", ".join(changes.keys())
+    model_columns = [key for key in changes if key != "semantic_terms"]
     pre_snapshot: dict[str, Any] = {}
-    pre_row = await conn.fetchrow(
-        f"SELECT {cols_csv} FROM models WHERE id = $1", model_id
-    )
+    pre_row = None
+    if model_columns:
+        cols_csv = ", ".join(model_columns)
+        pre_row = await conn.fetchrow(
+            f"SELECT {cols_csv} FROM models WHERE id = $1", model_id
+        )
     if pre_row is not None:
-        for key in changes.keys():
+        for key in model_columns:
             pre_snapshot[key] = _audit_jsonable(pre_row[key])
+    if "semantic_terms" in changes:
+        semantic_terms = await conn.fetchval(
+            """
+            SELECT semantic_terms
+            FROM model_semantic_terms
+            WHERE model_id = $1
+            """,
+            model_id,
+        )
+        pre_snapshot["semantic_terms"] = _audit_jsonable(semantic_terms or [])
     previous_signal_readings = (
         pre_row["signal_readings"]
         if pre_row is not None and "signal_readings" in changes
@@ -4187,11 +4983,15 @@ async def _execute_model_update(
 ) -> None:
     set_clauses = []
     params: list[Any] = []
-    for index, (key, value) in enumerate(changes.items(), start=1):
+    model_changes = {
+        key: value for key, value in changes.items() if key != "semantic_terms"
+    }
+    for key, value in model_changes.items():
+        index = len(params) + 1
         if key in ("signal_readings", "proposition"):
             set_clauses.append(f"{key} = ${index}::jsonb")
             params.append(json.dumps(value, default=str))
-        elif key in ("domain_tags",):
+        elif key == "domain_tags":
             set_clauses.append(f"{key} = ${index}::text[]")
             params.append(list(value) if isinstance(value, (list, tuple)) else [value])
         elif key in (
@@ -4207,9 +5007,35 @@ async def _execute_model_update(
         else:
             set_clauses.append(f"{key} = ${index}")
             params.append(value)
-    params.append(model_id)
-    sql = f"UPDATE models SET {', '.join(set_clauses)} " f"WHERE id = ${len(params)}"
-    await conn.execute(sql, *params)
+    if set_clauses:
+        params.append(model_id)
+        sql = (
+            f"UPDATE models SET {', '.join(set_clauses)} " f"WHERE id = ${len(params)}"
+        )
+        await conn.execute(sql, *params)
+    if "semantic_terms" in changes:
+        tenant_id = await conn.fetchval(
+            "SELECT tenant_id FROM models WHERE id = $1",
+            model_id,
+        )
+        if tenant_id is not None:
+            value = changes["semantic_terms"]
+            semantic_terms = (
+                list(value) if isinstance(value, (list, tuple)) else [value]
+            )
+            await conn.execute(
+                """
+                INSERT INTO model_semantic_terms (
+                  tenant_id, model_id, semantic_terms, updated_at
+                ) VALUES ($1, $2, $3::text[], now())
+                ON CONFLICT (tenant_id, model_id) DO UPDATE
+                SET semantic_terms = EXCLUDED.semantic_terms,
+                    updated_at = now()
+                """,
+                tenant_id,
+                model_id,
+                semantic_terms,
+            )
 
 
 async def _sync_model_update_relations(
@@ -4397,8 +5223,7 @@ async def _apply_relation_claim_op(
             if not retired_edge_summaries:
                 raise
             edge_metadata["superseded_edge_count"] = sum(
-                int(item.get("retired_edges") or 0)
-                for item in retired_edge_summaries
+                int(item.get("retired_edges") or 0) for item in retired_edge_summaries
             )
             edge_ids = await edges_repo.link(
                 conn,
@@ -4416,18 +5241,21 @@ async def _apply_relation_claim_op(
                 explanation=op.explanation or op.evidence_text,
                 review_status="accepted",
             )
-        row = await repo.mark_relation_claim_decided(
-            conn,
-            claim_id=row["id"],
-            tenant_id=tenant_id,
-            status="accepted",
-            accepted_edge_ids=edge_ids,
-            decision_metadata={
-                "reason": "accepted_relation_claim_created_edge",
-                "accepted_edge_ids": [str(edge_id) for edge_id in edge_ids],
-                "superseded_edges": retired_edge_summaries,
-            },
-        ) or row
+        row = (
+            await repo.mark_relation_claim_decided(
+                conn,
+                claim_id=row["id"],
+                tenant_id=tenant_id,
+                status="accepted",
+                accepted_edge_ids=edge_ids,
+                decision_metadata={
+                    "reason": "accepted_relation_claim_created_edge",
+                    "accepted_edge_ids": [str(edge_id) for edge_id in edge_ids],
+                    "superseded_edges": retired_edge_summaries,
+                },
+            )
+            or row
+        )
         edge_summary = {
             "op": "add",
             "edge_kind": op.edge_kind,
@@ -4458,8 +5286,7 @@ async def _apply_relation_claim_op(
             "status": row["status"],
             "accepted_edge_ids": [str(edge_id) for edge_id in edge_ids],
             "superseded_edge_count": sum(
-                int(item.get("retired_edges") or 0)
-                for item in retired_edge_summaries
+                int(item.get("retired_edges") or 0) for item in retired_edge_summaries
             ),
         },
         "edge_summary": edge_summary,
@@ -4490,9 +5317,7 @@ async def _apply_relation_frame_op(
         )
     )
     evidence_model_ids = tuple(_merge_event_ids(op.evidence_model_ids))
-    participant_models = tuple(
-        participant.model_id for participant in op.participants
-    )
+    participant_models = tuple(participant.model_id for participant in op.participants)
     frame = await repo.insert_relation_frame(
         conn,
         RelationFrame(
@@ -4506,7 +5331,9 @@ async def _apply_relation_frame_op(
             write_policy=op.write_policy,
             confidence=op.confidence,
             evidence_event_ids=evidence_event_ids,
-            evidence_model_ids=tuple(_merge_event_ids(evidence_model_ids, participant_models)),
+            evidence_model_ids=tuple(
+                _merge_event_ids(evidence_model_ids, participant_models)
+            ),
             evidence_text=op.evidence_text,
             explanation=op.explanation,
             temporal_bounds=op.temporal_bounds,
@@ -4655,26 +5482,25 @@ async def _retire_superseded_support_edges_for_relation_claim(
             target=target,
             kind="supports",
             tenant_id=tenant_id,
-            reason=(
-                "superseded_by_relation_claim:"
-                f"{op.edge_kind}:{claim_id}"
-            ),
+            reason=("superseded_by_relation_claim:" f"{op.edge_kind}:{claim_id}"),
         )
         if count <= 0:
             continue
         affected_targets.add(target)
-        summaries.append({
-            "op": "retire",
-            "edge_kind": "supports",
-            "source_model_id": str(source),
-            "target_model_id": str(target),
-            "retired_edges": int(count),
-            "retired_edge_ids": [str(row["id"]) for row in support_rows],
-            "reason": "superseded_by_precise_relation_claim",
-            "superseded_by_edge_kind": op.edge_kind,
-            "relation_claim_id": str(claim_id),
-            "source": "relation_claim_op",
-        })
+        summaries.append(
+            {
+                "op": "retire",
+                "edge_kind": "supports",
+                "source_model_id": str(source),
+                "target_model_id": str(target),
+                "retired_edges": int(count),
+                "retired_edge_ids": [str(row["id"]) for row in support_rows],
+                "reason": "superseded_by_precise_relation_claim",
+                "superseded_by_edge_kind": op.edge_kind,
+                "relation_claim_id": str(claim_id),
+                "source": "relation_claim_op",
+            }
+        )
 
     for target in affected_targets:
         await _refresh_supporting_model_ids_from_active_edges(
@@ -4805,6 +5631,11 @@ def _claim_update_result(
             **(
                 {"dropped_inconsistent_resolution_update": True}
                 if prepared.resolution_update_dropped
+                else {}
+            ),
+            **(
+                {"support_relation_drops": prepared.support_relation_drops}
+                if prepared.support_relation_drops
                 else {}
             ),
         },

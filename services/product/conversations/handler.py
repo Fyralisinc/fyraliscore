@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Protocol
 from uuid import UUID
 
 import asyncpg
@@ -32,7 +32,8 @@ from services.product.query.core import (
     CardContext,
     QueryHandler,
 )
-from typing import Protocol
+
+from .repo import CardConversation, CardExchange, ConversationRepo
 
 
 class _RecLike(Protocol):
@@ -41,9 +42,6 @@ class _RecLike(Protocol):
     qualitative_impact: Optional[str]
     proposition_text: str
     target_entity: Any
-
-from .repo import CardConversation, CardExchange, ConversationRepo
-
 
 log = logging.getLogger(__name__)
 
@@ -205,6 +203,7 @@ class ProbeHandler:
             ar = await self._qh.answer_query(
                 AnswerQueryRequest(
                     tenant_id=req.tenant_id,
+                    viewer_id=req.actor_id,
                     query=query,
                     context_card_id=req.card_id,
                     inline_card_context=CardContext(

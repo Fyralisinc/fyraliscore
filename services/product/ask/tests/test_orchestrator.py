@@ -9,11 +9,13 @@ import pytest
 from lib.shared.types import ModelRow, ObservationRow
 from services.product.ask.orchestrator import AskOrchestrator
 from services.product.ask.schemas import (
+    AskEvidenceItem,
     AskScope,
     AskSessionCreateRequest,
     AskTurnRequest,
 )
 from services.product.ask.store import InMemoryAskStore
+from services.platform.access_control.authority import AuthorityDecision
 
 
 TENANT = uuid4()
@@ -23,6 +25,9 @@ VIEWER = uuid4()
 class _FakeConn:
     async def fetch(self, *args, **kwargs):
         return []
+
+    async def fetchval(self, *args, **kwargs):
+        return 0
 
 
 class _ConnProvider:
@@ -124,6 +129,41 @@ class _FakeReader:
 class _FailingReader:
     async def read(self, **kwargs):
         raise RuntimeError("reader unavailable password=super-secret")
+
+
+class _UnauthorizedProjectionReader:
+    def __init__(self, secret_model_id):
+        self.secret_model_id = secret_model_id
+
+    async def read(self, **kwargs):
+        base = await _FakeReader().read(**kwargs)
+        obs = base.observations[0]
+        return type(
+            "ReaderResult",
+            (),
+            {
+                "models": base.models,
+                "observations": base.observations,
+                "projected_evidence": (
+                    {
+                        "evidence_id": str(obs.id),
+                        "evidence_kind": "observation",
+                        "summary": obs.content_text,
+                        "role": "supporting",
+                    },
+                    {
+                        "evidence_id": str(self.secret_model_id),
+                        "evidence_kind": "model",
+                        "summary": "Secret finance ARR is $10M.",
+                        "role": "supporting",
+                    },
+                ),
+                "omitted_projection": (
+                    (str(self.secret_model_id), "budget_exhausted"),
+                ),
+                "debug": {"fake": True},
+            },
+        )()
 
 
 class _FailingAnswerStore(InMemoryAskStore):
@@ -371,12 +411,12 @@ class _AlternativeValueReader:
 
 @pytest.fixture(autouse=True)
 def _allow_access(monkeypatch):
-    async def fake_can_read(*args, **kwargs):
-        return type("Decision", (), {"allowed": True})()
+    async def fake_authorize_read(*args, **kwargs):
+        return AuthorityDecision(True, "authorized")
 
     monkeypatch.setattr(
-        "services.product.ask.orchestrator.can_read",
-        fake_can_read,
+        "services.product.ask.orchestrator.authorize_read",
+        fake_authorize_read,
         raising=True,
     )
 
@@ -409,6 +449,148 @@ async def test_answer_turn_uses_sage_reader_and_persists_evidence():
     evidence, omitted = await store.list_evidence(response.retrieval_run_id)
     assert len(evidence) == 1
     assert omitted[0].omitted_reason == "budget_exhausted"
+    session_snapshot = store.scope_snapshots[session.id][0]
+    answer_snapshot = store.answers[response.answer_id]["authority_snapshot"]
+    assert session_snapshot["purpose"] == "ask"
+    assert session_snapshot["viewer_id"] == str(VIEWER)
+    assert session_snapshot["active_grant_epoch"] == 0
+    assert answer_snapshot["purpose"] == "ask"
+    assert answer_snapshot["viewer_id"] == str(VIEWER)
+    assert answer_snapshot["fingerprint"]
+
+
+async def test_answer_turn_drops_unauthorized_projected_evidence(monkeypatch):
+    secret_model_id = uuid4()
+
+    async def fake_authorize_read(principal, purpose, object_ref, *, conn):
+        if object_ref.object_id == secret_model_id:
+            return AuthorityDecision(False, "model_out_of_scope")
+        return AuthorityDecision(True, "authorized")
+
+    monkeypatch.setattr(
+        "services.product.ask.orchestrator.authorize_read",
+        fake_authorize_read,
+        raising=True,
+    )
+    store = InMemoryAskStore()
+    orch = AskOrchestrator(
+        store=store,
+        conn_provider=_ConnProvider(),
+        reader=_UnauthorizedProjectionReader(secret_model_id),
+    )
+    session = await orch.create_session(
+        tenant_id=TENANT,
+        viewer_id=VIEWER,
+        body=AskSessionCreateRequest(
+            initial_scope=AskScope(type="current_page", label="Acme deal"),
+            source_route="/today",
+        ),
+    )
+
+    response = await orch.answer_turn(
+        tenant_id=TENANT,
+        viewer_id=VIEWER,
+        session_id=session.id,
+        body=AskTurnRequest(query="What is the finance exposure?"),
+    )
+
+    summaries = [item.summary for item in response.payload.evidence]
+    assert "Secret finance ARR is $10M." not in summaries
+    evidence, omitted = await store.list_evidence(response.retrieval_run_id)
+    assert all(item.source_ref != secret_model_id for item in evidence)
+    assert omitted == []
+
+
+async def test_expand_evidence_rechecks_live_authority(monkeypatch):
+    allowed_observation_id = uuid4()
+    secret_model_id = uuid4()
+
+    async def fake_authorize_read(principal, purpose, object_ref, *, conn):
+        if object_ref.object_id == secret_model_id:
+            return AuthorityDecision(False, "model_out_of_scope")
+        return AuthorityDecision(True, "authorized")
+
+    monkeypatch.setattr(
+        "services.product.ask.orchestrator.authorize_read",
+        fake_authorize_read,
+        raising=True,
+    )
+    store = InMemoryAskStore()
+    orch = AskOrchestrator(
+        store=store,
+        conn_provider=_ConnProvider(),
+        reader=_FakeReader(),
+    )
+    session = await orch.create_session(
+        tenant_id=TENANT,
+        viewer_id=VIEWER,
+        body=AskSessionCreateRequest(
+            initial_scope=AskScope(type="current_page", label="Acme deal"),
+            source_route="/today",
+        ),
+    )
+    message_id = await store.add_message(
+        session_id=session.id,
+        role="user",
+        content="expand evidence",
+    )
+    retrieval_run_id = await store.add_retrieval_run(
+        session_id=session.id,
+        message_id=message_id,
+        intent="inspect_evidence",
+        retrieval_plan={},
+        mode="quick_inquiry",
+        status="completed",
+        latency_ms=1,
+    )
+    await store.add_evidence_items(
+        retrieval_run_id,
+        [
+            AskEvidenceItem(
+                id=uuid4(),
+                source_ref=allowed_observation_id,
+                source_kind="observation",
+                summary="Allowed support.",
+                strength="supporting",
+            ),
+            AskEvidenceItem(
+                id=uuid4(),
+                source_ref=secret_model_id,
+                source_kind="model",
+                summary="Secret finance ARR is $10M.",
+                strength="supporting",
+            ),
+            AskEvidenceItem(
+                id=uuid4(),
+                source_ref=secret_model_id,
+                source_kind="omitted_model",
+                summary=f"Evidence projection omitted model {secret_model_id}: budget.",
+                strength="unknown",
+                omitted_reason="budget_exhausted",
+            ),
+            AskEvidenceItem(
+                id=uuid4(),
+                source_kind="composed_chain",
+                summary="Chain derived from mixed-access observations.",
+                strength="supporting",
+                raw_payload={
+                    "source_observation_ids": [
+                        str(allowed_observation_id),
+                        str(secret_model_id),
+                    ],
+                },
+            ),
+        ],
+    )
+
+    evidence, omitted = await orch.expand_evidence(
+        tenant_id=TENANT,
+        viewer_id=VIEWER,
+        retrieval_run_id=retrieval_run_id,
+    )
+
+    assert [item.summary for item in evidence] == ["Allowed support."]
+    assert omitted == []
 
 
 async def test_answer_turn_adds_composed_chain_for_causal_observations():

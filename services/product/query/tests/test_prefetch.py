@@ -13,6 +13,7 @@ from uuid import uuid4
 
 import pytest
 
+from services.platform.access_control.authority import Principal, authority_fingerprint
 from services.product.query import strategies as strat_pkg
 from services.product.query.adapters import InMemoryCacheAdapter
 from services.product.query.core import QueryHandler
@@ -30,6 +31,14 @@ from services.product.query.tests._helpers import (
 
 
 TENANT = uuid4()
+VIEWER = uuid4()
+
+
+def _auth_key(viewer_id=VIEWER) -> str:
+    return authority_fingerprint(
+        Principal(tenant_id=TENANT, actor_id=viewer_id),
+        "ask",
+    ).cache_key
 
 
 @pytest.fixture
@@ -57,11 +66,11 @@ async def test_prefetch_warms_cache_for_all_chips(fake_strategies):
         PrefetchChip(query_id="q2", query_text="why is Acme at risk"),
         PrefetchChip(query_id="q3", query_text="draft a reply to Marcus"),
     ]
-    report = await prefetch_query_grid(handler, TENANT, chips)
+    report = await prefetch_query_grid(handler, TENANT, VIEWER, chips)
     assert report.succeeded == 3
     assert report.failed == 0
     for c in chips:
-        row = await cache.get(TENANT, f"query_prefetch:{c.query_id}")
+        row = await cache.get(TENANT, f"query_prefetch:{_auth_key()}:{c.query_id}")
         assert row is not None
         assert row["content"]["query_echo"] == c.query_text
 
@@ -79,13 +88,13 @@ async def test_prefetch_then_ask_is_fast(fake_strategies):
         cache_adapter=cache,
     )
     chip = PrefetchChip(query_id="qP", query_text="why is Acme at risk?")
-    await prefetch_query_grid(handler, TENANT, [chip])
+    await prefetch_query_grid(handler, TENANT, VIEWER, [chip])
     assert len(renderer.calls) == 1  # one render call during prefetch
 
     # Simulate the UI tapping the chip; handler.try_serve_from_prefetch
     # is what the API layer calls before running the full pipeline.
     t0 = time.perf_counter()
-    cached = await handler.try_serve_from_prefetch(TENANT, "qP")
+    cached = await handler.try_serve_from_prefetch(TENANT, VIEWER, "qP")
     latency_ms = (time.perf_counter() - t0) * 1000
     assert cached is not None
     assert len(renderer.calls) == 1  # no extra render call
@@ -119,14 +128,14 @@ async def test_prefetch_chip_failure_does_not_cancel_others(fake_strategies):
         PrefetchChip(query_id="bad1", query_text="bad"),
         PrefetchChip(query_id="good2", query_text="good"),
     ]
-    report = await prefetcher.prefetch(TENANT, chips)
+    report = await prefetcher.prefetch(TENANT, VIEWER, chips)
     assert report.total == 3
     assert report.succeeded == 2
     assert report.failed == 1
     # good1 + good2 cached; bad1 not.
-    assert await cache.get(TENANT, "query_prefetch:good1") is not None
-    assert await cache.get(TENANT, "query_prefetch:good2") is not None
-    assert await cache.get(TENANT, "query_prefetch:bad1") is None
+    assert await cache.get(TENANT, f"query_prefetch:{_auth_key()}:good1") is not None
+    assert await cache.get(TENANT, f"query_prefetch:{_auth_key()}:good2") is not None
+    assert await cache.get(TENANT, f"query_prefetch:{_auth_key()}:bad1") is None
 
 
 async def test_prefetch_empty_chip_list_is_noop(fake_strategies):
@@ -135,7 +144,7 @@ async def test_prefetch_empty_chip_list_is_noop(fake_strategies):
         classifier=ScriptedClassifier("arbitrary"),
         rendering_adapter=FakeRenderingAdapter(),
     )
-    report = await prefetch_query_grid(handler, TENANT, [])
+    report = await prefetch_query_grid(handler, TENANT, VIEWER, [])
     assert report.total == 0
     assert report.succeeded == 0
     assert report.failed == 0
@@ -154,7 +163,7 @@ async def test_prefetch_concurrency_cap(fake_strategies):
     prefetcher = QueryPrefetcher(handler, max_concurrency=1)
     chips = [PrefetchChip(query_id=f"q{i}", query_text="x") for i in range(3)]
     t0 = time.perf_counter()
-    await prefetcher.prefetch(TENANT, chips)
+    await prefetcher.prefetch(TENANT, VIEWER, chips)
     elapsed = (time.perf_counter() - t0) * 1000
     # 3 * 20ms sequentially = ~60ms (with some slack).
     assert elapsed >= 45

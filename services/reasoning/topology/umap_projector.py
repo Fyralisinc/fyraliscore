@@ -104,6 +104,18 @@ DEFAULT_MIN_DIST = 0.15
 TRUSTWORTHINESS_K = 7
 
 
+def _embedding_to_floats(value: Any) -> list[float]:
+    """Normalize pgvector codec values across supported driver versions."""
+    to_list = getattr(value, "to_list", None)
+    if callable(to_list):
+        value = to_list()
+    else:
+        to_numpy = getattr(value, "to_numpy", None)
+        if callable(to_numpy):
+            value = to_numpy()
+    return [float(component) for component in value]
+
+
 class UMAPProjector:
     """Per-tenant 2D UMAP projector for `models.topo_embedding`."""
 
@@ -262,10 +274,7 @@ class UMAPProjector:
 
         ids = [str(r["id"]) for r in rows]
         embeddings = np.asarray(
-            [
-                [float(x) for x in r["topo_embedding"]]
-                for r in rows
-            ],
+            [_embedding_to_floats(r["topo_embedding"]) for r in rows],
             dtype=float,
         )
 

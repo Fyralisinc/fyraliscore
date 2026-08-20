@@ -11,6 +11,7 @@ Coverage targets (from BUILD-PLAN §5 Prompt 4.D):
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from uuid import UUID
 
@@ -140,7 +141,7 @@ async def _wait_for(cond, timeout: float = 2.0, poll: float = 0.02):
 
     deadline = monotonic() + timeout
     while monotonic() < deadline:
-        if await cond() if asyncio.iscoroutinefunction(cond) else cond():
+        if await cond() if inspect.iscoroutinefunction(cond) else cond():
             return True
         await asyncio.sleep(poll)
     return False

@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --background: 222 47% 6%;
+  --foreground: 210 40% 96%;
+  --card: 222 36% 10%;
+  --card-foreground: 210 40% 96%;
+  --popover: 222 36% 10%;
+  --popover-foreground: 210 40% 96%;
+  --primary: 210 40% 98%;
+  --primary-foreground: 222 47% 7%;
+  --secondary: 217 24% 16%;
+  --secondary-foreground: 210 40% 96%;
+  --muted: 217 28% 15%;
+  --muted-foreground: 215 16% 68%;
+  --accent: 160 36% 18%;
+  --accent-foreground: 156 72% 86%;
+  --destructive: 0 74% 52%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 217 28% 19%;
+  --input: 217 28% 22%;
+  --ring: 160 64% 45%;
+  --success: 160 64% 45%;
+  --success-foreground: 160 90% 5%;
+  --warning: 42 84% 58%;
+  --warning-foreground: 32 38% 12%;
+  --info: 211 90% 62%;
+  --info-foreground: 222 47% 7%;
+  --radius: 0.5rem;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-width: 320px;
+  min-height: 100vh;
+  margin: 0;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+::selection {
+  background: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}
+
+:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}

@@ -7,11 +7,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from services.platform.runtime.byoc_contract import (
     ByocDataPlaneManifest,
-    CloudProvider,
     DeploymentEnvironment,
 )
 from services.platform.runtime.byoc_permissions import (

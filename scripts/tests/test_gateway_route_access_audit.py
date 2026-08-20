@@ -22,6 +22,22 @@ def test_route_access_audit_accepts_bearer_authenticated_ingest() -> None:
     assert _check(rows, debug_endpoints_enabled=False) == []
 
 
+def test_route_access_audit_accepts_local_privacy_document() -> None:
+    rows = [
+        {
+            "methods": ["GET"],
+            "path": "/legal/local-test-privacy",
+            "name": "local_test_privacy",
+            "tags": ["gateway-core"],
+            "access": RouteAccess.PUBLIC.value,
+            "gateway_bearer_required": False,
+            "reason": "OAuth providers must be able to display the local privacy document",
+        }
+    ]
+
+    assert _check(rows, debug_endpoints_enabled=False) == []
+
+
 def test_route_access_audit_rejects_public_ingest() -> None:
     rows = [
         {

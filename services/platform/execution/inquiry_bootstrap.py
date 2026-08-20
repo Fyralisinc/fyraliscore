@@ -16,6 +16,10 @@ from services.reasoning.retrieval.primary import (
     TriggerContext,
     primary_retrieve,
 )
+from services.reasoning.sage.company_profile import (
+    CompanyLearningProfile,
+    load_company_learning_profile,
+)
 
 from .action_cache import seed_action_cache_from_baseline
 from .config import InquiryConfig
@@ -24,7 +28,8 @@ from .reflective_rules import (
     ReflectiveRetrievalRule,
     load_reflective_retrieval_rules,
 )
-from .retrieval_learning import load_question_policy_stats
+from .retrieval_learning import load_question_policy_stats, load_sage_route_utilities
+from .retrieval_actions import SemanticRetrievalSession
 from .result_composition import _add_result_to_reservoir, _merge_results
 from .routing import (
     adaptive_baseline_top_n,
@@ -76,6 +81,9 @@ class _InquiryBootstrapState:
     sage_reader_runtime: Any | None
     sage_reader_substrate: Any | None
     max_rounds: int
+    semantic_session: SemanticRetrievalSession | None = None
+    sage_route_utilities: tuple[Any, ...] = ()
+    company_learning_profile: CompanyLearningProfile | None = None
 
 
 async def _prepare_sage_reader_substrate(
@@ -153,6 +161,44 @@ async def _bootstrap_inquiry_run(
     stage_timing_notes: list[dict[str, Any]] = []
 
     stage_started = time.perf_counter()
+    sage_route_utilities = await load_sage_route_utilities(conn, trigger)
+    append_stage_timing(
+        stage_timing_notes,
+        "sage_route_utility_load",
+        stage_started,
+        utilities=len(sage_route_utilities),
+    )
+
+    stage_started = time.perf_counter()
+    question_policy = await load_question_policy_stats(
+        conn,
+        tenant_id=trigger.tenant_id,
+        signal_type=trigger.kind,
+    )
+    append_stage_timing(
+        stage_timing_notes,
+        "question_policy_load",
+        stage_started,
+        policies=len(question_policy),
+    )
+
+    stage_started = time.perf_counter()
+    company_learning_profile = await load_company_learning_profile(
+        conn,
+        tenant_id=trigger.tenant_id,
+        route_utilities=sage_route_utilities,
+        question_policy_stats=question_policy.values(),
+    )
+    append_stage_timing(
+        stage_timing_notes,
+        "company_learning_profile_build",
+        stage_started,
+        priors=len(company_learning_profile.priors),
+        samples=company_learning_profile.sample_count,
+        confidence=company_learning_profile.confidence,
+    )
+
+    stage_started = time.perf_counter()
     if noop_gate["used"]:
         baseline = _merge_results(
             trigger,
@@ -180,6 +226,8 @@ async def _bootstrap_inquiry_run(
             structural_read_fanout_min_seeds=cfg.structural_read_fanout_min_seeds,
             structural_read_fanout_chunk_size=cfg.structural_read_fanout_chunk_size,
             top_n=baseline_top_n,
+            sage_route_utilities=sage_route_utilities,
+            company_profile=company_learning_profile,
         )
         append_stage_timing(
             stage_timing_notes,
@@ -228,19 +276,6 @@ async def _bootstrap_inquiry_run(
     )
 
     stage_started = time.perf_counter()
-    question_policy = await load_question_policy_stats(
-        conn,
-        tenant_id=trigger.tenant_id,
-        signal_type=trigger.kind,
-    )
-    append_stage_timing(
-        stage_timing_notes,
-        "question_policy_load",
-        stage_started,
-        policies=len(question_policy),
-    )
-
-    stage_started = time.perf_counter()
     reflective_rules = await load_reflective_retrieval_rules(
         conn,
         trigger,
@@ -268,6 +303,9 @@ async def _bootstrap_inquiry_run(
         "selected_model_ids": [],
         "projected_evidence_count": 0,
         "activation_trace_count": 0,
+        "company_learning_profile": company_learning_profile.to_policy_notes(
+            max_priors=12
+        ),
     }
     sage_reader_runtime: Any | None = None
     max_rounds = (
@@ -328,6 +366,9 @@ async def _bootstrap_inquiry_run(
         sage_reader_runtime=sage_reader_runtime,
         sage_reader_substrate=sage_reader_substrate,
         max_rounds=max_rounds,
+        semantic_session=SemanticRetrievalSession(),
+        sage_route_utilities=sage_route_utilities,
+        company_learning_profile=company_learning_profile,
     )
 
 

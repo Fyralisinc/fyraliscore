@@ -19,9 +19,9 @@ from pypdf import PdfReader
 
 from services.app.gateway.deps import get_gateway_deps
 from services.app.gateway.html_responses import trusted_static_html_response
-from services.ingest.ingestion.shadow_write import (
+from services.ingest.ingestion.raw_emission import (
     CUTOVER_FLUSH_TIMEOUT_SEC,
-    shadow_write_raw,
+    emit_raw,
 )
 
 
@@ -473,7 +473,7 @@ def build_document_ingest_router() -> APIRouter:
             option=orjson.OPT_SORT_KEYS,
         )
 
-        raw_s3_key = await shadow_write_raw(
+        raw_s3_key = await emit_raw(
             tenant_id=tenant_uuid,
             source="google_drive",
             ingress_kind="backfill",

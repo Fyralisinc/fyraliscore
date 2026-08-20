@@ -98,6 +98,35 @@ def test_hybrid_lookup_terms_drop_generic_fallback_words() -> None:
     assert "renewal" in terms
 
 
+def test_lexical_terms_drop_batch_wrapper_words_but_keep_company_anchors() -> None:
+    focused = lexical_terms.focused_index_terms(
+        (
+            "What evidence would weaken the interpretation that Evidence window "
+            "containing 20 source signals. The window wrapper is not itself a "
+            "business fact; derive durable claims only from individual signals. "
+            "Atlas Retail Group needs Publish SOC2 evidence room."
+        ),
+        _trigger("Atlas Retail Group procurement packet is waiting on SOC2."),
+        max_terms=8,
+    )
+    sparse = lexical_terms.hybrid_lookup_terms(
+        [
+            "Evidence window containing source signals wrapper derive durable claims",
+            "Atlas Retail Group Publish SOC2 evidence room",
+        ]
+    )
+    focused_text = " ".join(focused)
+
+    assert "atlas retail group" in focused
+    assert "publish soc2" in focused_text
+    for generic in ("window", "wrapper", "source", "signals", "claims"):
+        assert generic not in focused_text
+        assert generic not in sparse
+    assert "atlas" in sparse
+    assert "retail" in sparse
+    assert "soc2" in sparse
+
+
 def test_sparse_groups_patterns_and_relevance_tokens_are_stable() -> None:
     assert lexical_terms.hybrid_sparse_lookup_groups(
         ["Alpha Bravo", "SOC2-RISK-77", "tiny"]

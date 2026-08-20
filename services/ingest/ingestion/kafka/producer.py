@@ -35,6 +35,7 @@ from typing import Any, Callable
 from confluent_kafka import Producer
 
 from lib.observability import counter, histogram
+from lib.observability.metrics import KAFKA_PRODUCER_SHUTDOWN_UNDELIVERED
 
 
 log = logging.getLogger(__name__)
@@ -197,6 +198,11 @@ class IdempotentProducer:
             return
         remaining = await self.flush(timeout_seconds)
         if remaining:
+            # BYOC §12 G6 — promote this silent-data-loss log line to a counter
+            # so the fleet control plane can alert on restart-time message loss
+            # instead of grepping logs. Count the NUMBER of undelivered messages
+            # (the loss magnitude), not just that a stop timed out.
+            KAFKA_PRODUCER_SHUTDOWN_UNDELIVERED.inc(remaining)
             log.warning(
                 "kafka_producer_stop_undelivered",
                 extra={"remaining": remaining},

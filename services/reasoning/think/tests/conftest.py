@@ -119,16 +119,12 @@ async def db_pool() -> AsyncGenerator[asyncpg.Pool, None]:
         dsn, min_size=1, max_size=15, init=_init_connection,
     )
     async with pool.acquire() as conn:
-        from lib.shared.migrations import (
-            apply_migrations_dir,
-            schema_bootstrap_lock,
-        )
+        from lib.shared.migrations import apply_migrations_dir
 
         global _MIGRATIONS_READY
-        async with schema_bootstrap_lock(conn):
-            if not _MIGRATIONS_READY and not await _schema_looks_ready(conn):
-                await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
-            _MIGRATIONS_READY = True
+        if not _MIGRATIONS_READY and not await _schema_looks_ready(conn):
+            await apply_migrations_dir(conn, REPO_ROOT / "db" / "migrations")
+        _MIGRATIONS_READY = True
     try:
         yield pool
     finally:
@@ -157,9 +153,36 @@ async def _schema_looks_ready(conn: asyncpg.Connection) -> bool:
             "public.relation_edge_projections",
             "public.relation_evidence",
             "public.model_pair_evidence",
+            "public.pending_post_commit_actions",
+            "public.model_events",
+            "public.model_open_questions",
+            "public.projection_checkpoints",
+            "public.projection_snapshots",
         ],
     )
-    return bool(rows) and all(row["exists"] for row in rows)
+    tables_ready = bool(rows) and all(row["exists"] for row in rows)
+    if not tables_ready:
+        return False
+    return bool(
+        await conn.fetchval(
+            """
+            SELECT EXISTS (
+              SELECT 1
+              FROM pg_constraint
+              WHERE conrelid = 'pending_post_commit_actions'::regclass
+                AND contype = 'c'
+                AND pg_get_constraintdef(oid) LIKE '%search_open_questions%'
+            )
+            AND EXISTS (
+              SELECT 1
+              FROM pg_constraint
+              WHERE conrelid = 'model_events'::regclass
+                AND contype = 'c'
+                AND pg_get_constraintdef(oid) LIKE '%model.open_question_changed%'
+            )
+            """
+        )
+    )
 
 
 @pytest_asyncio.fixture
@@ -256,6 +279,12 @@ async def tenant_cleanup(fresh_db: asyncpg.Pool, tenant: uuid.UUID):
         await conn.execute(
             "DELETE FROM model_edges WHERE tenant_id = $1", tenant,
         )
+        if await conn.fetchval(
+            "SELECT to_regclass('public.model_open_questions')"
+        ):
+            await conn.execute(
+                "DELETE FROM model_open_questions WHERE tenant_id = $1", tenant,
+            )
         await conn.execute(
             "DELETE FROM model_scope_actors WHERE tenant_id = $1", tenant,
         )
@@ -283,6 +312,12 @@ async def tenant_cleanup(fresh_db: asyncpg.Pool, tenant: uuid.UUID):
         await conn.execute(
             "DELETE FROM think_feedback_stats WHERE tenant_id = $1", tenant,
         )
+        if await conn.fetchval(
+            "SELECT to_regclass('public.negative_memory')"
+        ):
+            await conn.execute(
+                "DELETE FROM negative_memory WHERE tenant_id = $1", tenant,
+            )
         await conn.execute(
             "DELETE FROM think_trigger_queue WHERE tenant_id = $1", tenant,
         )

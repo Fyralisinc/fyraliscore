@@ -74,3 +74,24 @@ fyralis_think_cost_recent:
     - usd_1h:
         usage: "GAUGE"
         description: "LLM spend (USD) recorded in think_run_costs over the trailing hour."
+
+# BYOC §12 G1 — schema-version ledger surfaced from the DB so the fleet control
+# plane sees schema state regardless of WHICH runner applied (the shell runner
+# scripts/docker-migrate.sh records the ledger but cannot set in-process
+# Prometheus gauges; the Python runner sets fyralis_schema_* directly). Reads
+# the 0187_schema_migrations ledger: `version` = max numeric 0NNN_ prefix
+# (monotonic schema version), `applied` = row count. NULLIF/coalesce keep it
+# a 0 gauge on a brand-new empty ledger instead of NULL.
+fyralis_schema:
+  query: |
+    SELECT
+      coalesce(max((substring(filename FROM '^[0-9]+'))::int), 0) AS version,
+      count(*) AS applied
+    FROM schema_migrations
+  metrics:
+    - version:
+        usage: "GAUGE"
+        description: "Highest applied db/migrations numeric prefix (monotonic schema version). 0 if the ledger is empty."
+    - applied:
+        usage: "GAUGE"
+        description: "Rows in the schema_migrations ledger (migrations applied)."

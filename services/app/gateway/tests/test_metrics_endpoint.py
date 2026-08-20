@@ -44,6 +44,15 @@ def test_metrics_endpoint_is_public() -> None:
     assert "/metrics" in _PUBLIC_PATHS
 
 
+def test_local_test_privacy_notice_is_public(client) -> None:
+    response = client.get("/legal/local-test-privacy")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert "temporary local test integration" in response.text
+    assert "/legal/local-test-privacy" in _PUBLIC_PATHS
+
+
 def test_metrics_endpoint_ok_when_no_failures(client) -> None:
     resp = client.get("/metrics")
     assert resp.status_code == 200

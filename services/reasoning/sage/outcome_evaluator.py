@@ -1,58 +1,9 @@
-"""services.reasoning.sage.outcome_evaluator — Phase 13 Outcome Evaluator (writer-side).
+"""Writer-side SAGE outcome evaluator.
 
-Implements the "Outcome Evaluator" half of Phase 13 of the SAGE-inspired
-self-evolution architecture. See:
-  * fyralis-sage-synthesis-self-evolution.md §5.5 (component charter)
-  * fyralis-sage-synthesis-self-evolution.md §15 (outcome events + labels)
-  * fyralis-sage-synthesis-self-evolution.md §17.1 (reward features)
-  * fyralis-sage-synthesis-self-evolution.md Phase 13 (acceptance criteria)
-
-The evaluator is the bridge between the inquiry/think pipeline and the
-Topology Optimizer. Given a completed `inquiry_sessions` row + its
-associated `think_runs` row + the validated diff captured on
-`think_runs.ops_applied`, it derives:
-
-  1. A stream of typed events appended to `inquiry_outcome_events` via
-     `OutcomeEventsRepo.append`. The event_type vocabulary is the
-     `OUTCOME_EVENT_TYPES` frozenset declared in
-     services/reasoning/sage/inquiry_traces/types.py.
-
-  2. A dense `reward_features` map (doc §17.1) that the synthesis-writer
-     reward function (Phase 17) will consume. Every feature is a float
-     in [0.0, 2.0]; the few features that have no v1 signal are placed
-     at a documented sentinel value (0.0) with a TODO.
-
-  3. A persisted `outcome_quality_assessed` event plus a returned
-     `OutcomeQualitySignal`. This is the anti-proxy layer: it separates
-     writer failure, missing evidence, dropped counterevidence, packet
-     bloat, and low-value leakage so later optimizers reinforce the
-     actual bottleneck rather than a vague success/failure scalar.
-
-The evaluator is read-mostly: it never writes to the canonical truth
-layer (models / model_edges / acts / resources). Its only writes are
-INSERTs into `inquiry_outcome_events`. The Topology Optimizer (the
-other Phase 13 half, built in parallel) is the one that reads these
-events back and applies discovery-layer updates.
-
-Idempotency
------------
-`evaluate()` is idempotent at the event-type-x-key level: a re-run
-loads the events already emitted for the session, deduplicates against
-the payload "key" we emit for each event type (e.g. `evidence_id` for
-`retrieved_evidence_used_in_packet`, `model_id` for
-`node_used_in_valid_diff`, `(source_model_id, target_model_id,
-edge_kind)` for `path_used_in_valid_diff`), and only appends new ones.
-The reward features are recomputed fresh every call — they are derived
-from current state, not cumulative.
-
-Design notes
-------------
-* No LLM, no embeddings, no async fanout. Pure SQL + Python.
-* The evaluator accepts an optional `outcome_events_repo=` so call
-  sites that already own a repo (e.g. an inquiry executor wrapper) can
-  share it. When unset we construct one bound to the same tenant_id.
-* The optional `conn=` on `evaluate()` lets callers participate in an
-  outer transaction; if `None`, we acquire from the pool.
+It derives idempotent `inquiry_outcome_events`, reward features, and an
+`OutcomeQualitySignal` from one inquiry session plus its Think run. The evaluator
+is read-mostly: it writes outcome events only, never canonical Models, edges,
+acts, or resources.
 """
 
 from __future__ import annotations
@@ -536,13 +487,6 @@ class OutcomeEvaluator:
         noisy_paths: list[dict[str, Any]] = []
         missing_anchors: list[dict[str, Any]] = []
 
-        # TODO(Phase 14+): omitted_evidence_later_requested requires a
-        # cross-session signal (the omitted source_ref re-surfacing in a
-        # future plan). Out of scope for v1.
-
-        # ------------------------------------------------------------------
-        # node_used_in_valid_diff / path_used_in_valid_diff
-        # ------------------------------------------------------------------
         diff_is_valid = run_status == "success"
         valid_diff_outcome = await self._emit_valid_diff_outcome_events(
             conn=conn,
@@ -584,10 +528,6 @@ class OutcomeEvaluator:
         )
         events_emitted += low_value_outcome.events_emitted
 
-        # ------------------------------------------------------------------
-        # validation_failed_due_to_missing_evidence
-        # validation_failed_due_to_bad_reference
-        # ------------------------------------------------------------------
         validation_failure = think_run is not None and run_status in (
             "failed",
             "partial",
@@ -607,15 +547,6 @@ class OutcomeEvaluator:
         events_emitted += validation_outcome.events_emitted
         missing_anchors.extend(validation_outcome.missing_anchors)
 
-        # TODO(Phase 14+): user_accepted_node / user_contested_node /
-        # model_later_confirmed / model_later_falsified /
-        # recommendation_acted_on / recommendation_ignored require a
-        # user-feedback table that does not exist in v1. Topology
-        # Optimizer reads will treat absence as zero signal.
-
-        # ------------------------------------------------------------------
-        # Reward features (doc §17.1)
-        # ------------------------------------------------------------------
         reward_outcome = build_reward_features(
             packet=packet,
             ops_applied=ops_applied,
@@ -628,6 +559,11 @@ class OutcomeEvaluator:
             counterevidence_in_packet=counterevidence_in_packet,
             duplicate_evidence=duplicate_evidence,
             packet_tokens=context.packet_tokens,
+            validation_error_count=(
+                int(think_run.get("validation_error_count") or 0)
+                if think_run is not None
+                else 0
+            ),
         )
         reward_features = reward_outcome.reward_features
         noisy_paths = reward_outcome.noisy_paths
@@ -656,14 +592,15 @@ class OutcomeEvaluator:
             await self._events_repo.append(
                 inquiry_session_id,
                 "outcome_quality_assessed",
-                _quality_signal_payload(quality_signal),
+                _quality_signal_payload(
+                    quality_signal,
+                    reward_features=reward_features,
+                ),
                 conn=conn,
             )
             existing_keys.add(quality_key)
             events_emitted += 1
 
-        # Final per-type aggregation (post-emit) so callers don't need to
-        # re-query. Cheap because we already have the existing_events.
         events_by_type = await self._events_repo.aggregate_by_type(
             inquiry_session_id,
             conn=conn,
@@ -1514,13 +1451,18 @@ def _build_quality_signal(
     )
 
 
-def _quality_signal_payload(signal: OutcomeQualitySignal) -> dict[str, Any]:
+def _quality_signal_payload(
+    signal: OutcomeQualitySignal,
+    *,
+    reward_features: dict[str, float] | None = None,
+) -> dict[str, Any]:
     return {
         "objective_alignment_score": signal.objective_alignment_score,
         "primary_bottleneck": signal.primary_bottleneck,
         "failure_modes": list(signal.failure_modes),
         "quality_axes": signal.quality_axes,
         "evidence_counts": signal.evidence_counts,
+        "reward_features": reward_features or {},
     }
 
 

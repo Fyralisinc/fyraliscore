@@ -18,7 +18,7 @@ from .types import (
 )
 
 _CHEAP_STAGE_PATHS = frozenset({"focused_index", "structural", "model_edge"})
-_BINDABLE_STAGE_PATHS = frozenset({"semantic", "temporal", "model_edge"})
+_BINDABLE_STAGE_PATHS = frozenset({"semantic", "semantic_terms", "temporal", "model_edge"})
 _MAX_CUES = 8
 _MAX_RECENT_EVIDENCE = 5
 _MAX_ACTION_CUES = 4
@@ -322,7 +322,7 @@ def apply_reconstruction_to_actions(
             filters["_bind_previous_scope"] = True
         query = (
             _query_with_cues(action.query, cues)
-            if action.path == "semantic"
+            if action.path in {"semantic", "semantic_terms"}
             else action.query
         )
         if action.path == "focused_index":

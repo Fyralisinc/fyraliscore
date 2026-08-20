@@ -3,18 +3,22 @@ Primary retrieve tests — trigger-specific weighting + reconsolidation.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
 
+from lib.shared.ids import uuid7
 from services.domain.models.repo import ModelsRepo
 
 from services.reasoning.retrieval.config import RetrievalConfig
 from services.reasoning.retrieval.primary import (
     RetrievalResult,
     TriggerContext,
+    _trigger_weights,
     primary_retrieve,
 )
+import services.domain.projections.subjects as projection_subjects
 
 from services.reasoning.retrieval.tests._fixtures import build_fixture, make_embedding
 
@@ -67,7 +71,7 @@ async def test_t1_new_signal_runs_abc_and_reconsolidates(
     # candidate triggers, not primary retrieval.
     run = set(result.notes["pathways_run"])
     assert {"A", "B", "C"}.issubset(run)
-    assert run.issubset({"A", "B", "C", "G"})
+    assert run.issubset({"A", "B", "L", "C", "G"})
 
     # Every returned Model's activation should be bumped by 0.15 or
     # clipped to 1.0.
@@ -114,6 +118,42 @@ async def test_t1_accepts_iso_string_seed_occurred_at_from_queue_payload(
     )
 
 
+async def test_t1_runs_semantic_terms_pathway_l(tx_conn, fresh_db, tenant):
+    fs = await _build(tx_conn, fresh_db, tenant)
+    tagged_model_id = fs.model_ids[0]
+    await tx_conn.execute(
+        """
+        INSERT INTO model_semantic_terms (
+          tenant_id, model_id, semantic_terms
+        ) VALUES ($1, $2, $3::text[])
+        ON CONFLICT (tenant_id, model_id) DO UPDATE
+        SET semantic_terms = EXCLUDED.semantic_terms
+        """,
+        tenant,
+        tagged_model_id,
+        [
+            "refund replay drift",
+            "duplicate invoice reversal",
+            "idempotency key collision",
+        ],
+    )
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        seed_entity_ids=[],
+        seed_natural_text="refund replay drift caused an idempotency key collision",
+        seed_occurred_at=datetime(2026, 4, 1, 18, 0, 0, tzinfo=timezone.utc),
+        precomputed_seed_vector=make_embedding("unrelated vector seed"),
+    )
+
+    result = await primary_retrieve(trigger, tx_conn)
+
+    assert "L" in result.notes["pathways_run"]
+    l_result = next(pr for pr in result.pathway_results if pr.source_pathway == "L")
+    assert tagged_model_id in {model.id for model in l_result.models}
+    assert tagged_model_id in {model.id for model in result.models}
+
+
 async def test_t2_prediction_path_uses_a_and_d(tx_conn, fresh_db, tenant):
     fs = await _build(tx_conn, fresh_db, tenant)
     trigger = TriggerContext(
@@ -122,7 +162,7 @@ async def test_t2_prediction_path_uses_a_and_d(tx_conn, fresh_db, tenant):
         model_id=fs.pattern_model_ids[0],
     )
     result = await primary_retrieve(trigger, tx_conn)
-    assert set(result.notes["pathways_run"]).issubset({"A", "B", "D", "G"})
+    assert set(result.notes["pathways_run"]).issubset({"A", "B", "L", "D", "G"})
 
 
 async def test_t3_anomaly_uses_abc(tx_conn, fresh_db, tenant):
@@ -150,7 +190,23 @@ async def test_t4_pattern_background_uses_d_and_a(tx_conn, fresh_db, tenant):
         seed_signature={"regex": "^hotfix"},
     )
     result = await primary_retrieve(trigger, tx_conn)
-    assert set(result.notes["pathways_run"]).issubset({"A", "D", "G"})
+    assert set(result.notes["pathways_run"]).issubset({"A", "L", "D", "G"})
+
+
+def test_t4_open_question_search_prioritizes_semantic_and_lexical_paths():
+    weights = _trigger_weights(
+        "T4",
+        RetrievalConfig(),
+        subkind="open_question_search",
+    )
+
+    assert weights is not None
+    assert weights["B"] == 0.34
+    assert weights["L"] == 0.22
+    assert weights["D"] == 0.18
+    assert weights["G"] == 0.16
+    assert weights["A"] == 0.10
+    assert pytest.approx(sum(weights.values())) == 1.0
 
 
 # =====================================================================
@@ -377,6 +433,121 @@ async def test_primary_t2_uses_due_model_scope_text_and_embedding_without_embedd
     assert result.notes["effective_scope"]["t2_model_text_fallback"] is True
     assert result.notes["effective_scope"]["t2_model_embedding_fallback"] is True
     assert pr_b.models
+
+
+async def test_primary_uses_projection_snapshot_before_model_fallback(
+    tx_conn, fresh_db, tenant
+):
+    fs = await _build(tx_conn, fresh_db, tenant)
+    projected_model_id = fs.model_ids[-1]
+    await tx_conn.execute(
+        """
+        INSERT INTO projection_snapshots (
+          tenant_id, projection_name, projection_version, subject_key,
+          payload, confidence, severity, source_model_ids, source_event_ids
+        ) VALUES (
+          $1, 'constraints', 'v1', 'company:runway',
+          $2::jsonb, 0.91, 'high', $3::uuid[], $4::uuid[]
+        )
+        """,
+        tenant,
+        json.dumps(
+            {
+                "kind": "constraint_projection",
+                "subject_key": "company:runway",
+                "status": "active",
+            }
+        ),
+        [projected_model_id],
+        [uuid7()],
+    )
+    cfg = RetrievalConfig(
+        trigger_weights_json='{"T4":{"A":1.0,"D":0.0,"G":0.0}}',
+        projection_context_enabled=True,
+        projection_context_max_snapshots=4,
+        projection_context_max_models=4,
+    )
+    trigger = TriggerContext(
+        kind="T4",
+        tenant_id=tenant,
+        seed_natural_text="runway constraint planning",
+    )
+
+    result = await primary_retrieve(trigger, tx_conn, config=cfg)
+
+    assert projected_model_id in {model.id for model in result.models}
+    assert "P" not in result.notes["pathways_run"]
+    assert result.notes["projection_context"]["models_returned"] == 1
+    projection_pr = next(
+        pr for pr in result.pathway_results if pr.notes.get("projection_first")
+    )
+    assert projection_pr.source_pathway == "A"
+    assert projection_pr.models[0].id == projected_model_id
+
+
+async def test_primary_uses_extension_projection_subject_resolver(
+    tx_conn,
+    fresh_db,
+    tenant,
+):
+    fs = await _build(tx_conn, fresh_db, tenant)
+    projected_model_id = fs.model_ids[-1]
+    subject_key = f"customer:{fs.hero_customer_id}:health"
+    await tx_conn.execute(
+        """
+        INSERT INTO projection_snapshots (
+          tenant_id, projection_name, projection_version, subject_key,
+          payload, confidence, severity, source_model_ids, source_event_ids
+        ) VALUES (
+          $1, 'customers', 'v1', $2,
+          $3::jsonb, 0.88, 'medium', $4::uuid[], $5::uuid[]
+        )
+        """,
+        tenant,
+        subject_key,
+        json.dumps(
+            {
+                "kind": "customer_health_projection",
+                "subject_key": subject_key,
+                "status": "active",
+            }
+        ),
+        [projected_model_id],
+        [uuid7()],
+    )
+
+    def _customer_health_resolver(seed: projection_subjects.ProjectionSubjectSeed):
+        if "customer health" not in (seed.seed_natural_text or "").casefold():
+            return []
+        return [("customers", subject_key)]
+
+    projection_subjects.register_subject_resolver(
+        "customer-health",
+        _customer_health_resolver,
+    )
+    try:
+        cfg = RetrievalConfig(
+            trigger_weights_json='{"T4":{"A":1.0,"D":0.0,"G":0.0}}',
+            projection_context_enabled=True,
+            projection_context_max_snapshots=4,
+            projection_context_max_models=4,
+        )
+        trigger = TriggerContext(
+            kind="T4",
+            tenant_id=tenant,
+            seed_natural_text="customer health renewal expansion",
+        )
+
+        result = await primary_retrieve(trigger, tx_conn, config=cfg)
+    finally:
+        projection_subjects.reset_for_tests()
+
+    assert projected_model_id in {model.id for model in result.models}
+    assert "customers" in result.notes["projection_context"]["projection_names"]
+    projection_pr = next(
+        pr for pr in result.pathway_results if pr.notes.get("projection_first")
+    )
+    assert projection_pr.models[0].id == projected_model_id
 
 
 # =====================================================================

@@ -1,0 +1,93 @@
+# ============================================================================
+# Fyralis BYOC — Data-plane Prometheus remote_write OVERLAY  (WS-REMOTEWRITE)
+# ----------------------------------------------------------------------------
+# ALTERNATIVE direct egress path for deployments that DO NOT run the boundary
+# OTel Collector. The customer's EXISTING data-plane Prometheus
+# (observability/prometheus/prometheus.yml) remote-writes the SAME filtered,
+# identity-labeled Tier-1 metrics to central Mimir THROUGH the auth proxy.
+#
+# Merge this block into the data-plane prometheus.yml (top-level `remote_write:`
+# key). The relabel/metric-relabel rules below reproduce the boundary's
+# Gate-1 (family allowlist) + Gate-2 (label drop) + identity-stamp in pure
+# Prometheus relabel_configs, so I1 holds on this path too.
+#
+# Identity values are templated with $FYRALIS_* — Prometheus expands env vars
+# only in a few fields, so set them via the `external_labels` block in
+# prometheus.yml `global:` (shown at the bottom) OR via the rendered overlay
+# your installer produces. The relabel rules here are env-agnostic structure;
+# the installer substitutes the literal tenant_id/deployment_id/region.
+#
+# The proxy injects X-Scope-OrgID from the verified client-cert SAN (C1); this
+# config does NOT set X-Scope-OrgID. mTLS client cert = the deployment identity.
+# ============================================================================
+
+remote_write:
+  - name: fyralis-central-mimir
+    # Auth proxy → Mimir distributor. The proxy terminates mTLS, maps cert SAN
+    # → tenant → X-Scope-OrgID, and forwards to Mimir.
+    url: https://auth-proxy.fyralis.example:8443/api/v1/push
+
+    # --- mTLS: the per-tenant client cert IS the identity (C1) -------------
+    tls_config:
+      ca_file: /etc/fyralis/ca/ca.crt
+      cert_file: /etc/fyralis/agent/client.crt   # SAN = spiffe://fyralis/tenant/<id>
+      key_file: /etc/fyralis/agent/client.key
+      insecure_skip_verify: false
+
+    # --- I3: survive a control-plane outage --------------------------------
+    queue_config:
+      capacity: 10000
+      max_shards: 50
+      min_shards: 1
+      max_samples_per_send: 2000
+      batch_send_deadline: 5s
+      min_backoff: 100ms
+      max_backoff: 30s
+      retry_on_http_429: true
+
+    # --- WRITE-SIDE REDACTION (Gate 1 + Gate 2 + identity) -----------------
+    # write_relabel_configs run on every series JUST BEFORE remote-write, so a
+    # series dropped here never leaves the VPC.
+    write_relabel_configs:
+
+      # ---- GATE 1: metric-family allowlist (keep-list) ------------------
+      # keep ONLY series whose __name__ matches the allowlist; drop all else.
+      # `action: keep` with a regex over __name__ = default-deny.
+      - source_labels: [__name__]
+        regex: >-
+          up|worker_heartbeat_age_seconds|worker_uptime_seconds|fyralis_schema_version|fyralis_partition_coverage.*|fyralis_db_pool.*|pg_.*|process_.*|fyralis_onboarding_shards|fyralis_dlq_unresolved|fyralis_dead_letter_rows|fyralis_think_queue_pending|think_runs_(total|failed|latency).*|fyralis_embedding_backlog_pending|fyralis_llm_breaker.*|think_cost_recent_usd.*|fyralis_oauth_token.*|webhook_verification_failures_total|webhook_resolver_outcomes_total|kafka_consumergroup_lag.*|normalizer_consumer_lag_seconds.*|breaker_trips_total|writer_(full_mode_writes|full_mode_dedup_hits|full_mode_failures|shadow_drop|poison_dlq|parse_failure)(_total)?|writer_poison_attempts.*|reconciliation_pass_count.*|fyralis_worker_expected_present.*|http_requests_total|scrape_(samples_scraped|duration_seconds)
+        action: keep
+
+      # ---- GATE 2: high-cardinality / PII LABEL drop --------------------
+      # `labeldrop` removes any label whose NAME matches the regex, on every
+      # surviving series. Bounded enums (worker/job/source/provider/state/...)
+      # are NOT matched and survive.
+      - regex: >-
+          tenant_id_inner|installation_id|signal_id|observation_id|model_id|run_id|external_id|node_id|shard_id|actor_id|session_id|user_id|thread_id|channel_id|event_id|trace_id|span_id|request_id|id|uuid|realm_id|team_id|workspace_id|email|user|username|actor|author|name|display_name|phone|ip|client_ip|remote_addr|url|path|uri|endpoint|query|text|content|message|error_message|exception|title|subject|body|payload|filename|file|repo|repository|branch|commit|sha
+        action: labeldrop
+
+      # ---- IDENTITY STAMP (C4) ------------------------------------------
+      # Add the deployment identity. The installer substitutes the literals;
+      # shown here as the env-var names it injects. `replacement` is a literal,
+      # so the installer renders these three lines per deployment.
+      - target_label: tenant_id
+        replacement: ${FYRALIS_TENANT_ID}
+      - target_label: deployment_id
+        replacement: ${FYRALIS_DEPLOYMENT_ID}
+      - target_label: region
+        replacement: ${FYRALIS_REGION}
+      - target_label: telemetry_tier
+        replacement: T1
+
+# ----------------------------------------------------------------------------
+# Equivalent `global.external_labels` form (alternative to the relabel stamp).
+# If you prefer external_labels for identity, ADD this to prometheus.yml global
+# block and DROP the three `target_label` rules above. external_labels are
+# applied to every remote-written series automatically.
+# ----------------------------------------------------------------------------
+# global:
+#   external_labels:
+#     tenant_id: ${FYRALIS_TENANT_ID}
+#     deployment_id: ${FYRALIS_DEPLOYMENT_ID}
+#     region: ${FYRALIS_REGION}
+#     telemetry_tier: T1

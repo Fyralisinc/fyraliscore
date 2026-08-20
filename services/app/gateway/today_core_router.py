@@ -20,6 +20,7 @@ from services.platform.access_control.checks import (
     EntityKind,
     can_read_by_id,
 )
+from services.platform.access_control.authority import principal_for_actor
 from services.platform.access_control.roles import has_role
 from services.platform.operator_action_audit import record_operator_action
 
@@ -171,6 +172,11 @@ def build_today_core_router() -> APIRouter:
                 datetime.now(timezone.utc),
                 conn=conn,
             )
+            principal = await principal_for_actor(
+                auth.actor_id,
+                conn=conn,
+                tenant_id=auth.tenant_id,
+            )
 
             payload = await build_today(
                 tenant_id=auth.tenant_id,
@@ -180,6 +186,7 @@ def build_today_core_router() -> APIRouter:
                 conn=conn,
                 days_since_inception=days_since,
                 previous_last_seen_at=previous_last_seen,
+                principal=principal,
             )
         return JSONResponse(payload.to_dict(), status_code=200)
 

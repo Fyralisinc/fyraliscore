@@ -30,23 +30,13 @@ DEFAULT_FILE_LINE_BUDGETS = {
 
 DEFAULT_FUNCTION_LINE_BUDGETS = {
     "services/app/gateway/debug_router.py:build_debug_router": 78,
-    "services/app/gateway/finance_router.py:build_finance_router": 8,
     "services/app/gateway/map_routes.py:_build_snapshot": 75,
-    "services/app/gateway/slack_router.py:build_slack_router": 9,
     "services/app/gateway/structure_router.py:build_structure_router": 25,
     "services/app/gateway/today_routes.py:register_today_routes": 21,
     "services/app/gateway/ceo_view_wiring.py:configure_ceo_view": 28,
-    "services/ingest/synthetic/backfill_harness/harness.py:_write_install_and_trigger": 43,
-    "services/ingest/synthetic/live_generators/hmac_webhook.py:_build_payload": 6,
-    "services/ingest/synthetic/mock_servers/google_workspace.py:_make_handler": 5,
     "services/ingest/ingestion/writers/observation_writer.py:_handle_message": 136,
-    "services/ingest/ingestion/feature_flags/circuit_breaker.py:_process_tick": 42,
     "services/ingest/ingestion/core.py:ingest_from_draft": 69,
     "services/ingest/ingestion/workflows/shard_fetch.py:_run_fetch_loop": 99,
-    "services/ingest/integrations/gmail/fetcher.py:drain_mailbox_history": 86,
-    "services/ingest/synthetic/validation_runs/composition.py:build_live_drivers": 65,
-    "services/ingest/synthetic/validation_runs/run4_concurrent.py:run4": 112,
-    "scripts/run_discord_gateway_worker.py:_main": 74,
     "services/domain/acts/commitments.py:create": 58,
     "services/domain/bridge/queries.py:revenue_at_risk": 38,
     "services/domain/models/repo.py:_insert_core": 35,
@@ -106,13 +96,7 @@ FUNCTION_LINE_BUDGET_ARG_NAMES = {
     "services/app/gateway/debug_router.py:build_debug_router": (
         "max_debug_router_factory_lines"
     ),
-    "services/app/gateway/finance_router.py:build_finance_router": (
-        "max_finance_router_factory_lines"
-    ),
     "services/app/gateway/map_routes.py:_build_snapshot": "max_map_snapshot_lines",
-    "services/app/gateway/slack_router.py:build_slack_router": (
-        "max_slack_router_factory_lines"
-    ),
     "services/app/gateway/structure_router.py:build_structure_router": (
         "max_structure_router_factory_lines"
     ),
@@ -122,20 +106,8 @@ FUNCTION_LINE_BUDGET_ARG_NAMES = {
     "services/app/gateway/ceo_view_wiring.py:configure_ceo_view": (
         "max_ceo_view_wiring_lines"
     ),
-    "services/ingest/synthetic/backfill_harness/harness.py:_write_install_and_trigger": (
-        "max_backfill_install_dispatch_lines"
-    ),
-    "services/ingest/synthetic/live_generators/hmac_webhook.py:_build_payload": (
-        "max_hmac_webhook_payload_lines"
-    ),
-    "services/ingest/synthetic/mock_servers/google_workspace.py:_make_handler": (
-        "max_google_workspace_handler_lines"
-    ),
     "services/ingest/ingestion/writers/observation_writer.py:_handle_message": (
         "max_observation_writer_handle_message_lines"
-    ),
-    "services/ingest/ingestion/feature_flags/circuit_breaker.py:_process_tick": (
-        "max_circuit_breaker_process_tick_lines"
     ),
     "services/ingest/ingestion/core.py:ingest_from_draft": (
         "max_ingest_from_draft_lines"
@@ -143,16 +115,6 @@ FUNCTION_LINE_BUDGET_ARG_NAMES = {
     "services/ingest/ingestion/workflows/shard_fetch.py:_run_fetch_loop": (
         "max_shard_fetch_loop_lines"
     ),
-    "services/ingest/integrations/gmail/fetcher.py:drain_mailbox_history": (
-        "max_gmail_drain_history_lines"
-    ),
-    "services/ingest/synthetic/validation_runs/composition.py:build_live_drivers": (
-        "max_live_driver_composition_lines"
-    ),
-    "services/ingest/synthetic/validation_runs/run4_concurrent.py:run4": (
-        "max_run4_concurrent_lines"
-    ),
-    "scripts/run_discord_gateway_worker.py:_main": "max_discord_gateway_main_lines",
     "services/domain/acts/commitments.py:create": "max_commitment_create_lines",
     "services/domain/bridge/queries.py:revenue_at_risk": "max_revenue_at_risk_lines",
     "services/domain/models/repo.py:_insert_core": "max_model_insert_core_lines",

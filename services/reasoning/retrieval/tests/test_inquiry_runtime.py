@@ -32,6 +32,7 @@ from services.platform.execution.inquiry import (
     _cold_weak_noop_gate,
     _compile_context_packet,
     _execute_focused_index_action,
+    _execute_semantic_hybrid_action,
     _focused_index_terms,
     _has_broad_signal_language,
     _hybrid_lexical_model_scan,
@@ -48,7 +49,7 @@ from services.platform.execution.inquiry import (
     run_inquiry_retrieval,
 )
 from services.reasoning.retrieval.assembler import AccessContext, assemble_context
-from services.reasoning.retrieval.pathways import PathwayResult
+from services.reasoning.retrieval.pathways import PathwayResult, pathway_b_semantic
 from services.reasoning.retrieval.primary import TriggerContext
 from services.reasoning.retrieval.primary import RetrievalResult
 from services.reasoning.retrieval.tests._fixtures import build_fixture, make_embedding
@@ -59,9 +60,9 @@ pytestmark = pytest.mark.integration
 
 
 def test_hybrid_sparse_lookup_terms_stays_bounded_for_long_raw_query():
-    terms = _hybrid_sparse_lookup_terms([
-        "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo"
-    ])
+    terms = _hybrid_sparse_lookup_terms(
+        ["alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo"]
+    )
 
     assert terms == [
         "alpha",
@@ -222,12 +223,14 @@ def _belief_address_for_test(
     assertion: str,
     claim_role: str = "concern",
 ) -> dict[str, Any]:
-    return build_belief_address({
-        "kind": "belief",
-        "claim_role": claim_role,
-        "subject": subject,
-        "assertion": assertion,
-    })
+    return build_belief_address(
+        {
+            "kind": "belief",
+            "claim_role": claim_role,
+            "subject": subject,
+            "assertion": assertion,
+        }
+    )
 
 
 def test_broad_signal_language_does_not_treat_split_across_as_portfolio():
@@ -239,7 +242,9 @@ def test_broad_signal_language_does_not_treat_split_across_as_portfolio():
     )
 
 
-async def test_question_planning_timeout_falls_back_to_deterministic(monkeypatch, tenant):
+async def test_question_planning_timeout_falls_back_to_deterministic(
+    monkeypatch, tenant
+):
     monkeypatch.delenv("INQUIRY_CODEX_QUESTION_TIMEOUT_SECONDS", raising=False)
     trigger = TriggerContext(
         kind="T1",
@@ -580,6 +585,126 @@ async def test_semantic_hybrid_lexical_promotes_exact_anchor_within_budget(
     assert exact_model.id in {model.id for model in merged}
 
 
+async def test_semantic_hybrid_action_rescues_model_semantic_terms(
+    tx_conn,
+    fresh_db,
+    tenant,
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db, n_models=6)
+    repo = ModelsRepo(
+        fresh_db,
+        embedder=None,
+        run_topology_on_insert=False,
+    )
+    query = "Which model explains refund replay drift for the launch risk?"
+    query_vector = make_embedding("semantic dense launch readiness")
+    dense_models: list[ModelRow] = []
+    for idx in range(3):
+        dense_models.append(
+            await repo.insert(
+                ModelCreate(
+                    tenant_id=tenant,
+                    born_from_event_id=fs.observation_ids[0],
+                    proposition={
+                        "kind": "belief",
+                        "subject": f"generic launch readiness {idx}",
+                        "assertion": "ordinary dense retrieval candidate",
+                    },
+                    natural=f"Generic launch readiness candidate {idx}.",
+                    embedding=query_vector,
+                    scope_actors=[fs.hero_actor_id],
+                    scope_entities=[
+                        {"type": "commitment", "id": str(fs.hero_commitment_id)}
+                    ],
+                    scope_temporal={"type": "now"},
+                    confidence=0.61,
+                    confidence_at_assertion=0.61,
+                ),
+                conn=tx_conn,
+            )
+        )
+    tagged_model = await repo.insert(
+        ModelCreate(
+            tenant_id=tenant,
+            born_from_event_id=fs.observation_ids[0],
+            proposition={
+                "kind": "belief",
+                "subject": "quiet launch risk",
+                "assertion": "payment correction review is delaying release",
+            },
+            natural="Payment correction review is delaying the release train.",
+            embedding=make_embedding("orthogonal sidecar semantic term candidate"),
+            scope_actors=[fs.hero_actor_id],
+            scope_entities=[{"type": "commitment", "id": str(fs.hero_commitment_id)}],
+            scope_temporal={"type": "now"},
+            confidence=0.61,
+            confidence_at_assertion=0.61,
+        ),
+        conn=tx_conn,
+    )
+    await tx_conn.execute(
+        """
+        INSERT INTO model_semantic_terms (
+          tenant_id, model_id, semantic_terms
+        ) VALUES ($1, $2, $3::text[])
+        ON CONFLICT (tenant_id, model_id) DO UPDATE
+        SET semantic_terms = EXCLUDED.semantic_terms
+        """,
+        tenant,
+        tagged_model.id,
+        ["refund replay drift"],
+    )
+    trigger = TriggerContext(
+        kind="T1",
+        tenant_id=tenant,
+        seed_entity_ids=[{"type": "commitment", "id": str(fs.hero_commitment_id)}],
+        seed_natural_text="Launch risk asks about refund replay drift.",
+        seed_occurred_at=datetime(2026, 4, 1, 18, 0, tzinfo=timezone.utc),
+        scope_actors=[fs.hero_actor_id],
+        precomputed_seed_vector=query_vector,
+    )
+
+    dense_result = await pathway_b_semantic(
+        query,
+        tenant,
+        tx_conn,
+        k=3,
+        precomputed_vector=query_vector,
+        event_actors=trigger.scope_actors,
+        event_entities=trigger.seed_entity_ids,
+    )
+    result = await _execute_semantic_hybrid_action(
+        RetrievalAction(
+            "Q_SEMANTIC_TERMS",
+            "semantic",
+            "semantic_term_rescue",
+            query=query,
+            budget=3,
+        ),
+        trigger,
+        tx_conn,
+        None,
+        InquiryConfig(),
+        model_limit=3,
+    )
+
+    dense_ids = {model.id for model in dense_result.models}
+    returned_ids = {model.id for model in result.models}
+    semantic_note = result.notes.get("semantic_hybrid_semantic_terms")
+    if semantic_note is None:
+        semantic_note = (result.notes.get("semantic_hybrid_substrates") or {}).get(
+            "semantic_terms"
+        )
+
+    assert {model.id for model in dense_models}.issubset(dense_ids)
+    assert tagged_model.id not in dense_ids
+    assert tagged_model.id in returned_ids
+    assert isinstance(semantic_note, dict), result.notes
+    semantic_note_blob = json.dumps(semantic_note, sort_keys=True, default=str)
+    assert "refund replay drift" in semantic_note_blob
+    assert str(tagged_model.id) in semantic_note_blob
+
+
 async def test_sage_sparse_lookup_returns_partial_bounded_term_hits(
     tx_conn,
     fresh_db,
@@ -837,7 +962,9 @@ def test_belief_address_distinguishes_compaction_clusters_for_similar_text():
     )
 
     assert _model_relevance_cluster_key(first) != _model_relevance_cluster_key(second)
-    assert _model_relevance_cluster_key(first) == _model_relevance_cluster_key(duplicate)
+    assert _model_relevance_cluster_key(first) == _model_relevance_cluster_key(
+        duplicate
+    )
     features = {
         feature
         for feature, _weight in _model_coverage_features(
@@ -930,16 +1057,31 @@ def test_compaction_preserves_diverse_obligations_across_roles_and_entities():
 
     must_keep: set[Any] = set()
     diverse_specs = [
-        ("Beacon renewal", "SOC2 evidence blocks enterprise launch", "relation", "relationship"),
+        (
+            "Beacon renewal",
+            "SOC2 evidence blocks enterprise launch",
+            "relation",
+            "relationship",
+        ),
         ("Beacon renewal", "owner is missing for security review", "concern", "atomic"),
         ("Beacon renewal", "month-end export stalls recur", "pattern", "atomic"),
         ("Beacon renewal", "signed order contradicts churn risk", "concern", "atomic"),
         ("Northstar renewal", "legal approval blocks close plan", "concern", "atomic"),
-        ("Orion launch", "sandbox quota exhaustion blocks release", "concern", "atomic"),
+        (
+            "Orion launch",
+            "sandbox quota exhaustion blocks release",
+            "concern",
+            "atomic",
+        ),
         ("Vela import", "owner is platform enablement", "fact", "atomic"),
         ("HelioWorks handoff", "customer goal is at risk", "prediction", "atomic"),
         ("Atlas workflow", "assign owner for mitigation", "recommendation", "atomic"),
-        ("Kestrel system", "maps invoice questions to evidence", "capability", "atomic"),
+        (
+            "Kestrel system",
+            "maps invoice questions to evidence",
+            "capability",
+            "atomic",
+        ),
     ]
     for idx, (subject, assertion, role, level) in enumerate(diverse_specs):
         address = _belief_address_for_test(
@@ -1409,7 +1551,9 @@ def test_premise_challenge_language_answers_counterevidence_question():
     assert answer.counterevidence
 
 
-def test_context_packet_preserves_state_workflow_gotcha_and_premise_under_distractors(tenant):
+def test_context_packet_preserves_state_workflow_gotcha_and_premise_under_distractors(
+    tenant,
+):
     trigger = TriggerContext(
         kind="T1",
         tenant_id=tenant,
@@ -1593,8 +1737,7 @@ def test_context_packet_preserves_state_workflow_gotcha_and_premise_under_distra
 
     selected_refs = {card.raw_content_ref for card in selected}
     decisive_refs = {
-        item["raw_content_ref"]
-        for item in packet["tiers"]["decisive_evidence"]
+        item["raw_content_ref"] for item in packet["tiers"]["decisive_evidence"]
     }
     assert {f"observation:{key}" for key in important} <= selected_refs
     assert {f"observation:{key}" for key in important} <= decisive_refs
@@ -1712,8 +1855,7 @@ def test_context_packet_model_first_suppresses_redundant_observation_evidence():
     )
 
     decisive_refs = {
-        item["raw_content_ref"]
-        for item in packet["tiers"]["decisive_evidence"]
+        item["raw_content_ref"] for item in packet["tiers"]["decisive_evidence"]
     }
     supporting_refs = {
         ref
@@ -1741,8 +1883,7 @@ async def test_inquiry_runtime_builds_questions_reservoir_and_packet(
             {"type": "goal", "id": str(fs.hero_goal_id)},
         ],
         seed_natural_text=(
-            "Acme cannot launch without SSO, and Sales promised "
-            "go-live this month."
+            "Acme cannot launch without SSO, and Sales promised " "go-live this month."
         ),
         seed_occurred_at=datetime(2026, 4, 1, 18, 0, tzinfo=timezone.utc),
         scope_actors=[fs.hero_actor_id],
@@ -1764,9 +1905,7 @@ async def test_inquiry_runtime_builds_questions_reservoir_and_packet(
         result.evidence_cards
     )
     assert result.retrieval_result.notes["execution_engine"] == "inquiry"
-    assert result.retrieval_result.notes["inquiry"]["context_packet"][
-        "question_path"
-    ]
+    assert result.retrieval_result.notes["inquiry"]["context_packet"]["question_path"]
 
     bundle = await assemble_context(
         result.retrieval_result,
@@ -1836,7 +1975,12 @@ async def test_inquiry_runtime_uses_llm_for_question_planning(
         trigger,
         tx_conn,
         llm_provider=provider,
-        config=InquiryConfig(max_rounds=1, questions_per_round=2, persist=False),
+        config=InquiryConfig(
+            max_rounds=1,
+            questions_per_round=2,
+            persist=False,
+            utility_governor_enabled=False,
+        ),
     )
 
     assert len(provider.calls) == 1
@@ -1845,13 +1989,13 @@ async def test_inquiry_runtime_uses_llm_for_question_planning(
         "COUNTEREVIDENCE",
         "DEPENDENCY",
     ]
-    assert [
-        question.question
-        for question in result.questions
-    ] == [
-        "What fresh evidence would show the Acme SSO issue is not blocking launch?",
-        "Which Acme launch dependency is actually blocked by the SSO permission edge case?",
+    assert [question.primitive for question in result.questions] == [
+        "OWNERSHIP",
+        "COUNTEREVIDENCE",
     ]
+    assert result.questions[1].question == (
+        "What fresh evidence would show the Acme SSO issue is not blocking launch?"
+    )
 
 
 async def test_fast_path_inquiry_stops_after_baseline(tx_conn, fresh_db, tenant):
@@ -1938,17 +2082,13 @@ async def test_fast_path_baseline_evidence_is_classified_against_hypotheses(
     assert any(card.supports_hypotheses for card in result.evidence_cards)
     tiers = result.context_packet["tiers"]
     assert any(
-        item.get("supports_hypotheses")
-        for item in tiers["decisive_evidence"]
+        item.get("supports_hypotheses") for item in tiers["decisive_evidence"]
     ) or any(
-        group.get("claim_supported")
-        for group in tiers["supporting_evidence_groups"]
+        group.get("claim_supported") for group in tiers["supporting_evidence_groups"]
     )
 
 
-async def test_inquiry_applies_result_and_action_budget_caps(
-    tx_conn, fresh_db, tenant
-):
+async def test_inquiry_applies_result_and_action_budget_caps(tx_conn, fresh_db, tenant):
     fs = await build_fixture(tx_conn, tenant, pool=fresh_db)
     trigger = TriggerContext(
         kind="T1",

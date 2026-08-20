@@ -1,0 +1,388 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mxfile host="app.diagrams.net" agent="Hermes Agent" version="24.7.17" type="device" compressed="false">
+  <diagram id="actor-resolution-production" name="1 - Production Deployment">
+    <mxGraphModel dx="2800" dy="1720" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2800" pageHeight="1720" math="0" shadow="0" background="#f8fafc">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p1-upstream-boundary" value="&lt;b&gt;UPSTREAM BOUNDED CONTEXTS&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Authoritative inputs; actor resolution never mutates these stores&lt;/font&gt;" style="swimlane;html=1;rounded=1;startSize=56;horizontal=1;fillColor=#ffffff;swimlaneFillColor=#ffffff;strokeColor=#334155;strokeWidth=2;dashed=1;dashPattern=8 4;fontSize=16;fontStyle=1;fontColor=#0f172a;spacingLeft=12;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="30" y="120" width="370" height="1110" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-prod-boundary" value="&lt;b&gt;ACTOR RESOLUTION BOUNDED CONTEXT&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Private subnets · multi-AZ · least privilege · sole writer for actor identity linkage&lt;/font&gt;" style="swimlane;html=1;rounded=1;startSize=56;horizontal=1;fillColor=#ffffff;swimlaneFillColor=#ffffff;strokeColor=#334155;strokeWidth=2;dashed=1;dashPattern=8 4;fontSize=16;fontStyle=1;fontColor=#0f172a;spacingLeft=12;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="440" y="120" width="1880" height="1110" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-k8s-boundary" value="&lt;b&gt;KUBERNETES COMPUTE PLANE&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px&quot;&gt;Stateless pods · HPA · PDB · rolling deploy · workload identity · network policy&lt;/font&gt;" style="swimlane;html=1;rounded=1;startSize=56;horizontal=1;fillColor=#ffffff;swimlaneFillColor=#ffffff;strokeColor=#334155;strokeWidth=2;dashed=1;dashPattern=8 4;fontSize=16;fontStyle=1;fontColor=#0f172a;spacingLeft=12;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="490" y="335" width="1780" height="560" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-output-boundary" value="&lt;b&gt;CONSUMERS &amp; OPERATIONS&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;Versioned events and rebuildable projections only&lt;/font&gt;" style="swimlane;html=1;rounded=1;startSize=56;horizontal=1;fillColor=#ffffff;swimlaneFillColor=#ffffff;strokeColor=#334155;strokeWidth=2;dashed=1;dashPattern=8 4;fontSize=16;fontStyle=1;fontColor=#0f172a;spacingLeft=12;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="2360" y="120" width="410" height="1110" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e01" value="native principal + record" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#334155;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-connectors" target="p1-observation">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e02" value="ObservationReady…V1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#ea580c;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-observation" target="p1-bus">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e03" value="partitioned event" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#ea580c;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-bus" target="p1-inbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e04" value="leased once per dedupe key" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#334155;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-inbox" target="p1-intake">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e05" value="grounded principal + person mentions" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#334155;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-intake" target="p1-candidates">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e06" value="server-issued candidate tokens" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#334155;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-candidates" target="p1-validation">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e07" value="validated actor candidates" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#334155;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-validation" target="p1-decision">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e08" value="append every outcome" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#7e22ce;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-decision" target="p1-ledger">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e09" value="REVIEW_REQUIRED" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#db2777;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-decision" target="p1-review">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e10" value="decision set" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#7e22ce;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-ledger" target="p1-snapshot">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e11" value="sealed snapshot" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#ea580c;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-snapshot" target="p1-publisher">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e12" value="transactional publish" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#ea580c;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-publisher" target="p1-bus">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e13" value="accepted changes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#0891b2;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-publisher" target="p1-projection">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e14" value="one-way projection" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#0891b2;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-projection" target="p1-readmodels">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e15" value="SnapshotPublishedV1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#ea580c;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-bus" target="p1-knowledge">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e16" value="ActorReviewRequiredV1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#db2777;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-bus" target="p1-review-ui">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e17" value="ActorReviewCommandV1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#db2777;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-review-ui" target="p1-review">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e18" value="ActorReresolutionRequestedV1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#db2777;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-review" target="p1-bus">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e19" value="decision/change events" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#ea580c;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-bus" target="p1-audit">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e20" value="dead-letter envelope" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#475569;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p1-bus" target="p1-dlq">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e21" value="actor catalog" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#7e22ce;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;dashed=1;dashPattern=6 4;" edge="1" parent="1" source="p1-actor-domain" target="p1-candidates">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e22" value="verified claims" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#7e22ce;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;dashed=1;dashPattern=6 4;" edge="1" parent="1" source="p1-directory" target="p1-candidates">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e23" value="lifecycle + redirects" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#e11d48;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;dashed=1;dashPattern=6 4;" edge="1" parent="1" source="p1-actor-domain" target="p1-validation">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e24" value="ACL + effective evidence" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#e11d48;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;dashed=1;dashPattern=6 4;" edge="1" parent="1" source="p1-evidence" target="p1-validation">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e25" value="inbox state" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#7e22ce;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;dashed=1;dashPattern=6 4;" edge="1" parent="1" source="p1-inbox" target="p1-postgres">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e26" value="candidate audit" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#7e22ce;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;dashed=1;dashPattern=6 4;" edge="1" parent="1" source="p1-candidates" target="p1-postgres">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e27" value="review tasks" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#7e22ce;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;dashed=1;dashPattern=6 4;" edge="1" parent="1" source="p1-review" target="p1-postgres">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e28" value="append decisions" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#7e22ce;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;dashed=1;dashPattern=6 4;" edge="1" parent="1" source="p1-ledger" target="p1-postgres">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e29" value="immutable snapshot" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#7e22ce;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;dashed=1;dashPattern=6 4;" edge="1" parent="1" source="p1-snapshot" target="p1-postgres">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e30" value="outbox state" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#7e22ce;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;dashed=1;dashPattern=6 4;" edge="1" parent="1" source="p1-publisher" target="p1-postgres">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e31" value="bounded cache" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#7e22ce;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;dashed=1;dashPattern=6 4;" edge="1" parent="1" source="p1-candidates" target="p1-redis">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e32" value="OTLP / metrics" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#475569;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;dashed=1;dashPattern=6 4;" edge="1" parent="1" source="p1-k8s-boundary" target="p1-observability">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-e33" value="read model only" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#0891b2;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;dashed=1;dashPattern=6 4;" edge="1" parent="1" source="p1-projection" target="p1-actor-domain">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-title" value="&lt;b&gt;Fyralis Actor Resolution Subsystem&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:15px&quot;&gt;Final production deployment · dedicated bounded context · conservative actor canonicalization&lt;/font&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=26;fontStyle=1;fontColor=#0f172a;" vertex="1" parent="1">
+          <mxGeometry x="470" y="20" width="1860" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-connectors" value="&lt;b&gt;Connector Runtime&lt;/b&gt;&lt;br&gt;Slack · Gmail · Teams · HRIS&lt;br&gt;&lt;font color=&quot;#475569&quot;&gt;Emits normalized native principals&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#f8fafc;strokeColor=#64748b;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="65" y="225" width="300" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-observation" value="&lt;b&gt;Observation + Evidence&lt;/b&gt;&lt;br&gt;Immutable source revision&lt;br&gt;message/record + ACL policy hash" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#f8fafc;strokeColor=#64748b;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="65" y="405" width="300" height="135" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-actor-domain" value="&lt;b&gt;Actor Domain Registry&lt;/b&gt;&lt;br&gt;Owns actor existence and lifecycle&lt;br&gt;active · inactive · merged redirect" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#f8fafc;strokeColor=#64748b;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="65" y="600" width="300" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-directory" value="&lt;b&gt;Directory / HR / CRM&lt;/b&gt;&lt;br&gt;Verified email · employee IDs&lt;br&gt;tenant-approved identity claims" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#f8fafc;strokeColor=#64748b;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="65" y="805" width="300" height="135" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-evidence" value="&lt;b&gt;Evidence Object Store&lt;/b&gt;&lt;br&gt;Encrypted raw evidence&lt;br&gt;retention + source access policy" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#f8fafc;strokeColor=#64748b;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="65" y="995" width="300" height="135" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-bus" value="&lt;b&gt;Managed Kafka / Event Backbone — 3 AZ&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;IN: ObservationReadyForActorResolutionV1 · ActorReresolutionRequestedV1 · ActorReviewCommandV1 &amp;nbsp;&amp;nbsp;|&amp;nbsp;&amp;nbsp; OUT: SnapshotPublishedV1 · ActorIdentityChangedV1 · ActorReviewRequiredV1&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fillColor=#ffedd5;strokeColor=#ea580c;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="505" y="220" width="1750" height="82" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-inbox" value="&lt;b&gt;1 · Inbox + Lease Worker&lt;/b&gt;&lt;br&gt;Tenant/event idempotency&lt;br&gt;partition ordering&lt;br&gt;retry + DLQ disposition" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#e0f2fe;strokeColor=#0284c7;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="525" y="430" width="250" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-intake" value="&lt;b&gt;2 · Principal &amp; Mention Intake&lt;/b&gt;&lt;br&gt;Canonical SourcePrincipal key&lt;br&gt;span-based person mentions&lt;br&gt;grounding ≠ actor link" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#dcfce7;strokeColor=#16a34a;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="805" y="430" width="275" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-candidates" value="&lt;b&gt;3 · Candidate Retrieval&lt;/b&gt;&lt;br&gt;accepted mapping · directory&lt;br&gt;verified claims · alias/search&lt;br&gt;optional model retrieval only" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#dcfce7;strokeColor=#16a34a;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="430" width="275" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-validation" value="&lt;b&gt;4 · Candidate Token Validator&lt;/b&gt;&lt;br&gt;tenant · actor type · existence&lt;br&gt;event time · lifecycle · redirect&lt;br&gt;evidence-access policy" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fef9c3;strokeColor=#ca8a04;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1415" y="430" width="300" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-decision" value="&lt;b&gt;5 · Policy + Decision Engine&lt;/b&gt;&lt;br&gt;calibrated probability + margin&lt;br&gt;hard constraints + abstention&lt;br&gt;no model-only authority" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fef9c3;strokeColor=#ca8a04;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1745" y="430" width="280" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-projection" value="&lt;b&gt;10 · Projection Worker&lt;/b&gt;&lt;br&gt;One-way rebuildable views&lt;br&gt;actor mappings · aliases&lt;br&gt;observation compatibility fields" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#cffafe;strokeColor=#0891b2;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="525" y="665" width="250" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-publisher" value="&lt;b&gt;9 · Transactional Outbox&lt;/b&gt;&lt;br&gt;Versioned actor events&lt;br&gt;at-least-once publish&lt;br&gt;consumer-safe dedupe keys" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fillColor=#ffedd5;strokeColor=#ea580c;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="805" y="665" width="275" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-snapshot" value="&lt;b&gt;8 · Snapshot Builder&lt;/b&gt;&lt;br&gt;Immutable complete/partial snapshot&lt;br&gt;content hash + policy/model versions&lt;br&gt;new snapshot on correction" style="shape=cylinder3;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#f3e8ff;strokeColor=#9333ea;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="665" width="275" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-review" value="&lt;b&gt;7 · Review Task Manager&lt;/b&gt;&lt;br&gt;MATCH · DISTINCT · NOT_PERSON&lt;br&gt;optimistic concurrency&lt;br&gt;review command → re-resolution" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fce7f3;strokeColor=#db2777;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1415" y="665" width="300" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-ledger" value="&lt;b&gt;6 · Append-only Ledger Writer&lt;/b&gt;&lt;br&gt;link/non-link decisions&lt;br&gt;temporal memberships&lt;br&gt;merge/split lineage + provenance" style="shape=cylinder3;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#f3e8ff;strokeColor=#9333ea;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1745" y="665" width="280" height="145" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-postgres" value="&lt;b&gt;PostgreSQL HA Identity Store&lt;/b&gt;&lt;br&gt;Multi-AZ primary + synchronous standby + read replicas&lt;br&gt;&lt;font style=&quot;font-size:11px&quot;&gt;inbox/outbox · source principals · mentions · candidate tokens · constraints · decisions · links · review tasks · immutable snapshots&lt;/font&gt;&lt;br&gt;&lt;font color=&quot;#7e22ce&quot;&gt;tenant RLS · PITR · encrypted backups · partitioning/retention&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#f3e8ff;strokeColor=#9333ea;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="530" y="970" width="1020" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-redis" value="&lt;b&gt;Redis Cluster&lt;/b&gt;&lt;br&gt;Short-lived candidate cache&lt;br&gt;rate limits · lease hints&lt;br&gt;&lt;font color=&quot;#475569&quot;&gt;Never authoritative&lt;/font&gt;" style="shape=cylinder3;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#f3e8ff;strokeColor=#9333ea;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1590" y="970" width="285" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-kms" value="&lt;b&gt;KMS + Secrets Manager&lt;/b&gt;&lt;br&gt;Envelope encryption&lt;br&gt;credential rotation&lt;br&gt;signed candidate tokens&lt;br&gt;audit of key access" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fillColor=#ffe4e6;strokeColor=#e11d48;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1915" y="970" width="300" height="190" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-review-ui" value="&lt;b&gt;Identity Review Console&lt;/b&gt;&lt;br&gt;Evidence-scoped candidate comparison&lt;br&gt;authenticated reviewer commands" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fce7f3;strokeColor=#db2777;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="2400" y="225" width="330" height="135" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-knowledge" value="&lt;b&gt;Knowledge / Episode Pipeline&lt;/b&gt;&lt;br&gt;Consumes immutable actor snapshot&lt;br&gt;accepts partial resolution explicitly" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#cffafe;strokeColor=#0891b2;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="2400" y="430" width="330" height="135" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-readmodels" value="&lt;b&gt;Actor Mapping Read Models&lt;/b&gt;&lt;br&gt;Compatibility projections&lt;br&gt;rebuildable from accepted ledger history" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#cffafe;strokeColor=#0891b2;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="2400" y="635" width="330" height="135" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-audit" value="&lt;b&gt;Audit / Compliance Sink&lt;/b&gt;&lt;br&gt;Decision provenance · evidence lineage&lt;br&gt;reviewer activity · retention export" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fillColor=#e2e8f0;strokeColor=#475569;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="2400" y="840" width="330" height="135" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-dlq" value="&lt;b&gt;DLQ + Replay Operations&lt;/b&gt;&lt;br&gt;bounded retries · poison isolation&lt;br&gt;operator-approved replay" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fillColor=#e2e8f0;strokeColor=#475569;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="2400" y="1040" width="330" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-observability" value="&lt;b&gt;OpenTelemetry + Metrics + Logs&lt;/b&gt;&lt;br&gt;trace: event → decision → snapshot · tenant-safe structured logs&lt;br&gt;SLOs: lag, resolution latency, abstention rate, review age, DLQ depth" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fillColor=#e2e8f0;strokeColor=#475569;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="440" y="1295" width="720" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-security" value="&lt;b&gt;Security Controls&lt;/b&gt;&lt;br&gt;mTLS · workload identity · RBAC · tenant RLS · evidence ACL checks&lt;br&gt;no secrets in events · candidate tokens signed and expiring" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fillColor=#ffe4e6;strokeColor=#e11d48;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1200" y="1295" width="720" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-resilience" value="&lt;b&gt;Production Resilience&lt;/b&gt;&lt;br&gt;multi-AZ Kafka/Postgres · HPA/PDB · idempotent replay · PITR&lt;br&gt;backpressure · circuit breakers · graceful degradation to REVIEW_REQUIRED" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fillColor=#e2e8f0;strokeColor=#475569;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1960" y="1295" width="810" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-authority-note" value="&lt;b&gt;Authority boundary&lt;/b&gt;: this subsystem owns actor linkage, non-linkage, temporal identity membership, decisions and lineage. The Actor domain owns actor records and lifecycle." style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#ffffff;strokeColor=#94a3b8;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="440" y="1495" width="1880" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-legend" value="&lt;b&gt;Legend&lt;/b&gt; &amp;nbsp; Blue = ingress &amp;nbsp; Green = compute &amp;nbsp; Yellow = deterministic policy &amp;nbsp; Purple = durable state &amp;nbsp; Orange = events &amp;nbsp; Pink = review &amp;nbsp; Cyan = projections &amp;nbsp; Rose = security" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#ffffff;strokeColor=#94a3b8;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="440" y="1605" width="2330" height="55" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="actor-resolution-flow" name="2 - Runtime Flow &amp; Contracts">
+    <mxGraphModel dx="2800" dy="1500" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="2800" pageHeight="1500" math="0" shadow="0" background="#f8fafc">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p2-input-boundary" value="&lt;b&gt;VERSIONED INPUTS&lt;/b&gt;" style="swimlane;html=1;rounded=1;startSize=56;horizontal=1;fillColor=#ffffff;swimlaneFillColor=#ffffff;strokeColor=#334155;strokeWidth=2;dashed=1;dashPattern=8 4;fontSize=16;fontStyle=1;fontColor=#0f172a;spacingLeft=12;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="30" y="140" width="350" height="560" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-ground-boundary" value="&lt;b&gt;GROUNDING LANE&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px&quot;&gt;Deterministic source identity; not yet a canonical actor&lt;/font&gt;" style="swimlane;html=1;rounded=1;startSize=56;horizontal=1;fillColor=#ffffff;swimlaneFillColor=#ffffff;strokeColor=#334155;strokeWidth=2;dashed=1;dashPattern=8 4;fontSize=16;fontStyle=1;fontColor=#0f172a;spacingLeft=12;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="430" y="140" width="720" height="560" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-canon-boundary" value="&lt;b&gt;ACTOR CANONICALIZATION LANE&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px&quot;&gt;Typed retrieval → validation → scoring → conservative decision&lt;/font&gt;" style="swimlane;html=1;rounded=1;startSize=56;horizontal=1;fillColor=#ffffff;swimlaneFillColor=#ffffff;strokeColor=#334155;strokeWidth=2;dashed=1;dashPattern=8 4;fontSize=16;fontStyle=1;fontColor=#0f172a;spacingLeft=12;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="1190" y="140" width="930" height="560" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-review-boundary" value="&lt;b&gt;HUMAN REVIEW LOOP&lt;/b&gt;" style="swimlane;html=1;rounded=1;startSize=56;horizontal=1;fillColor=#ffffff;swimlaneFillColor=#ffffff;strokeColor=#334155;strokeWidth=2;dashed=1;dashPattern=8 4;fontSize=16;fontStyle=1;fontColor=#0f172a;spacingLeft=12;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="2160" y="140" width="600" height="560" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-commit-boundary" value="&lt;b&gt;ATOMIC COMMIT &amp; PUBLICATION&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:10px&quot;&gt;Decision, immutable snapshot and outbox written in one database transaction&lt;/font&gt;" style="swimlane;html=1;rounded=1;startSize=56;horizontal=1;fillColor=#ffffff;swimlaneFillColor=#ffffff;strokeColor=#334155;strokeWidth=2;dashed=1;dashPattern=8 4;fontSize=16;fontStyle=1;fontColor=#0f172a;spacingLeft=12;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="430" y="760" width="1690" height="480" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-output-boundary" value="&lt;b&gt;VERSIONED OUTPUTS&lt;/b&gt;" style="swimlane;html=1;rounded=1;startSize=56;horizontal=1;fillColor=#ffffff;swimlaneFillColor=#ffffff;strokeColor=#334155;strokeWidth=2;dashed=1;dashPattern=8 4;fontSize=16;fontStyle=1;fontColor=#0f172a;spacingLeft=12;shadow=0;" vertex="1" parent="1">
+          <mxGeometry x="2160" y="760" width="600" height="480" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e01" value="new observation" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#ea580c;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-in1" target="p2-inbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e02" value="targeted replay" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#ea580c;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-in2" target="p2-inbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e03" value="review command" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#db2777;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-in3" target="p2-inbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e04" value="validated envelope" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#334155;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-inbox" target="p2-normalize">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e05" value="canonical principal" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#334155;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-normalize" target="p2-mentions">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e06" value="grounding state" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#334155;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-mentions" target="p2-grounded">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e07" value="grounded source + mentions" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#334155;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-grounded" target="p2-providers">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e08" value="retrieved candidate refs" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#334155;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-providers" target="p2-token">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e09" value="signed candidate tokens" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#e11d48;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-token" target="p2-validate">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e10" value="allowed candidates" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#334155;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-validate" target="p2-score">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e11" value="ranked + calibrated" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#334155;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-score" target="p2-decision">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e12" value="REVIEW_REQUIRED" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#db2777;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-decision" target="p2-task">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e13" value="evidence-safe task" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#db2777;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-task" target="p2-reviewer">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e14" value="review action" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#db2777;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-reviewer" target="p2-command">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e15" value="re-resolution request" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#db2777;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-command" target="p2-inbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e16" value="append every outcome" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#7e22ce;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-decision" target="p2-ledger">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e17" value="append correction" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#db2777;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-command" target="p2-ledger">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e18" value="decision set" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#7e22ce;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-ledger" target="p2-snapshot">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e19" value="sealed snapshot" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#ea580c;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-snapshot" target="p2-outbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e20" value="accepted changes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#0891b2;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-outbox" target="p2-projector">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e21" value="publish" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#ea580c;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-outbox" target="p2-out1">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e22" value="publish" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#ea580c;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-outbox" target="p2-out2">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-e23" value="publish" style="edgeStyle=orthogonalEdgeStyle;rounded=1;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;endFill=1;strokeWidth=2;strokeColor=#db2777;fontColor=#334155;fontSize=11;labelBackgroundColor=#ffffff;" edge="1" parent="1" source="p2-task" target="p2-out3">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-title" value="&lt;b&gt;Actor Resolution Runtime Flow &amp; Contracts&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:15px&quot;&gt;Ground source principals first; canonicalize to actors only with validated evidence and conservative policy&lt;/font&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=26;fontStyle=1;fontColor=#0f172a;" vertex="1" parent="1">
+          <mxGeometry x="420" y="20" width="1960" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-in1" value="&lt;b&gt;ObservationReadyFor&lt;br&gt;ActorResolutionV1&lt;/b&gt;&lt;br&gt;tenant · event_id · observation/version&lt;br&gt;evidence_id · policy context" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#f8fafc;strokeColor=#64748b;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="65" y="225" width="280" height="135" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-in2" value="&lt;b&gt;ActorReresolutionRequestedV1&lt;/b&gt;&lt;br&gt;reason · affected decision IDs&lt;br&gt;prior snapshot hash" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#f8fafc;strokeColor=#64748b;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="65" y="405" width="280" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-in3" value="&lt;b&gt;ActorReviewCommandV1&lt;/b&gt;&lt;br&gt;task/version · action · candidate token&lt;br&gt;reviewer · rationale" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fce7f3;strokeColor=#db2777;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="65" y="565" width="280" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-inbox" value="&lt;b&gt;1 · Inbox / Idempotency&lt;/b&gt;&lt;br&gt;key = tenant + event + observation version&lt;br&gt;+ policy version + command/reason&lt;br&gt;lease · retry · replay-safe completion" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#e0f2fe;strokeColor=#0284c7;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="470" y="235" width="280" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-normalize" value="&lt;b&gt;2 · SourcePrincipal Normalizer&lt;/b&gt;&lt;br&gt;(tenant, installation, source,&lt;br&gt;native_type, native_id)&lt;br&gt;&lt;font color=&quot;#166534&quot;&gt;Never store “slack:U204” as native_id&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#dcfce7;strokeColor=#16a34a;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="790" y="235" width="305" height="160" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-mentions" value="&lt;b&gt;3 · Person Mention Intake&lt;/b&gt;&lt;br&gt;connector-native references first&lt;br&gt;span-based NER + overlap suppression&lt;br&gt;evidence-bound mention IDs" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#dcfce7;strokeColor=#16a34a;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="630" y="465" width="305" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-grounded" value="&lt;b&gt;Grounding result&lt;/b&gt;&lt;br&gt;GROUNDED or UNGROUNDED&lt;br&gt;SourcePrincipalRef + evidence lineage&lt;br&gt;&lt;font color=&quot;#b45309&quot;&gt;No Actor ID implied&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fef9c3;strokeColor=#ca8a04;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="960" y="465" width="150" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-providers" value="&lt;b&gt;4 · Candidate Providers&lt;/b&gt;&lt;br&gt;accepted source mapping&lt;br&gt;verified email/employee claim&lt;br&gt;directory + alias/name search&lt;br&gt;model-assisted retrieval (optional)" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#dcfce7;strokeColor=#16a34a;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1230" y="235" width="250" height="185" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-token" value="&lt;b&gt;5 · Candidate Token Service&lt;/b&gt;&lt;br&gt;server-issued · signed · expiring&lt;br&gt;token → actor binding&lt;br&gt;provider cannot submit arbitrary IDs" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fillColor=#ffe4e6;strokeColor=#e11d48;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1510" y="235" width="250" height="185" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-validate" value="&lt;b&gt;6 · Deterministic Validator&lt;/b&gt;&lt;br&gt;tenant · person type · existence&lt;br&gt;event time · lifecycle · redirects&lt;br&gt;evidence ACL · must/cannot-link" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fef9c3;strokeColor=#ca8a04;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1790" y="235" width="285" height="185" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-score" value="&lt;b&gt;7 · Calibrated Scoring&lt;/b&gt;&lt;br&gt;raw features + calibration version&lt;br&gt;threshold + minimum margin&lt;br&gt;blast radius / evidence quality" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fef9c3;strokeColor=#ca8a04;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1300" y="490" width="250" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-decision" value="&lt;b&gt;8 · Conservative Decision&lt;/b&gt;&lt;br&gt;&lt;b&gt;LINKED_EXISTING&lt;/b&gt;&lt;br&gt;&lt;b&gt;REVIEW_REQUIRED&lt;/b&gt;&lt;br&gt;NO_MATCH · NOT_PERSON · UNRESOLVED" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fef9c3;strokeColor=#ca8a04;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1590" y="490" width="300" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-abstain" value="&lt;b&gt;Abstention is valid output&lt;/b&gt;&lt;br&gt;No LLM is sole authority&lt;br&gt;No forced top-1 selection&lt;br&gt;Partial snapshots continue downstream" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#ffffff;strokeColor=#94a3b8;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1930" y="490" width="150" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-task" value="&lt;b&gt;Review Task&lt;/b&gt;&lt;br&gt;top candidates + reason codes&lt;br&gt;evidence-safe excerpts&lt;br&gt;expected actor type + impact" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fce7f3;strokeColor=#db2777;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="2200" y="235" width="240" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-reviewer" value="&lt;b&gt;Authorized Reviewer&lt;/b&gt;&lt;br&gt;MATCH · DISTINCT&lt;br&gt;NOT_PERSON · DEFER&lt;br&gt;optimistic task version" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fce7f3;strokeColor=#db2777;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="2480" y="235" width="240" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-command" value="&lt;b&gt;Append review decision&lt;/b&gt;&lt;br&gt;never mutate prior decision&lt;br&gt;enqueue targeted re-resolution&lt;br&gt;preserve reviewer provenance" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fce7f3;strokeColor=#db2777;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="2335" y="485" width="260" height="155" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-ledger" value="&lt;b&gt;9 · Append-only Actor Identity Ledger&lt;/b&gt;&lt;br&gt;grounding + canonicalization outcome&lt;br&gt;selected token/actor · alternatives · scores&lt;br&gt;policy/model/calibrator versions · reason codes" style="shape=cylinder3;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#f3e8ff;strokeColor=#9333ea;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="480" y="870" width="350" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-snapshot" value="&lt;b&gt;10 · Immutable Actor Snapshot&lt;/b&gt;&lt;br&gt;complete or partial&lt;br&gt;content-addressed snapshot hash&lt;br&gt;prior snapshot retained on correction" style="shape=cylinder3;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#f3e8ff;strokeColor=#9333ea;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="875" y="870" width="330" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-outbox" value="&lt;b&gt;11 · Transactional Outbox&lt;/b&gt;&lt;br&gt;same transaction as decision/snapshot&lt;br&gt;at-least-once publication&lt;br&gt;event ID + aggregate/version dedupe" style="rounded=1;whiteSpace=wrap;html=1;align=center;verticalAlign=middle;fillColor=#ffedd5;strokeColor=#ea580c;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1250" y="870" width="330" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-projector" value="&lt;b&gt;12 · One-way Projectors&lt;/b&gt;&lt;br&gt;actor_identity_mappings&lt;br&gt;aliases + observation compatibility&lt;br&gt;fully rebuildable; never reverse-write" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#cffafe;strokeColor=#0891b2;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="1625" y="870" width="330" height="210" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-invariants" value="&lt;b&gt;Non-negotiable invariants&lt;/b&gt;&lt;br&gt;• Actor domain owns actor lifecycle&lt;br&gt;• Identity owns linkage/non-linkage and lineage&lt;br&gt;• Candidate must be typed and tenant-scoped&lt;br&gt;• Every outcome is persisted&lt;br&gt;• Correction creates a new snapshot" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#ffffff;strokeColor=#94a3b8;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="480" y="1095" width="1475" height="115" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-out1" value="&lt;b&gt;ActorResolutionSnapshotPublishedV1&lt;/b&gt;&lt;br&gt;snapshot ID/hash · observation/version&lt;br&gt;status: complete | partial" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#cffafe;strokeColor=#0891b2;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="2205" y="835" width="510" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-out2" value="&lt;b&gt;ActorIdentityChangedV1&lt;/b&gt;&lt;br&gt;prior/new accepted linkage&lt;br&gt;effective time + cause decision" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#cffafe;strokeColor=#0891b2;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="2205" y="970" width="510" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-out3" value="&lt;b&gt;ActorReviewRequiredV1&lt;/b&gt;&lt;br&gt;task ID/version · safe alternatives&lt;br&gt;reason codes + review SLA" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#fce7f3;strokeColor=#db2777;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="2205" y="1105" width="510" height="105" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-stores" value="&lt;b&gt;Durable model&lt;/b&gt;: source_principals · person_mentions · candidate_tokens · candidates · constraints · actor_resolution_decisions · actor_links/memberships · review_tasks · actor_resolution_snapshots · inbox/outbox" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#ffffff;strokeColor=#94a3b8;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="430" y="1310" width="2330" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-legend" value="&lt;b&gt;Sequence&lt;/b&gt;: event → canonical source principal → person mention → typed actor candidates → validation → conservative decision → append-only ledger → immutable snapshot → versioned events/projections" style="rounded=1;whiteSpace=wrap;html=1;align=left;verticalAlign=top;fillColor=#ffffff;strokeColor=#94a3b8;strokeWidth=2;fontSize=13;fontColor=#0f172a;spacing=10;shadow=1;" vertex="1" parent="1">
+          <mxGeometry x="430" y="1415" width="2330" height="50" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

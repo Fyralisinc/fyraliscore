@@ -113,6 +113,7 @@ def _check(
         access = str(row["access"])
         if access == RouteAccess.PUBLIC.value and row["path"] not in {
             "/healthz",
+            "/legal/local-test-privacy",
             "/readyz",
             "/metrics",
         }:

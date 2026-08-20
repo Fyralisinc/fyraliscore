@@ -28,7 +28,7 @@ if grep -q 'YOUR-NGROK-SUBDOMAIN' .env.sandbox; then
 fi
 
 # ---- Bring up -------------------------------------------------------
-echo "Building + starting the sandbox stack (gmail/ui/edge/think parked under --profile full)..."
+echo "Building + starting the sandbox stack (gmail/ui/edge/think/signal parked under --profile full; discord + telegram live workers ON)..."
 "${COMPOSE[@]}" up -d --build --remove-orphans
 
 # ---- Wait for gateway ----------------------------------------------
@@ -63,10 +63,14 @@ NEXT STEPS (see docs/ingestion/sandbox-real-api-runbook.md):
   2. If it changed, set SANDBOX_PUBLIC_URL + the two *_REDIRECT_URI in
      .env.sandbox to that URL, update the 3 provider apps' webhook/redirect
      URLs, then re-run scripts/sandbox_up.sh (picks up env changes).
-  3. Drive OAuth installs (§ runbook 4) → backfill runs automatically.
+  3. Drive installs (§ runbook 2) → backfill runs automatically:
+       - github/slack/discord/notion : OAuth at /integrations/<src>/install
+       - jira     : docker compose ... exec gateway python scripts/sandbox_jira_seed.py --tenant <id>
+       - telegram : docker compose ... exec -it gateway python scripts/sandbox_telegram_install.py --account-label my-tg
+                    then: docker compose ... restart telegram_gateway_worker
   4. Post a live message/issue → watch it land.
-  5. Check results:  docker compose -f docker-compose.yml -f docker-compose.sandbox.yml \
-                       exec gateway python scripts/sandbox_inspect.py
+  5. Inspect connector state through the common integration API or
+     scripts/manage_source_installations.py.
 
   Logs:  docker compose -f docker-compose.yml -f docker-compose.sandbox.yml logs -f gateway normalizer observation_writer
   Stop:  scripts/sandbox_down.sh          (add --volumes to wipe DB/kafka/minio)

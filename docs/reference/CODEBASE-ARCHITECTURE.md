@@ -124,7 +124,7 @@ The database schema starts in [0001_foundation.sql](db/migrations/0001_foundatio
 | Area | Tables | Purpose |
 |---|---|---|
 | Queues | `think_trigger_queue`, `model_reeval_queue`, `pending_post_commit_actions` | Durable work queues polled with `FOR UPDATE SKIP LOCKED`. The retired `topo_dirty_queue` table was dropped by migration `0127`. |
-| Idempotency | `applied_triggers`, `dedup_keys_seen` | Prevent duplicate application of the same trigger/diff. |
+| Idempotency | `applied_triggers` plus per-feature unique keys | Prevent duplicate application of the same trigger/diff. The old `dedup_keys_seen` table was dropped by migration `0155`. |
 | Think observability | `think_runs`, `think_run_costs`, `think_run_artifacts`, `think_anomalies_raw` | Run status, cost, debug capture, anomaly staging. |
 | Reconciliation/audit | `reconciliation_events`, `audit_events` | Duplicate-model decisions and model state-change chain. |
 | CEO view | `view_ceo_cache`, `view_render_costs`, `viewer_state`, `card_conversations`, `card_exchanges` | Cached product payloads, render costs, per-viewer last-seen state, card probes. |
@@ -216,6 +216,33 @@ The core reasoning entry point is [services/reasoning/think/reason.py](services/
 | T3 | Anomaly processor | An anomalous region needs reasoning. |
 | T4 | Background/pattern/topology-candidate work | Maintenance, precipitation, or latent relationship candidate interpretation. |
 | T6 | Legacy topology events | Retired accepted-memory neighborhood/graph phase shifts. |
+
+SAGE-learned signals are adaptive policy memory, not canonical truth. Route
+utilities, discovery shortcuts, negative memory, company profiles, retrieval
+motifs, and latent pattern candidates may steer retrieval/questioning, but
+explicit company memory still enters through Think validation/application as
+Models or typed edges. The intended bridge is:
+
+Company profiles now compact route/question utility, shortcuts, affordances,
+structural features, residuals, recent drift, negative memory, and source/actor
+reliability from existing SAGE/calibration surfaces. Source and actor
+reliability are salience-only (`authority_effect="none"`): they can raise or
+lower retrieval priority, but they never grant access or mutate canonical truth.
+Profile notes redact raw evidence refs by default and expose aggregate
+provenance/counts for reportability. Inquiry persistence also records
+`sage_profile_prior_outcomes` so the runtime can audit whether profile-shaped
+retrieval actions produced selected context, skipped low-value work, or aligned
+with downstream outcome reward. Contradictions become best-effort open
+`model_residual_evidence` rows, preserving repair pressure without turning SAGE
+into canonical truth.
+
+```text
+SAGE latent signal -> Think semantic judgment -> Pattern/Situation Model
+```
+
+Precipitation follows that boundary: it writes weak `pattern_candidates` and
+`T4:pattern_review` triggers with review features and counterexamples; it does
+not mechanically promote embedding clusters into Pattern Models.
 
 `ThinkWorker` polls `think_trigger_queue`, promotes pending `model_reeval_queue` rows to T4 triggers, applies per-tenant concurrency caps, backs off under queue pressure, and marks failed rows after retry exhaustion. The poller only leases as many rows as it has local in-flight capacity left, so a large single-tenant backlog does not get locked by tasks waiting behind that tenant's semaphore. The safe default is one in-flight Think transaction per tenant. Higher `THINK_MAX_CONCURRENCY_PER_TENANT` values are treated as explicit stress settings because the current Think transaction still spans retrieval, LLM reasoning, validation, and apply; large real-LLM durability runs exposed model-row deadlocks when multiple long Think transactions mutated the same tenant memory graph concurrently.
 
@@ -408,7 +435,7 @@ Additional worker packages exist under [services/workers](services/workers):
 | `entity_resolver` | Resolves unresolved actors/entities from observations. |
 | `calibration_updater` | Computes calibration/hit-rate updates. |
 | `deadline_resolver` | Resolves due predictions/deadlines. |
-| `precipitation` | Clusters candidate patterns and proposes background reasoning. |
+| `precipitation` | Clusters weak pattern candidates, adds review features/counterexamples, and proposes `T4:pattern_review` semantic reasoning. |
 | `edge_drift` | Checks typed model edges against legacy relationship arrays. |
 | `topology_sweeper` | Periodically reruns the latent relationship field over a bounded high-activation frontier. |
 | `maintenance` | Daily/weekly/monthly maintenance routines. |

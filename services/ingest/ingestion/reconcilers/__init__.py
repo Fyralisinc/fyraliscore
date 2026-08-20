@@ -1,66 +1,8 @@
-"""Per-source reconciliation algorithms. Per ingestion LLD §3 + the
-M6.2b prompt's gap-detection contract.
+"""Gap reconciliation compatibility surface for supplemental sources."""
 
-============================================================
-ROLE
-============================================================
-A reconciler is a per-source function that examines the completed
-shard state for a (run, source) pair and decides whether the
-coverage is acceptable ("clean" — no gaps) or whether additional
-re-shared shards are needed to fill gaps. The M6.2b Reconciler
-service calls these algorithms; per-source reconcilers in
-M6.3-M6.6 will implement the real algorithms.
-
-The contract — codified by M6.2b Phase 1:
-
-    RECONCILER_DISPATCH[source](
-        shards: list[asyncpg.Record],          # all shards for this (run, source)
-        run: asyncpg.Record,                   # the source_onboarding_runs row
-    ) -> ReconciliationDecision
-
-============================================================
-DISPATCH TABLE — STUB ON M6.2b, REAL ON M6.3-M6.6
-============================================================
-Same shape as M6.2a's `PLANNER_DISPATCH` + `FETCHER_DISPATCH`:
-
-    | source   | M6.x sub-block |
-    |----------|----------------|
-    | gmail    | M6.3           |
-    | github   | M6.4           |
-    | slack    | M6.5           |
-    | discord  | M6.6           |
-
-**The pre-M6.3 default is `has_gaps=False`, NOT NotImplementedError.**
-Unlike the planner/fetcher stubs (which raise to surface "no real
-implementation yet"), the reconciler stub MUST return a default
-"clean" decision because the system needs to function pre-M6.3-M6.6
-— if reconcilers raised, no tenant onboarding would ever complete.
-The clean default is the right pre-implementation behaviour: assume
-no gaps until a real algorithm proves otherwise.
-
-The stub message names the responsible M6.x sub-block so operators
-querying `source_onboarding_runs` (or service logs) immediately
-know where the implementation work lives. Same fail-loud-with-
-context pattern as M6.2a, just defaulting to clean rather than
-raising.
-
-============================================================
-RESHARED-SHARD CONTRACT (LOAD-BEARING for M6.3-M6.6)
-============================================================
-`ReconciliationDecision.new_shards` is a list of `ResharedShard`.
-Each entry describes ONE new shard to INSERT into onboarding_shards
-with `parent_shard_id` set. The per-source algorithm picks which
-original shard "owns" each gap (typically the original whose
-window/identifier overlaps the gap region).
-
-The new shard's `recency_score` defaults to a boosted value above
-1.0 so reshared shards run ahead of any remaining low-recency
-backfill (per LLD §3 + HLD §6 specifications). M6.3-M6.6
-per-source reconcilers may override per source-specific concerns.
-"""
 from __future__ import annotations
 
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from uuid import UUID
 
 import asyncpg
@@ -69,22 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from services.ingest.ingestion.planners import Shard
 
 
-# ---------------------------------------------------------------------
-# Public types.
-# ---------------------------------------------------------------------
 class ResharedShard(BaseModel):
-    """A new shard to INSERT for re-share, linking to an original.
-
-    `parent_shard_id` references the original `onboarding_shards.id`
-    whose gap this new shard fills. The original shard transitions
-    to `state='reconciliation_resharded'` (terminal) in the same
-    transaction that INSERTs this row.
-
-    The Pydantic shape is used for type-checking at the dispatch
-    boundary; the Reconciler service translates this into the actual
-    INSERT.
-    """
-
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
     shard: Shard
@@ -92,23 +19,6 @@ class ResharedShard(BaseModel):
 
 
 class ReconciliationDecision(BaseModel):
-    """Output of a per-source reconciliation algorithm.
-
-    `has_gaps=False` → CLEAN path: Reconciler stamps `reconciled_at`
-    on `source_onboarding_runs` and emits `source_onboarding_completed`
-    to TenantOnboarding.
-
-    `has_gaps=True` → RE-SHARE path: Reconciler increments
-    `reconciliation_pass_count`, transitions `source_onboarding_runs.status`
-    back to 'in_progress', marks the affected original shards
-    `state='reconciliation_resharded'`, INSERTs `new_shards` rows, and
-    emits `shard_fetch_requested` per new shard.
-
-    `message` is operator-visible. It's stored only if it indicates a
-    pre-M6.x stub default (so ops queries can grep for the M6.x
-    references); real reconcilers may pass empty strings.
-    """
-
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
     has_gaps: bool
@@ -120,115 +30,24 @@ Reconciler = Callable[
     [list[asyncpg.Record], asyncpg.Record],
     Awaitable[ReconciliationDecision],
 ]
-
-
-# ---------------------------------------------------------------------
-# Default-clean stub factory.
-# ---------------------------------------------------------------------
-def _not_implemented_reconciler(source: str, milestone: str) -> Reconciler:
-    """Build a reconciler stub that returns a default-clean decision.
-
-    Unlike planner/fetcher stubs which raise `NotImplementedError`,
-    the reconciler stub MUST return a valid decision because the
-    system needs to function pre-M6.3-M6.6 (otherwise no tenant
-    onboarding ever completes). The clean default means: "assume
-    no gaps until a real algorithm proves otherwise."
-
-    The `message` includes the M6.x reference so operators querying
-    `source_onboarding_runs` failures (or scanning service logs)
-    know where the implementation lives. Same fail-loud-with-context
-    pattern as M6.2a planner/fetcher stubs, but defaulting to clean
-    rather than raising.
-    """
-    async def stub(
-        shards: list[asyncpg.Record], run: asyncpg.Record,
-    ) -> ReconciliationDecision:
-        return ReconciliationDecision(
-            has_gaps=False,
-            message=(
-                f"Reconciler for source={source!r} not yet implemented; "
-                f"defaulting to clean. Pending in {milestone} per "
-                f"docs/ingestion/04-implementation-plan.md §{milestone}. "
-                f"Until then, all (tenant, {source}) onboardings are "
-                f"treated as gap-free; this is the expected pre-{milestone} "
-                f"steady state, not a regression."
-            ),
-        )
-    stub.__name__ = f"_not_implemented_reconciler_{source}"
-    return stub
-
-
-# ---------------------------------------------------------------------
-# Dispatch table — M6.2b Phase 1.
-# ---------------------------------------------------------------------
-# Module-level mutable dict; ALL_CAPS (constant-style, outside the
-# pattern-alignment analyzer's services/ingest/ingestion/workflows/*.py
-# scope per the Rule 5 calibration). Production replacements
-# (M6.3-M6.6) overwrite entries at module-import time; tests rebind
-# via monkeypatch.setitem.
-RECONCILER_DISPATCH: dict[str, Reconciler] = {
-    "gmail":   _not_implemented_reconciler("gmail",   "M6.3"),
-    "github":  _not_implemented_reconciler("github",  "M6.4"),
-    "slack":   _not_implemented_reconciler("slack",   "M6.5"),
-    "discord": _not_implemented_reconciler("discord", "M6.6"),
-    "notion":  _not_implemented_reconciler("notion",  "IN-14"),
-    "google_calendar": _not_implemented_reconciler("google_calendar", "IN-15"),
-    "google_drive": _not_implemented_reconciler("google_drive", "IN-16"),
-    "jira":    _not_implemented_reconciler("jira",    "IN-17"),
-    "mercury": _not_implemented_reconciler("mercury", "IN-FIN"),
-    "quickbooks": _not_implemented_reconciler("quickbooks", "IN-FIN"),
-    "grafana": _not_implemented_reconciler("grafana", "IN-GRAFANA"),
-    "telegram": _not_implemented_reconciler("telegram", "IN-TELEGRAM"),
-    "brex":  _not_implemented_reconciler("brex",  "IN-FIN2"),
-    "ramp":  _not_implemented_reconciler("ramp",  "IN-FIN2"),
-    "gusto": _not_implemented_reconciler("gusto", "IN-FIN2"),
-    "deel":  _not_implemented_reconciler("deel",  "IN-FIN2"),
-    "fireflies": _not_implemented_reconciler("fireflies", "IN-VERTICALS"),
-    "signal":    _not_implemented_reconciler("signal",    "IN-VERTICALS"),
-    "aws":       _not_implemented_reconciler("aws",       "IN-VERTICALS"),
-    "miro":      _not_implemented_reconciler("miro",      "IN-VERTICALS"),
-    "figma":     _not_implemented_reconciler("figma",     "IN-VERTICALS"),
-    "carta":     _not_implemented_reconciler("carta",     "IN-VERTICALS"),
-    "hibob":     _not_implemented_reconciler("hibob",     "IN-PEOPLE"),
-    "ashby":     _not_implemented_reconciler("ashby",     "IN-PEOPLE"),
-    "linkedin":  _not_implemented_reconciler("linkedin",  "IN-PEOPLE"),
-    # WhatsApp is LIVE-only; backfill reconciliation is a deferred phase.
-    "whatsapp":  _not_implemented_reconciler("whatsapp",  "IN-WHATSAPP-BACKFILL"),
-}
+RECONCILER_DISPATCH: dict[str, Reconciler] = {}
 
 
 def register_pool_provider(pool: asyncpg.Pool) -> list[str]:
-    """Register `pool` with every per-source reconciler module that needs it.
-
-    Per-source reconcilers (M6.3+) read auxiliary state (shard cursors,
-    installation rows) through a module-level pool provider and raise an
-    explicit ``RuntimeError`` if it isn't set when the reconciler is called.
-    BOTH the at-completion ``Reconciler`` service and the
-    ``PeriodicReconciler`` must register the pool at startup.
-
-    Historically each service kept its own hand-listed block of
-    ``set_pool_provider`` calls, and the periodic service drifted to only 7 of
-    25 sources — silently disabling steady-state gap detection for the other 18
-    (every periodic re-check of those sources raised ``RuntimeError`` and was
-    swallowed as a dispatch exception). Deriving the registration set from
-    ``RECONCILER_DISPATCH`` keeps the two services in lockstep: a new source
-    wired into the dispatch map is wired into both services automatically, so
-    this class of drift cannot recur.
-
-    Returns the list of sources actually registered (those whose module exposes
-    ``set_pool_provider``) for diagnostics/logging.
-    """
-    import importlib
-
     registered: list[str] = []
-    for source in RECONCILER_DISPATCH:
-        module = importlib.import_module(f"{__name__}.{source}")
-        setter = getattr(module, "set_pool_provider", None)
-        if setter is not None:
-            setter(pool)
-            registered.append(source)
+    for source, module in (
+        ("facebook_pages", _facebook_pages),
+        ("instagram", _instagram),
+    ):
+        module.set_pool_provider(pool)
+        registered.append(source)
     return registered
 
+
+from services.ingest.ingestion.reconcilers import (
+    facebook_pages as _facebook_pages,  # noqa: E402
+)
+from services.ingest.ingestion.reconcilers import instagram as _instagram  # noqa: E402
 
 __all__ = [
     "RECONCILER_DISPATCH",
@@ -237,32 +56,3 @@ __all__ = [
     "ResharedShard",
     "register_pool_provider",
 ]
-
-
-# Per-source modules import below — each assigns into RECONCILER_DISPATCH
-# at module-load time (per A18).
-from services.ingest.ingestion.reconcilers import gmail as _gmail  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import github as _github  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import slack as _slack  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import discord as _discord  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import notion as _notion  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import google_calendar as _google_calendar  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import google_drive as _google_drive  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import jira as _jira  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import mercury as _mercury  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import quickbooks as _quickbooks  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import grafana as _grafana  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import telegram as _telegram  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import brex as _brex  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import ramp as _ramp  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import gusto as _gusto  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import deel as _deel  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import fireflies as _fireflies  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import signal as _signal  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import aws as _aws  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import miro as _miro  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import figma as _figma  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import carta as _carta  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import hibob as _hibob  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import ashby as _ashby  # noqa: E402,F401
-from services.ingest.ingestion.reconcilers import linkedin as _linkedin  # noqa: E402,F401

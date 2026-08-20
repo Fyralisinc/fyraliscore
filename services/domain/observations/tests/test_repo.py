@@ -2,14 +2,14 @@
 
 Coverage (per BUILD-PLAN §2 Prompt 1.A test list):
 - Happy path: insert, fetch by id, semantic search over 50 rows.
-- Dedup on (source_channel, external_id).
+- Exact source-revision dedup through evidence_id.
 - Embedding fallback: Ollama down → embedding_pending=True; retrieval
   filters pending rows out.
 - Partitioning: current-month inserts land in the right partition.
 - GIN on entities_mentioned: containment queries return matches.
 - Three-hop cascade_trace.
 - Seven valid trust tiers accepted; invalid rejected.
-- 10-concurrent-insert dedup: exactly one wins.
+- 10-concurrent exact-revision inserts: exactly one wins.
 - 100KB content embeds and stores.
 - NULL external_id allowed for system channels.
 - state_change kind: emit and fetch by cause_id chain.
@@ -21,6 +21,7 @@ Coverage (per BUILD-PLAN §2 Prompt 1.A test list):
 All DB-touching tests are `@pytest.mark.integration` and use
 `fresh_db` from the top-level conftest (per-test truncate).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -34,11 +35,13 @@ import asyncpg
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from pgvector.utils import Vector
 from pydantic import ValidationError
 
 from lib.embeddings.ollama import EMBEDDING_DIM, OllamaError
 from lib.shared.ids import uuid7
-from lib.shared.types import ObservationCreate
+from lib.shared.types import ObservationCreate, SourceEvidenceCreate
+from services.domain.evidence.repo import SourceEvidenceRepository
 from services.domain.observations import partitions
 from services.domain.observations.events import (
     OBSERVATIONS_CHANNEL,
@@ -49,6 +52,7 @@ from services.domain.observations.repo import (
     InvalidTrustTier,
     ObservationError,
     ObservationRepository,
+    _hydrate_row,
 )
 from services.domain.observations.state_change import emit_state_change
 
@@ -59,6 +63,7 @@ pytestmark = pytest.mark.integration
 # =====================================================================
 # Test helpers
 # =====================================================================
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -76,6 +81,7 @@ def _mk_obs(
     cause_id: UUID | None = None,
     occurred_at: datetime | None = None,
     entities_mentioned: list[dict[str, Any]] | None = None,
+    evidence_id: UUID | None = None,
 ) -> ObservationCreate:
     return ObservationCreate(
         tenant_id=tenant_id,
@@ -89,14 +95,99 @@ def _mk_obs(
         external_id=external_id,
         cause_id=cause_id,
         entities_mentioned=entities_mentioned or [],
+        evidence_id=evidence_id,
     )
+
+
+def test_hydrate_row_normalizes_pgvector_vector() -> None:
+    now = _now()
+    row = _hydrate_row(
+        {
+            "id": uuid7(),
+            "tenant_id": uuid7(),
+            "occurred_at": now,
+            "ingested_at": now,
+            "kind": "signal",
+            "source_channel": "slack:message",
+            "source_actor_ref": None,
+            "actor_id": None,
+            "content": {"text": "hello"},
+            "content_text": "hello",
+            "embedding": Vector([0.1, 0.2, 0.3]),
+            "embedding_pending": False,
+            "trust_tier": "inferential",
+            "external_id": "slack-event-1",
+            "cause_id": None,
+            "sequence_num": 1,
+            "entities_mentioned": [],
+        }
+    )
+
+    assert row.embedding == pytest.approx([0.1, 0.2, 0.3])
+
+
+def test_hydrate_row_decodes_json_columns_with_pgvector_vector() -> None:
+    now = _now()
+    row = _hydrate_row(
+        {
+            "id": uuid7(),
+            "tenant_id": uuid7(),
+            "occurred_at": now,
+            "ingested_at": now,
+            "kind": "signal",
+            "source_channel": "instagram:message",
+            "source_actor_ref": None,
+            "actor_id": None,
+            "content": json.dumps({"text": "hello"}),
+            "content_text": "hello",
+            "embedding": Vector([1.0, 2.0]),
+            "embedding_pending": False,
+            "trust_tier": "attested_agent",
+            "external_id": "instagram:test:message:1",
+            "cause_id": None,
+            "sequence_num": 1,
+            "entities_mentioned": "[]",
+        }
+    )
+
+    assert row.embedding == [1.0, 2.0]
+
+
+async def _insert_evidence(
+    pool: asyncpg.Pool,
+    tenant_id: UUID,
+    revision: str,
+) -> UUID:
+    now = _now()
+    value = SourceEvidenceCreate(
+        tenant_id=tenant_id,
+        source="slack",
+        installation_scope="stateless:slack",
+        source_channel="slack:message",
+        source_object_type="message",
+        source_object_id="C1:1.0",
+        source_revision_id=revision,
+        operation="update",
+        source_recorded_at=now,
+        raw_object_key=f"prod/slack/{revision}.json",
+        content_hash=(revision.encode().hex() + "0" * 40)[:40],
+        raw_ingested_at=now,
+        normalized_at=now,
+        ingress_kind="webhook",
+    )
+    async with pool.acquire() as conn:
+        result = await SourceEvidenceRepository().insert(value, conn=conn)
+    return result.evidence.id
 
 
 # =====================================================================
 # 1. Happy path — insert + fetch + embedding
 # =====================================================================
 
-async def test_insert_returns_hydrated_row(repo: ObservationRepository, tenant_id: UUID):
+
+async def test_insert_returns_hydrated_row(
+    repo: ObservationRepository, tenant_id: UUID
+):
     row = await repo.insert(_mk_obs(tenant_id, external_id="m1"))
     assert row.tenant_id == tenant_id
     assert row.kind == "signal"
@@ -119,7 +210,9 @@ async def test_get_by_id_roundtrip(repo: ObservationRepository, tenant_id: UUID)
     assert fetched.content_text == "hello world"
 
 
-async def test_get_by_id_missing_returns_none(repo: ObservationRepository, tenant_id: UUID):
+async def test_get_by_id_missing_returns_none(
+    repo: ObservationRepository, tenant_id: UUID
+):
     result = await repo.get_by_id(uuid7(), tenant_id)
     assert result is None
 
@@ -127,6 +220,7 @@ async def test_get_by_id_missing_returns_none(repo: ObservationRepository, tenan
 # =====================================================================
 # 2. Semantic search over 50 observations
 # =====================================================================
+
 
 async def test_semantic_search_finds_relevant(
     repo: ObservationRepository,
@@ -152,12 +246,14 @@ async def test_semantic_search_finds_relevant(
         "Eve updated the deployment runbook",
     ]
     for i in range(50):
-        await repo.insert(_mk_obs(
-            tenant_id,
-            external_id=f"m{i}",
-            content_text=topics[i % len(topics)] + f" (variant {i})",
-            occurred_at=_now() - timedelta(minutes=i),
-        ))
+        await repo.insert(
+            _mk_obs(
+                tenant_id,
+                external_id=f"m{i}",
+                content_text=topics[i % len(topics)] + f" (variant {i})",
+                occurred_at=_now() - timedelta(minutes=i),
+            )
+        )
 
     query_vec = await embedder.embed("rate limiter PR")
     hits = await repo.search_by_embedding(query_vec, tenant_id, k=5)
@@ -172,18 +268,23 @@ async def test_semantic_search_finds_relevant(
 
 
 # =====================================================================
-# 3. Dedup on (source_channel, external_id)
+# 3. Dedup on immutable evidence revision
 # =====================================================================
 
-async def test_insert_twice_same_external_id_returns_first_row(
+async def test_insert_twice_same_evidence_returns_first_row(
     repo: ObservationRepository,
     tenant_id: UUID,
+    fresh_db: asyncpg.Pool,
 ):
-    first = await repo.insert(_mk_obs(tenant_id, external_id="dup1"))
+    evidence_id = await _insert_evidence(fresh_db, tenant_id, "revision-1")
+    first = await repo.insert(
+        _mk_obs(tenant_id, external_id="dup1", evidence_id=evidence_id)
+    )
     second = await repo.insert(_mk_obs(
         tenant_id,
         external_id="dup1",
         content_text="a different body",
+        evidence_id=evidence_id,
     ))
     assert first.id == second.id
     # Returned row reflects the first insert's content_text, not the
@@ -191,38 +292,82 @@ async def test_insert_twice_same_external_id_returns_first_row(
     assert second.content_text == "hello world"
 
 
-async def test_same_external_id_is_deduped_per_tenant(
+async def test_hydrate_row_accepts_pgvector_vector(tenant_id: UUID):
+    from pgvector.utils import Vector
+
+    row = _hydrate_row(
+        {
+            "id": uuid7(),
+            "tenant_id": tenant_id,
+            "occurred_at": _now(),
+            "ingested_at": _now(),
+            "kind": "signal",
+            "source_channel": "discord:message",
+            "source_actor_ref": None,
+            "actor_id": None,
+            "content": {"text": "duplicate event"},
+            "content_text": "duplicate event",
+            "embedding": Vector([0.1] * EMBEDDING_DIM),
+            "embedding_pending": False,
+            "trust_tier": "inferential",
+            "external_id": "discord-duplicate",
+            "cause_id": None,
+            "sequence_num": 1,
+            "entities_mentioned": [],
+        }
+    )
+
+    assert row.embedding == pytest.approx([0.1] * EMBEDDING_DIM)
+
+
+async def test_same_external_id_does_not_collapse_distinct_revisions(
     repo: ObservationRepository,
     tenant_id: UUID,
+    fresh_db: asyncpg.Pool,
 ):
-    other_tenant = uuid7()
     occurred = _now()
+    first_evidence = await _insert_evidence(fresh_db, tenant_id, "revision-a")
+    second_evidence = await _insert_evidence(fresh_db, tenant_id, "revision-b")
     first = await repo.insert(
-        _mk_obs(tenant_id, external_id="shared", occurred_at=occurred)
+        _mk_obs(
+            tenant_id,
+            external_id="shared",
+            occurred_at=occurred,
+            evidence_id=first_evidence,
+        )
     )
     second = await repo.insert(
         _mk_obs(
-            other_tenant,
+            tenant_id,
             external_id="shared",
             occurred_at=occurred,
-            content_text="other tenant body",
+            content_text="later revision body",
+            evidence_id=second_evidence,
         )
     )
     assert first.id != second.id
-    assert second.tenant_id == other_tenant
-    assert second.content_text == "other tenant body"
+    assert second.content_text == "later revision body"
 
 
 async def test_null_external_id_is_not_dedup_keyed(
-    repo: ObservationRepository, tenant_id: UUID,
+    repo: ObservationRepository,
+    tenant_id: UUID,
 ):
     """Two NULL-external_id inserts should create two distinct rows."""
-    a = await repo.insert(_mk_obs(
-        tenant_id, source_channel="internal:state_change", external_id=None,
-    ))
-    b = await repo.insert(_mk_obs(
-        tenant_id, source_channel="internal:state_change", external_id=None,
-    ))
+    a = await repo.insert(
+        _mk_obs(
+            tenant_id,
+            source_channel="internal:state_change",
+            external_id=None,
+        )
+    )
+    b = await repo.insert(
+        _mk_obs(
+            tenant_id,
+            source_channel="internal:state_change",
+            external_id=None,
+        )
+    )
     assert a.id != b.id
 
 
@@ -230,18 +375,27 @@ async def test_null_external_id_is_not_dedup_keyed(
 # 4. Embedding fallback when Ollama is down
 # =====================================================================
 
+
 async def test_embedding_fallback_sets_pending_true(
-    tx_conn: asyncpg.Connection, tenant_id: UUID,
+    tx_conn: asyncpg.Connection,
+    tenant_id: UUID,
 ):
     class _BrokenEmbedder:
         class _C:
             model = "broken"
             expected_dim = EMBEDDING_DIM
-        def __init__(self): self.config = self._C()
+
+        def __init__(self):
+            self.config = self._C()
+
         async def embed(self, text: str):
             raise OllamaError("simulated outage")
-        async def embed_batch(self, texts): return []
-        async def close(self): return None
+
+        async def embed_batch(self, texts):
+            return []
+
+        async def close(self):
+            return None
 
     repo = ObservationRepository(tx_conn, embedder=_BrokenEmbedder())
     row = await repo.insert(_mk_obs(tenant_id, external_id="m1"))
@@ -250,28 +404,45 @@ async def test_embedding_fallback_sets_pending_true(
 
 
 async def test_search_filters_out_pending_embeddings(
-    tx_conn: asyncpg.Connection, tenant_id: UUID, embedder,
+    tx_conn: asyncpg.Connection,
+    tenant_id: UUID,
+    embedder,
 ):
     good_repo = ObservationRepository(tx_conn, embedder=embedder)
-    good = await good_repo.insert(_mk_obs(
-        tenant_id, external_id="good",
-        content_text="has an embedding",
-    ))
+    good = await good_repo.insert(
+        _mk_obs(
+            tenant_id,
+            external_id="good",
+            content_text="has an embedding",
+        )
+    )
     assert good.embedding is not None
 
     class _BrokenEmbedder:
         class _C:
             model = "broken"
             expected_dim = EMBEDDING_DIM
-        def __init__(self): self.config = self._C()
-        async def embed(self, text: str): raise OllamaError("down")
-        async def embed_batch(self, texts): return []
-        async def close(self): return None
+
+        def __init__(self):
+            self.config = self._C()
+
+        async def embed(self, text: str):
+            raise OllamaError("down")
+
+        async def embed_batch(self, texts):
+            return []
+
+        async def close(self):
+            return None
+
     bad_repo = ObservationRepository(tx_conn, embedder=_BrokenEmbedder())
-    pending = await bad_repo.insert(_mk_obs(
-        tenant_id, external_id="pend",
-        content_text="no embedding yet",
-    ))
+    pending = await bad_repo.insert(
+        _mk_obs(
+            tenant_id,
+            external_id="pend",
+            content_text="no embedding yet",
+        )
+    )
     assert pending.embedding_pending is True
 
     vec = await embedder.embed("anything")
@@ -284,6 +455,7 @@ async def test_search_filters_out_pending_embeddings(
 # =====================================================================
 # 5. Partitioning
 # =====================================================================
+
 
 async def test_partition_creator_is_idempotent(fresh_db: asyncpg.Pool):
     await partitions.ensure_partitions(fresh_db, months_ahead=3)
@@ -298,7 +470,9 @@ async def test_partition_creator_is_idempotent(fresh_db: asyncpg.Pool):
 
 
 async def test_insert_lands_in_current_month_partition(
-    repo: ObservationRepository, tx_conn: asyncpg.Connection, tenant_id: UUID,
+    repo: ObservationRepository,
+    tx_conn: asyncpg.Connection,
+    tenant_id: UUID,
 ):
     now = _now()
     row = await repo.insert(_mk_obs(tenant_id, external_id="p1", occurred_at=now))
@@ -317,6 +491,7 @@ async def test_insert_lands_in_current_month_partition(
 
 async def test_compute_partitions_boundary_math():
     from datetime import date
+
     specs = partitions.compute_partitions(
         as_of=date(2025, 12, 15),
         months_ahead=3,
@@ -334,31 +509,45 @@ async def test_compute_partitions_boundary_math():
 # 6. GIN on entities_mentioned
 # =====================================================================
 
+
 async def test_entities_mentioned_gin_match(
-    repo: ObservationRepository, tenant_id: UUID, alice_actor_id: UUID,
+    repo: ObservationRepository,
+    tenant_id: UUID,
+    alice_actor_id: UUID,
 ):
     other = uuid7()
-    await repo.insert(_mk_obs(
-        tenant_id, external_id="e1",
-        entities_mentioned=[{"type": "actor", "id": str(alice_actor_id)}],
-    ))
-    await repo.insert(_mk_obs(
-        tenant_id, external_id="e2",
-        entities_mentioned=[{"type": "actor", "id": str(other)}],
-    ))
-    await repo.insert(_mk_obs(
-        tenant_id, external_id="e3",
-        entities_mentioned=[{"type": "customer", "id": "acme"}],
-    ))
+    await repo.insert(
+        _mk_obs(
+            tenant_id,
+            external_id="e1",
+            entities_mentioned=[{"type": "actor", "id": str(alice_actor_id)}],
+        )
+    )
+    await repo.insert(
+        _mk_obs(
+            tenant_id,
+            external_id="e2",
+            entities_mentioned=[{"type": "actor", "id": str(other)}],
+        )
+    )
+    await repo.insert(
+        _mk_obs(
+            tenant_id,
+            external_id="e3",
+            entities_mentioned=[{"type": "customer", "id": "acme"}],
+        )
+    )
 
     hits = await repo.by_entities(
-        [{"type": "actor", "id": str(alice_actor_id)}], tenant_id,
+        [{"type": "actor", "id": str(alice_actor_id)}],
+        tenant_id,
     )
     assert len(hits) == 1
     assert hits[0].entities_mentioned[0]["id"] == str(alice_actor_id)
 
     acme_hits = await repo.by_entities(
-        [{"type": "customer", "id": "acme"}], tenant_id,
+        [{"type": "customer", "id": "acme"}],
+        tenant_id,
     )
     assert len(acme_hits) == 1
 
@@ -367,24 +556,43 @@ async def test_entities_mentioned_gin_match(
 # 7. Cascade trace — three-hop chain
 # =====================================================================
 
+
 async def test_cascade_trace_walks_three_hops_up(
-    repo: ObservationRepository, tenant_id: UUID,
+    repo: ObservationRepository,
+    tenant_id: UUID,
 ):
-    root = await repo.insert(_mk_obs(
-        tenant_id, source_channel="internal:state_change",
-        external_id=None, content_text="root", kind="state_change",
-        trust_tier="authoritative",
-    ))
-    mid = await repo.insert(_mk_obs(
-        tenant_id, source_channel="internal:state_change",
-        external_id=None, content_text="mid", kind="state_change",
-        trust_tier="authoritative", cause_id=root.id,
-    ))
-    leaf = await repo.insert(_mk_obs(
-        tenant_id, source_channel="internal:state_change",
-        external_id=None, content_text="leaf", kind="state_change",
-        trust_tier="authoritative", cause_id=mid.id,
-    ))
+    root = await repo.insert(
+        _mk_obs(
+            tenant_id,
+            source_channel="internal:state_change",
+            external_id=None,
+            content_text="root",
+            kind="state_change",
+            trust_tier="authoritative",
+        )
+    )
+    mid = await repo.insert(
+        _mk_obs(
+            tenant_id,
+            source_channel="internal:state_change",
+            external_id=None,
+            content_text="mid",
+            kind="state_change",
+            trust_tier="authoritative",
+            cause_id=root.id,
+        )
+    )
+    leaf = await repo.insert(
+        _mk_obs(
+            tenant_id,
+            source_channel="internal:state_change",
+            external_id=None,
+            content_text="leaf",
+            kind="state_change",
+            trust_tier="authoritative",
+            cause_id=mid.id,
+        )
+    )
 
     trace = await repo.cascade_trace(leaf.id, tenant_id=tenant_id)
     # Root-first ordering.
@@ -392,25 +600,37 @@ async def test_cascade_trace_walks_three_hops_up(
 
 
 async def test_cascade_trace_stops_at_null_cause(
-    repo: ObservationRepository, tenant_id: UUID,
+    repo: ObservationRepository,
+    tenant_id: UUID,
 ):
-    orphan = await repo.insert(_mk_obs(
-        tenant_id, source_channel="internal:state_change",
-        external_id=None, kind="state_change", trust_tier="authoritative",
-    ))
+    orphan = await repo.insert(
+        _mk_obs(
+            tenant_id,
+            source_channel="internal:state_change",
+            external_id=None,
+            kind="state_change",
+            trust_tier="authoritative",
+        )
+    )
     trace = await repo.cascade_trace(orphan.id, tenant_id=tenant_id)
     assert len(trace) == 1
     assert trace[0].id == orphan.id
 
 
 async def test_cascade_trace_respects_tenant(
-    repo: ObservationRepository, tenant_id: UUID,
+    repo: ObservationRepository,
+    tenant_id: UUID,
 ):
     other_tenant = uuid7()
-    other_root = await repo.insert(_mk_obs(
-        other_tenant, source_channel="internal:state_change",
-        external_id=None, kind="state_change", trust_tier="authoritative",
-    ))
+    other_root = await repo.insert(
+        _mk_obs(
+            other_tenant,
+            source_channel="internal:state_change",
+            external_id=None,
+            kind="state_change",
+            trust_tier="authoritative",
+        )
+    )
     # Ask for it from tenant_id — must get zero rows.
     trace = await repo.cascade_trace(other_root.id, tenant_id=tenant_id)
     assert trace == []
@@ -420,17 +640,28 @@ async def test_cascade_trace_respects_tenant(
 # 8. Trust tier enum — all seven accepted, invalid rejected
 # =====================================================================
 
+
 async def test_all_seven_trust_tiers_accepted(
-    repo: ObservationRepository, tenant_id: UUID,
+    repo: ObservationRepository,
+    tenant_id: UUID,
 ):
     tiers = [
-        "authoritative", "attested_agent", "authoritative_external",
-        "reputable", "inferential", "inferential_external", "unvetted",
+        "authoritative",
+        "attested_agent",
+        "authoritative_external",
+        "reputable",
+        "inferential",
+        "inferential_external",
+        "unvetted",
     ]
     for i, tier in enumerate(tiers):
-        row = await repo.insert(_mk_obs(
-            tenant_id, external_id=f"tt{i}", trust_tier=tier,
-        ))
+        row = await repo.insert(
+            _mk_obs(
+                tenant_id,
+                external_id=f"tt{i}",
+                trust_tier=tier,
+            )
+        )
         assert row.trust_tier == tier
 
 
@@ -447,7 +678,8 @@ async def test_invalid_trust_tier_rejected_at_pydantic_layer(tenant_id: UUID):
 
 
 async def test_invalid_trust_tier_rejected_at_repo_layer(
-    repo: ObservationRepository, tenant_id: UUID,
+    repo: ObservationRepository,
+    tenant_id: UUID,
 ):
     """Defense in depth: even if someone bypasses Pydantic, repo
     re-validates before issuing the INSERT."""
@@ -459,15 +691,18 @@ async def test_invalid_trust_tier_rejected_at_repo_layer(
 
 
 # =====================================================================
-# 9. Concurrency — 10 simultaneous inserts with same external_id
+# 9. Concurrency — 10 simultaneous inserts with the same evidence revision
 # =====================================================================
 
+
 async def test_ten_concurrent_inserts_dedup_to_one_row(
-    fresh_db: asyncpg.Pool, tenant_id: UUID, embedder,
+    fresh_db: asyncpg.Pool,
+    tenant_id: UUID,
+    embedder,
 ):
     """
-    Ten concurrent callers submitting the same external signal
-    (source_channel + external_id + occurred_at) converge on the
+    Ten concurrent callers submitting the same immutable source revision
+    converge on the
     same observation row. Ingestion retries and duplicate webhook
     deliveries are the real-world scenario; this test asserts the
     dedup guarantee at concurrency.
@@ -481,10 +716,10 @@ async def test_ten_concurrent_inserts_dedup_to_one_row(
     repo = ObservationRepository(fresh_db, embedder=embedder)
     await partitions.ensure_partitions(fresh_db, months_ahead=3)
 
-    # The dedup key per SCHEMA-LOCK S1.1 Wave-0 note is
-    # (source_channel, external_id, occurred_at). All 10 callers
-    # submit identical values — that's how retried webhooks look.
+    # All callers carry the same evidence_id: this is how an exact source
+    # revision replay is represented after the evidence-lineage migration.
     fixed_occurred = _now()
+    evidence_id = await _insert_evidence(fresh_db, tenant_id, "race-revision")
 
     async def _ins(i: int):
         return await repo.insert(_mk_obs(
@@ -493,9 +728,12 @@ async def test_ten_concurrent_inserts_dedup_to_one_row(
             external_id="race",
             content_text=f"insert #{i}",
             occurred_at=fixed_occurred,
+            evidence_id=evidence_id,
         ))
 
-    results = await asyncio.gather(*[_ins(i) for i in range(10)], return_exceptions=True)
+    results = await asyncio.gather(
+        *[_ins(i) for i in range(10)], return_exceptions=True
+    )
     # None should raise: every caller either inserts or fetches the
     # existing row; no ObservationError.
     for r in results:
@@ -509,10 +747,12 @@ async def test_ten_concurrent_inserts_dedup_to_one_row(
         total = await c.fetchval(
             "SELECT count(*) FROM observations "
             "WHERE tenant_id = $1 AND source_channel = $2 AND external_id = $3",
-            tenant_id, "slack:message", "race",
+            tenant_id,
+            "slack:message",
+            "race",
         )
     assert total <= 1, (
-        f"Dedup violated: {total} rows exist for same (channel, external_id)"
+        f"Dedup violated: {total} rows exist for the same evidence revision"
     )
 
 
@@ -520,14 +760,20 @@ async def test_ten_concurrent_inserts_dedup_to_one_row(
 # 10. Large content (100KB) embeds and stores
 # =====================================================================
 
+
 async def test_100kb_content_stores(
-    repo: ObservationRepository, tenant_id: UUID,
+    repo: ObservationRepository,
+    tenant_id: UUID,
 ):
     big = "alice merged a pull request. " * 4000  # ~116KB
     assert len(big) > 100_000
-    row = await repo.insert(_mk_obs(
-        tenant_id, external_id="big", content_text=big,
-    ))
+    row = await repo.insert(
+        _mk_obs(
+            tenant_id,
+            external_id="big",
+            content_text=big,
+        )
+    )
     assert len(row.content_text) == len(big)
     # Embedding completed (or fell back to pending) — either is fine
     # for stress; what matters is the row persisted.
@@ -540,18 +786,23 @@ async def test_100kb_content_stores(
 # 11. state_change kind: emit + fetch by cause chain
 # =====================================================================
 
+
 async def test_emit_state_change_creates_observation_and_chains(
-    tx_conn: asyncpg.Connection, repo: ObservationRepository, tenant_id: UUID,
+    tx_conn: asyncpg.Connection,
+    repo: ObservationRepository,
+    tenant_id: UUID,
     alice_actor_id: UUID,
 ):
     # First, a causing observation exists (the external signal).
-    root = await repo.insert(_mk_obs(
-        tenant_id,
-        source_channel="slack:message",
-        external_id="root",
-        content_text="Alice said something",
-        actor_id=alice_actor_id,
-    ))
+    root = await repo.insert(
+        _mk_obs(
+            tenant_id,
+            source_channel="slack:message",
+            external_id="root",
+            content_text="Alice said something",
+            actor_id=alice_actor_id,
+        )
+    )
 
     # Then a state_change emitted on the same transaction connection;
     # emit_state_change is a savepoint-free helper that expects the
@@ -584,6 +835,7 @@ async def test_emit_state_change_creates_observation_and_chains(
 # 12. Tenant isolation
 # =====================================================================
 
+
 async def test_tenant_isolation_get_by_id(
     repo: ObservationRepository,
 ):
@@ -596,18 +848,25 @@ async def test_tenant_isolation_get_by_id(
 
 
 async def test_tenant_isolation_list_queries(
-    repo: ObservationRepository, embedder,
+    repo: ObservationRepository,
+    embedder,
 ):
     a, b = uuid7(), uuid7()
     for t, prefix in [(a, "a"), (b, "b")]:
         for i in range(3):
-            await repo.insert(_mk_obs(
-                t, external_id=f"{prefix}{i}",
-                content_text=f"tenant {prefix} msg {i}",
-            ))
+            await repo.insert(
+                _mk_obs(
+                    t,
+                    external_id=f"{prefix}{i}",
+                    content_text=f"tenant {prefix} msg {i}",
+                )
+            )
     now = _now()
     hits = await repo.by_channel_time_range(
-        "slack:message", now - timedelta(hours=1), now + timedelta(hours=1), a,
+        "slack:message",
+        now - timedelta(hours=1),
+        now + timedelta(hours=1),
+        a,
     )
     assert len(hits) == 3
     for h in hits:
@@ -623,8 +882,11 @@ async def test_tenant_isolation_list_queries(
 # 13. Partition pruning via EXPLAIN
 # =====================================================================
 
+
 async def test_partition_pruning_explain_occurred_at_filter(
-    tx_conn: asyncpg.Connection, repo: ObservationRepository, tenant_id: UUID,
+    tx_conn: asyncpg.Connection,
+    repo: ObservationRepository,
+    tenant_id: UUID,
 ):
     """
     A query filtered by occurred_at in the current month must NOT
@@ -639,7 +901,9 @@ async def test_partition_pruning_explain_occurred_at_filter(
         "EXPLAIN (FORMAT TEXT) "
         "SELECT id FROM observations "
         "WHERE tenant_id = $1 AND occurred_at >= $2 AND occurred_at < $3",
-        tenant_id, start, end,
+        tenant_id,
+        start,
+        end,
     )
     plan_text = "\n".join(r["QUERY PLAN"] for r in plan)
     current_partition = partitions.partition_name(
@@ -656,7 +920,8 @@ async def test_partition_pruning_explain_occurred_at_filter(
     else:
         prior_month = prior_month.replace(month=prior_month.month - 1)
     prior_name = partitions.partition_name(
-        partitions.OBSERVATIONS_PARENT, prior_month,
+        partitions.OBSERVATIONS_PARENT,
+        prior_month,
     )
     # Prior partition may not exist at all; if it does, it must not
     # be scanned.
@@ -669,8 +934,11 @@ async def test_partition_pruning_explain_occurred_at_filter(
 # 14. NOTIFY fires post-commit — not mid-transaction
 # =====================================================================
 
+
 async def test_notify_fires_after_commit(
-    fresh_db: asyncpg.Pool, tenant_id: UUID, embedder,
+    fresh_db: asyncpg.Pool,
+    tenant_id: UUID,
+    embedder,
 ):
     """
     Open a dedicated LISTEN connection; insert an observation inside
@@ -688,6 +956,7 @@ async def test_notify_fires_after_commit(
 
     listener = await asyncpg.connect(os.environ["DATABASE_URL"])
     try:
+
         def _on_notify(_conn, _pid, channel, payload):
             if channel == OBSERVATIONS_CHANNEL:
                 received.append(payload)
@@ -702,23 +971,19 @@ async def test_notify_fires_after_commit(
             # Only assert nothing-of-ours arrived — other parallel
             # Wave-1 agents may emit observations_new on the same
             # channel, which is fine.
-            our_before = [
-                p for p in received
-                if json.loads(p).get("id") == str(row.id)
-            ]
-            assert our_before == [], (
-                "NOTIFY for our row fired before emit_pending_notifications"
-            )
+            our_before = [p for p in received if json.loads(p).get("id") == str(row.id)]
+            assert (
+                our_before == []
+            ), "NOTIFY for our row fired before emit_pending_notifications"
 
         # Now flush.
         await emit_pending_notifications(fresh_db, scope.events)
+
         # Wait briefly for the notification to propagate. Use a loop
         # because seen_event may trigger on a cross-agent payload
         # before ours lands.
         async def _wait_for_ours():
-            while not any(
-                json.loads(p).get("id") == str(row.id) for p in received
-            ):
+            while not any(json.loads(p).get("id") == str(row.id) for p in received):
                 await asyncio.sleep(0.05)
 
         try:
@@ -727,8 +992,7 @@ async def test_notify_fires_after_commit(
             pytest.fail("NOTIFY for our row was never delivered")
 
         our_payloads = [
-            json.loads(p) for p in received
-            if json.loads(p).get("id") == str(row.id)
+            json.loads(p) for p in received if json.loads(p).get("id") == str(row.id)
         ]
         assert len(our_payloads) == 1
         payload = our_payloads[0]
@@ -744,7 +1008,8 @@ async def test_notify_fires_after_commit(
 
 
 async def test_notify_not_fired_when_scope_exits_on_exception(
-    repo: ObservationRepository, tenant_id: UUID,
+    repo: ObservationRepository,
+    tenant_id: UUID,
 ):
     """
     If the caller's block raises inside the notify_scope, pending
@@ -765,34 +1030,49 @@ async def test_notify_not_fired_when_scope_exits_on_exception(
 # 15. by_actor and by_channel time range
 # =====================================================================
 
+
 async def test_by_actor_time_range_and_channel_time_range(
-    repo: ObservationRepository, tenant_id: UUID, alice_actor_id: UUID,
+    repo: ObservationRepository,
+    tenant_id: UUID,
+    alice_actor_id: UUID,
 ):
     now = _now()
     for i in range(4):
-        await repo.insert(_mk_obs(
-            tenant_id, external_id=f"ta{i}",
-            actor_id=alice_actor_id,
-            occurred_at=now - timedelta(minutes=i),
-            source_channel="slack:message",
-        ))
+        await repo.insert(
+            _mk_obs(
+                tenant_id,
+                external_id=f"ta{i}",
+                actor_id=alice_actor_id,
+                occurred_at=now - timedelta(minutes=i),
+                source_channel="slack:message",
+            )
+        )
     # Insert an observation from another channel — should not appear
     # in by_channel query for slack.
-    await repo.insert(_mk_obs(
-        tenant_id, external_id="gh1",
-        source_channel="github:webhook",
-        occurred_at=now,
-    ))
+    await repo.insert(
+        _mk_obs(
+            tenant_id,
+            external_id="gh1",
+            source_channel="github:webhook",
+            occurred_at=now,
+        )
+    )
 
     actor_hits = await repo.by_actor_time_range(
-        alice_actor_id, now - timedelta(hours=1), now + timedelta(minutes=1), tenant_id,
+        alice_actor_id,
+        now - timedelta(hours=1),
+        now + timedelta(minutes=1),
+        tenant_id,
     )
     assert len(actor_hits) == 4
     # DESC order
     assert actor_hits[0].occurred_at >= actor_hits[-1].occurred_at
 
     slack_hits = await repo.by_channel_time_range(
-        "slack:message", now - timedelta(hours=1), now + timedelta(minutes=1), tenant_id,
+        "slack:message",
+        now - timedelta(hours=1),
+        now + timedelta(minutes=1),
+        tenant_id,
     )
     assert len(slack_hits) == 4
     for h in slack_hits:
@@ -800,17 +1080,28 @@ async def test_by_actor_time_range_and_channel_time_range(
 
 
 async def test_by_kind_filter(
-    repo: ObservationRepository, tenant_id: UUID,
+    repo: ObservationRepository,
+    tenant_id: UUID,
 ):
     await repo.insert(_mk_obs(tenant_id, external_id="s1", kind="signal"))
-    await repo.insert(_mk_obs(
-        tenant_id, external_id=None, kind="state_change",
-        source_channel="internal:state_change", trust_tier="authoritative",
-    ))
-    await repo.insert(_mk_obs(
-        tenant_id, external_id=None, kind="anomaly_flagged",
-        source_channel="internal:anomaly", trust_tier="authoritative",
-    ))
+    await repo.insert(
+        _mk_obs(
+            tenant_id,
+            external_id=None,
+            kind="state_change",
+            source_channel="internal:state_change",
+            trust_tier="authoritative",
+        )
+    )
+    await repo.insert(
+        _mk_obs(
+            tenant_id,
+            external_id=None,
+            kind="anomaly_flagged",
+            source_channel="internal:anomaly",
+            trust_tier="authoritative",
+        )
+    )
 
     signals = await repo.by_kind("signal", tenant_id)
     assert len(signals) == 1
@@ -835,14 +1126,27 @@ _text_strat = st.text(
     max_size=200,
 )
 
-_obs_kind_strat = st.sampled_from([
-    "signal", "state_change", "anomaly_flagged",
-    "contestation", "prediction_resolution", "transaction",
-])
-_trust_strat = st.sampled_from([
-    "authoritative", "attested_agent", "authoritative_external",
-    "reputable", "inferential", "inferential_external", "unvetted",
-])
+_obs_kind_strat = st.sampled_from(
+    [
+        "signal",
+        "state_change",
+        "anomaly_flagged",
+        "contestation",
+        "prediction_resolution",
+        "transaction",
+    ]
+)
+_trust_strat = st.sampled_from(
+    [
+        "authoritative",
+        "attested_agent",
+        "authoritative_external",
+        "reputable",
+        "inferential",
+        "inferential_external",
+        "unvetted",
+    ]
+)
 
 
 class _NoopEmbedder:
@@ -867,10 +1171,15 @@ class _NoopEmbedder:
     content_text=_text_strat,
     kind=_obs_kind_strat,
     tier=_trust_strat,
-    channel=st.sampled_from([
-        "slack:message", "github:webhook", "ui:dashboard",
-        "internal:state_change", "news:rss",
-    ]),
+    channel=st.sampled_from(
+        [
+            "slack:message",
+            "github:webhook",
+            "ui:dashboard",
+            "internal:state_change",
+            "news:rss",
+        ]
+    ),
     has_ext=st.booleans(),
     ext_tag=st.text(
         alphabet="abcdefghijklmnopqrstuvwxyz0123456789-_",
@@ -878,18 +1187,24 @@ class _NoopEmbedder:
         max_size=16,
     ),
     actor_ments=st.lists(
-        st.fixed_dictionaries({
-            "type": st.sampled_from(["actor", "customer", "project"]),
-            "id": st.text(alphabet="abcdef0123456789-", min_size=6, max_size=36),
-        }),
+        st.fixed_dictionaries(
+            {
+                "type": st.sampled_from(["actor", "customer", "project"]),
+                "id": st.text(alphabet="abcdef0123456789-", min_size=6, max_size=36),
+            }
+        ),
         min_size=0,
         max_size=4,
     ),
 )
 @settings(max_examples=10, deadline=None)
 async def test_property_observation_roundtrip(
-    content_text: str, kind: str, tier: str, channel: str,
-    has_ext: bool, ext_tag: str,
+    content_text: str,
+    kind: str,
+    tier: str,
+    channel: str,
+    has_ext: bool,
+    ext_tag: str,
     actor_ments: list[dict[str, Any]],
 ):
     """
@@ -976,44 +1291,63 @@ async def test_property_observation_roundtrip(
 # 17. Invalid search parameters
 # =====================================================================
 
+
 async def test_search_rejects_wrong_dim_vector(
-    repo: ObservationRepository, tenant_id: UUID,
+    repo: ObservationRepository,
+    tenant_id: UUID,
 ):
     with pytest.raises(ObservationError):
         await repo.search_by_embedding([0.0] * 128, tenant_id, k=5)
 
 
 async def test_search_rejects_nonpositive_k(
-    repo: ObservationRepository, tenant_id: UUID,
+    repo: ObservationRepository,
+    tenant_id: UUID,
 ):
     with pytest.raises(ObservationError):
         await repo.search_by_embedding([0.0] * EMBEDDING_DIM, tenant_id, k=0)
 
 
 async def test_search_rejects_unknown_filter_key(
-    repo: ObservationRepository, tenant_id: UUID,
+    repo: ObservationRepository,
+    tenant_id: UUID,
 ):
     with pytest.raises(ObservationError):
         await repo.search_by_embedding(
-            [0.0] * EMBEDDING_DIM, tenant_id, k=5,
+            [0.0] * EMBEDDING_DIM,
+            tenant_id,
+            k=5,
             filters={"unknown_field": "x"},
         )
 
 
 async def test_search_filter_by_kind_and_channel(
-    repo: ObservationRepository, tenant_id: UUID, embedder,
+    repo: ObservationRepository,
+    tenant_id: UUID,
+    embedder,
 ):
-    await repo.insert(_mk_obs(
-        tenant_id, external_id="sf1", source_channel="slack:message",
-        content_text="alpha",
-    ))
-    await repo.insert(_mk_obs(
-        tenant_id, external_id="sf2", source_channel="github:webhook",
-        content_text="alpha",
-    ))
+    await repo.insert(
+        _mk_obs(
+            tenant_id,
+            external_id="sf1",
+            source_channel="slack:message",
+            content_text="alpha",
+        )
+    )
+    await repo.insert(
+        _mk_obs(
+            tenant_id,
+            external_id="sf2",
+            source_channel="github:webhook",
+            content_text="alpha",
+        )
+    )
     vec = await embedder.embed("alpha")
     hits = await repo.search_by_embedding(
-        vec, tenant_id, k=5, filters={"source_channel": "slack:message"},
+        vec,
+        tenant_id,
+        k=5,
+        filters={"source_channel": "slack:message"},
     )
     for h in hits:
         assert h.source_channel == "slack:message"

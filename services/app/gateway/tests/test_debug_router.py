@@ -7,19 +7,161 @@ from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 from services.app.gateway.debug_router import build_debug_router
+from services.platform.access_control.authority import AuthorityDecision, Principal
 
 
 class _Acquire:
+    def __init__(self, conn=None):
+        self.conn = conn or object()
+
     async def __aenter__(self):
-        return object()
+        return self.conn
 
     async def __aexit__(self, exc_type, exc, tb):
         return None
 
 
 class _Pool:
+    def __init__(self, conn=None):
+        self.conn = conn
+
     def acquire(self):
-        return _Acquire()
+        return _Acquire(self.conn)
+
+
+class _DebugConn:
+    def __init__(self, rows):
+        self.rows = rows
+
+    async def fetch(self, *args, **kwargs):
+        return self.rows
+
+
+def _app_with_auth(tenant_id, actor_id, pool):
+    app = FastAPI()
+    app.state.pool = pool
+
+    @app.middleware("http")
+    async def _auth(request, call_next):
+        request.state.auth = type(
+            "Auth",
+            (),
+            {"tenant_id": tenant_id, "actor_id": actor_id},
+        )()
+        return await call_next(request)
+
+    app.include_router(build_debug_router())
+    return app
+
+
+def test_debug_models_requires_actor_auth():
+    tenant_id = uuid4()
+    app = FastAPI()
+    app.state.pool = _Pool(_DebugConn([]))
+    app.include_router(build_debug_router())
+    client = TestClient(app)
+
+    response = client.get(
+        "/debug/models",
+        headers={"X-Tenant-Id": str(tenant_id)},
+    )
+
+    assert response.status_code == 401
+
+
+def test_debug_models_filters_rows_through_authority(monkeypatch):
+    tenant_id = uuid4()
+    actor_id = uuid4()
+    visible = uuid4()
+    secret = uuid4()
+
+    async def fake_principal_for_actor(actor_id, *, conn, tenant_id):
+        return Principal(tenant_id=tenant_id, actor_id=actor_id)
+
+    async def fake_authorize_read(principal, purpose, object_ref, *, conn):
+        if object_ref.object_id == secret:
+            return AuthorityDecision(False, "model_out_of_scope")
+        return AuthorityDecision(True, "authorized")
+
+    monkeypatch.setattr(
+        "services.app.gateway.debug_router.principal_for_actor",
+        fake_principal_for_actor,
+    )
+    monkeypatch.setattr(
+        "services.app.gateway.debug_router.authorize_read",
+        fake_authorize_read,
+    )
+
+    app = _app_with_auth(
+        tenant_id,
+        actor_id,
+        _Pool(
+            _DebugConn([
+                {
+                    "id": secret,
+                    "proposition_kind": "belief",
+                    "status": "active",
+                    "confidence": 0.9,
+                    "confidence_at_assertion": 0.9,
+                    "confirmed_count": 0,
+                    "contested_count": 0,
+                    "proposition": {},
+                    "born_from_event_id": uuid4(),
+                    "last_confirmed_at": None,
+                    "created_at": None,
+                },
+                {
+                    "id": visible,
+                    "proposition_kind": "belief",
+                    "status": "active",
+                    "confidence": 0.8,
+                    "confidence_at_assertion": 0.8,
+                    "confirmed_count": 0,
+                    "contested_count": 0,
+                    "proposition": {},
+                    "born_from_event_id": uuid4(),
+                    "last_confirmed_at": None,
+                    "created_at": None,
+                },
+            ])
+        ),
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        "/debug/models",
+        headers={"X-Tenant-Id": str(tenant_id)},
+    )
+
+    assert response.status_code == 200
+    assert [row["id"] for row in response.json()["models"]] == [str(visible)]
+
+
+def test_debug_cache_requires_admin_or_leadership(monkeypatch):
+    tenant_id = uuid4()
+    actor_id = uuid4()
+
+    async def fake_principal_for_actor(actor_id, *, conn, tenant_id):
+        return Principal(tenant_id=tenant_id, actor_id=actor_id)
+
+    monkeypatch.setattr(
+        "services.app.gateway.debug_router.principal_for_actor",
+        fake_principal_for_actor,
+    )
+
+    app = _app_with_auth(
+        tenant_id,
+        actor_id,
+        _Pool(_DebugConn([])),
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        "/debug/cache",
+        headers={"X-Tenant-Id": str(tenant_id)},
+    )
+
+    assert response.status_code == 403
 
 
 def test_think_quality_endpoint_delegates_to_report_builder(monkeypatch):

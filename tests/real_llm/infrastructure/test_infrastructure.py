@@ -24,6 +24,7 @@ import pytest
 from tests.real_llm.infrastructure import flake_tracker
 from tests.real_llm.infrastructure.real_llm_runner import real_llm_test
 from tests.real_llm.infrastructure.response_cache import LLMResponseCache
+from tests.real_llm.infrastructure.think_drain import wait_for_think_to_drain
 
 
 # ---------------------------------------------------------------------
@@ -40,6 +41,80 @@ def isolated_flake_tracker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     # Reset the pending-attempts buffer so cross-test state never leaks.
     monkeypatch.setattr(flake_tracker, "_pending_attempts", {})
     return flake_file
+
+
+class _FakeAcquire:
+    def __init__(self, conn: "_FakeConn") -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> "_FakeConn":
+        return self._conn
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        return None
+
+
+class _FakePool:
+    def __init__(
+        self,
+        *,
+        think_counts: dict[tuple[str, str], int] | None = None,
+        action_counts: dict[str, int] | None = None,
+    ) -> None:
+        self.conn = _FakeConn(
+            think_counts=think_counts or {},
+            action_counts=action_counts or {},
+        )
+
+    def acquire(self) -> _FakeAcquire:
+        return _FakeAcquire(self.conn)
+
+
+class _FakeConn:
+    def __init__(
+        self,
+        *,
+        think_counts: dict[tuple[str, str], int],
+        action_counts: dict[str, int],
+    ) -> None:
+        self.think_counts = dict(think_counts)
+        self.action_counts = dict(action_counts)
+
+    async def fetchval(self, sql: str, *args) -> int:
+        if "FROM think_trigger_queue" in sql:
+            include_t4 = "trigger_kind != 'T4'" not in sql
+            return sum(
+                count
+                for (kind, _subkind), count in self.think_counts.items()
+                if include_t4 or kind != "T4"
+            )
+        if "FROM pending_post_commit_actions" in sql:
+            if "action_kind <> ALL" in sql:
+                background = set(args[1])
+                return sum(
+                    count
+                    for action_kind, count in self.action_counts.items()
+                    if action_kind not in background
+                )
+            return sum(self.action_counts.values())
+        raise AssertionError(f"unexpected fetchval SQL: {sql}")
+
+    async def fetch(self, sql: str, *args) -> list[dict[str, Any]]:
+        if "FROM think_trigger_queue" in sql:
+            return [
+                {
+                    "trigger_kind": kind,
+                    "trigger_subkind": subkind,
+                    "count": count,
+                }
+                for (kind, subkind), count in self.think_counts.items()
+            ]
+        if "FROM pending_post_commit_actions" in sql:
+            return [
+                {"action_kind": action_kind, "count": count}
+                for action_kind, count in self.action_counts.items()
+            ]
+        raise AssertionError(f"unexpected fetch SQL: {sql}")
 
 
 # =====================================================================
@@ -159,6 +234,49 @@ def test_decorator_reraises_non_assertion_errors(isolated_flake_tracker: Path):
     assert "buggy_test" in data
 
 
+def test_decorator_records_timeout_errors_as_attempt_failures(
+    isolated_flake_tracker: Path,
+):
+    """Operational queue/LLM timeouts should be visible in flake records."""
+
+    @real_llm_test(attempts=2, pass_threshold=1)
+    def always_times_out():
+        raise TimeoutError("queue did not drain")
+
+    with pytest.raises(pytest.fail.Exception) as excinfo:
+        always_times_out()
+
+    assert "queue did not drain" in str(excinfo.value)
+    data = json.loads(isolated_flake_tracker.read_text())
+    run = data["always_times_out"]["runs"][0]
+    assert run["outcome"] == "fail"
+    assert [a["status"] for a in run["attempts"]] == ["fail", "fail"]
+    assert all("queue did not drain" in a["error"] for a in run["attempts"])
+
+
+def test_decorator_env_can_clamp_attempts_for_stateful_evals(
+    isolated_flake_tracker: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Focused DB-backed evals can opt into one non-compounding attempt."""
+    monkeypatch.setenv("REAL_LLM_ATTEMPTS", "1")
+    calls = {"n": 0}
+
+    @real_llm_test(attempts=3, pass_threshold=2)
+    def stateful_test():
+        calls["n"] += 1
+
+    stateful_test()
+
+    assert calls["n"] == 1
+    data = json.loads(isolated_flake_tracker.read_text())
+    run = data["stateful_test"]["runs"][0]
+    assert run["passes"] == 1
+    assert run["total"] == 1
+    assert run["threshold"] == 1
+    assert run["outcome"] == "pass"
+
+
 def test_decorator_async_path_passes(isolated_flake_tracker: Path):
     """Async wrapper executes the same retry semantics."""
     calls = {"n": 0}
@@ -179,7 +297,64 @@ def test_decorator_async_path_passes(isolated_flake_tracker: Path):
 
 
 # =====================================================================
-# 2. response_cache
+# 2. think_drain — foreground/background drain tiers
+# =====================================================================
+
+
+async def test_think_drain_foreground_ignores_background_t4_and_actions():
+    pool = _FakePool(
+        think_counts={("T4", "latent_relationship_candidate"): 3},
+        action_counts={"discover_model_edges": 2, "search_open_questions": 1},
+    )
+
+    await wait_for_think_to_drain(
+        uuid4(),
+        pool,  # type: ignore[arg-type]
+        timeout_seconds=0,
+        include_background=False,
+    )
+
+
+async def test_think_drain_foreground_blocks_on_projection_actions():
+    pool = _FakePool(
+        think_counts={("T4", "latent_relationship_candidate"): 3},
+        action_counts={"materialize_projections": 1},
+    )
+
+    with pytest.raises(TimeoutError) as excinfo:
+        await wait_for_think_to_drain(
+            uuid4(),
+            pool,  # type: ignore[arg-type]
+            timeout_seconds=0,
+            include_background=False,
+        )
+
+    message = str(excinfo.value)
+    assert "post_commit_pending=1" in message
+    assert "materialize_projections" in message
+
+
+async def test_think_drain_background_mode_includes_t4():
+    pool = _FakePool(
+        think_counts={("T4", "latent_relationship_candidate"): 2},
+        action_counts={},
+    )
+
+    with pytest.raises(TimeoutError) as excinfo:
+        await wait_for_think_to_drain(
+            uuid4(),
+            pool,  # type: ignore[arg-type]
+            timeout_seconds=0,
+            include_background=True,
+        )
+
+    message = str(excinfo.value)
+    assert "think_pending=2" in message
+    assert "T4:latent_relationship_candidate" in message
+
+
+# =====================================================================
+# 3. response_cache
 # =====================================================================
 
 def _drop_disable_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -351,7 +526,7 @@ def test_current_epoch_changes_when_prompt_file_changes(
 
 
 # =====================================================================
-# 3. flake_tracker
+# 4. flake_tracker
 # =====================================================================
 
 def test_record_attempt_and_final_persist_to_json(isolated_flake_tracker: Path):
@@ -413,7 +588,7 @@ def test_summary_empty_when_no_history(
 
 
 # =====================================================================
-# 4. assertion_helpers (synchronous helpers)
+# 5. assertion_helpers (synchronous helpers)
 # =====================================================================
 
 # ModelRow is heavy (many required fields). Build a tiny factory.
@@ -573,7 +748,7 @@ def test_assert_proposition_kind_distribution_fails_outside_band():
 
 
 # =====================================================================
-# 5. provider cache integration
+# 6. provider cache integration
 # =====================================================================
 
 from lib.llm.provider import (  # noqa: E402

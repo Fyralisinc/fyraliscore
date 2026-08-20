@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from scripts.run_incremental_feedback_loop_stress import (
     SeededCompany,
+    _summarize_seed_timing_events,
     _summarize,
     _variant_text,
 )
@@ -14,6 +15,47 @@ from services.platform.execution.inquiry import (
     _reader_attribution_nonselected_limit,
     _reader_attribution_nonselected_min_score,
 )
+
+
+def test_seed_timing_summary_orders_and_counts_bulk_phases() -> None:
+    summary = _summarize_seed_timing_events([
+        {
+            "phase": "models_insert",
+            "elapsed_ms": 40.0,
+            "model_count": 10,
+            "row_count": 10,
+            "status": "ok",
+        },
+        {
+            "phase": "authority_provenance_record",
+            "elapsed_ms": 55.0,
+            "model_count": 10,
+            "provenance_edges": 20,
+            "access_label_calls": 10,
+            "row_count": 20,
+            "status": "ok",
+        },
+        {
+            "phase": "models_insert",
+            "elapsed_ms": 20.0,
+            "model_count": 5,
+            "row_count": 5,
+            "status": "error",
+        },
+    ])
+
+    assert summary["total_recorded_ms"] == 115.0
+    phases = list(summary["summary_by_phase"])
+    assert phases[0] == "models_insert"
+    assert summary["summary_by_phase"]["models_insert"]["calls"] == 2
+    assert summary["summary_by_phase"]["models_insert"]["model_count"] == 15
+    assert summary["summary_by_phase"]["models_insert"]["error_count"] == 1
+    assert (
+        summary["summary_by_phase"]["authority_provenance_record"][
+            "access_label_calls"
+        ]
+        == 10
+    )
 
 
 def test_summary_flags_architecture_slo_failures_despite_perfect_hits() -> None:

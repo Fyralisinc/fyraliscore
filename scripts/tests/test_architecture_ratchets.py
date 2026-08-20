@@ -256,7 +256,8 @@ def test_plaintext_secret_column_check_allows_ref_hash_and_metadata(
 ALTER TABLE provider_installations
   ADD COLUMN access_token_ref TEXT,
   ADD COLUMN webhook_secret_hash TEXT,
-  ADD COLUMN token_type TEXT;
+  ADD COLUMN token_type TEXT,
+  ADD COLUMN access_token_kind TEXT;
 CREATE TABLE provider_token_metadata (
   id UUID PRIMARY KEY,
   token_status TEXT
@@ -694,6 +695,21 @@ export function openStream() {
   return new WebSocket("/stream")
 }
 """.lstrip(),
+        encoding="utf-8",
+    )
+
+    violations = find_browser_token_storage_violations(repo_root=tmp_path)
+
+    assert violations == []
+
+
+def test_browser_token_storage_check_ignores_negative_assertions_in_tests(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "ui" / "__tests__"
+    source.mkdir(parents=True)
+    (source / "auth.test.ts").write_text(
+        'expect(localStorage.getItem("session-token")).toBeNull()\n',
         encoding="utf-8",
     )
 

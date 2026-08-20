@@ -1,0 +1,85 @@
+from __future__ import annotations
+
+import base64
+from uuid import uuid4
+
+import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+from services.ingest.connector_platform.deployment import (
+    ArtifactAdmissionController,
+    ArtifactAdmissionSettings,
+    _trusted_signers,
+)
+from services.ingest.connector_platform.catalog import build_runtime_candidates
+from services.ingest.connector_runtime.artifacts import ArtifactAttestation
+from services.ingest.connector_runtime.policy import (
+    AtomicRoutingPolicy,
+    ExecutionMode,
+    RouteRequest,
+    RoutingPolicy,
+)
+from services.ingest.source_contract.errors import SourceUnavailableError
+
+
+class MemoryArtifacts:
+    def __init__(self) -> None:
+        self.items: dict[tuple[str, str], ArtifactAttestation] = {}
+        self.quarantined: list[tuple[str, str, str]] = []
+
+    async def load_all(self) -> dict[tuple[str, str], ArtifactAttestation]:
+        return self.items
+
+    async def quarantine(self, connector_id: str, version: str, reason: str) -> None:
+        self.quarantined.append((connector_id, version, reason))
+
+
+@pytest.mark.asyncio
+async def test_missing_signed_artifacts_quarantine_and_override_routing() -> None:
+    candidates = build_runtime_candidates()
+    routing = AtomicRoutingPolicy(
+        RoutingPolicy()
+    )
+    controller = ArtifactAdmissionController(
+        MemoryArtifacts(),
+        routing,
+        candidates,
+        ArtifactAdmissionSettings({}, frozenset(), True),
+    )
+
+    admission = await controller.refresh()
+
+    assert set(admission.quarantined) == {
+        candidate.manifest.connector_id for candidate in candidates
+    }
+    with pytest.raises(SourceUnavailableError, match="quarantined"):
+        routing.resolve(
+            RouteRequest(
+                tenant_id=uuid4(),
+                connector_id="fyralis/slack",
+                source="slack",
+                capability="ingestion.historical_pull",
+            )
+        )
+
+
+def test_trusted_signers_parser_accepts_raw_ed25519_public_keys() -> None:
+    public_key = (
+        Ed25519PrivateKey.generate()
+        .public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+    )
+    encoded = base64.b64encode(public_key).decode()
+
+    assert set(_trusted_signers('{"release": "' + encoded + '"}')) == {"release"}
+
+
+def test_production_always_requires_signed_artifacts(monkeypatch) -> None:
+    monkeypatch.setenv("COMPANY_OS_ENV", "prod")
+    monkeypatch.setenv("SOURCE_CONNECTOR_REQUIRE_SIGNED_ARTIFACTS", "0")
+
+    assert ArtifactAdmissionSettings.from_env().require_signed

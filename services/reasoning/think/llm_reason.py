@@ -28,6 +28,7 @@ from lib.llm.provider import (
     classify_error,
     retry_policy_for,
 )
+from lib.observability.metrics import LLM_PROVIDER_ERRORS
 from lib.shared.errors import CompanyOSError
 
 from services.reasoning.retrieval.assembler import ContextBundle
@@ -54,6 +55,38 @@ if TYPE_CHECKING:
 
 _log = structlog.get_logger(__name__)
 _CLAIMS_ONLY_MAX_TOKENS_DEFAULT = 1024
+_NOISE_ONLY_CHANNEL_MARKERS = (
+    "noise",
+    "chatter",
+)
+_NOISE_ONLY_TEXT_MARKERS = (
+    "general operational chatter",
+    "lunch logistics",
+    "duplicated dashboard links",
+    "duplicate dashboard links",
+    "non-actionable reminder",
+    "non actionable reminder",
+    "should not dominate memory",
+)
+_ACTIONABLE_TEXT_MARKERS = (
+    "approval",
+    "blocked",
+    "blocker",
+    "capacity",
+    "churn",
+    "customer",
+    "deadline",
+    "decision",
+    "exception",
+    "implementation",
+    "incident",
+    "launch",
+    "procurement",
+    "renewal",
+    "risk",
+    "security",
+    "slip",
+)
 
 
 class ReasoningFailure(CompanyOSError):
@@ -81,6 +114,16 @@ async def llm_reason(
     already retried internally; if it escapes, we bubble as terminal.
     """
     feedback = _validation_feedback(trigger)
+    noise_noop = build_noise_only_raw_diff(trigger)
+    if noise_noop is not None:
+        return (
+            apply_relation_lifecycle_kernel(
+                noise_noop,
+                trigger=trigger,
+                bundle=bundle,
+            ),
+            0,
+        )
     if compiled_relationship_candidate_enabled():
         compiled = build_compiled_relationship_candidate_request(trigger, bundle)
         if compiled is not None:
@@ -203,6 +246,15 @@ async def _structured_with_reasoning_retries(
 ) -> tuple[Any, int]:
     last_err: Exception | None = None
     started = time.monotonic()
+    # BYOC §12 G3: provider for the per-provider error-class counter
+    # (fyralis_llm_provider_errors_total). `config.provider` is the bounded
+    # provider enum (codex/anthropic/openai/deepseek); never a tenant id.
+    provider_name = getattr(getattr(provider, "config", None), "provider", "unknown")
+
+    def _record_provider_error(exc: BaseException) -> None:
+        LLM_PROVIDER_ERRORS.inc(
+            provider=provider_name, error_class=classify_error(exc).value,
+        )
 
     for attempt in range(max_attempts):
         try:
@@ -217,12 +269,14 @@ async def _structured_with_reasoning_retries(
             return parsed, elapsed_ms
         except LLMParseError as e:
             # Terminal — provider already exhausted its own retries.
+            _record_provider_error(e)
             raise ReasoningFailure(
                 f"LLM output failed to parse after provider retries: {e}",
                 attempt=attempt,
             ) from e
         except LLMError as e:
             last_err = e
+            _record_provider_error(e)
             policy = retry_policy_for(e)
             total_allowed = min(max_attempts, 1 + policy.max_attempts)
             if attempt < total_allowed - 1:
@@ -244,6 +298,7 @@ async def _structured_with_reasoning_retries(
             break
         except Exception as e:
             last_err = e
+            _record_provider_error(e)
             break
 
     raise ReasoningFailure(
@@ -300,6 +355,77 @@ def _effective_max_tokens(
     return min(max_tokens, cap)
 
 
+def build_noise_only_raw_diff(trigger: TriggerContext) -> RawDiff | None:
+    """Return a deterministic no-op diff for T1 triggers that are pure noise."""
+    if trigger.kind != "T1":
+        return None
+    if not _trigger_is_noise_only(trigger):
+        return None
+    from .deterministic import _trigger_ref  # type: ignore
+
+    return RawDiff(
+        trigger_ref=_trigger_ref(trigger),
+        tenant_id=trigger.tenant_id,
+        reasoning_trace=(
+            "discard_as_noise: noise-only T1 trigger; empty diff, "
+            "no model or projection write."
+        ),
+    )
+
+
+def _trigger_is_noise_only(trigger: TriggerContext) -> bool:
+    signature = (
+        trigger.seed_signature if isinstance(trigger.seed_signature, dict) else {}
+    )
+    text = _trigger_noise_probe_text(trigger, signature)
+    if not text:
+        return False
+    lower_text = text.lower()
+    if any(marker in lower_text for marker in _ACTIONABLE_TEXT_MARKERS):
+        return False
+    marker_hits = sum(
+        1 for marker in _NOISE_ONLY_TEXT_MARKERS if marker in lower_text
+    )
+    channels = _trigger_source_channels(signature)
+    if channels and all(_is_noise_channel(channel) for channel in channels):
+        return marker_hits >= 1
+    return marker_hits >= 3
+
+
+def _trigger_source_channels(signature: dict[str, Any]) -> list[str]:
+    channels: list[str] = []
+    raw_channels = signature.get("source_channels")
+    if isinstance(raw_channels, list):
+        channels.extend(str(channel) for channel in raw_channels if channel)
+    raw_channel = signature.get("source_channel")
+    if raw_channel:
+        channels.append(str(raw_channel))
+    return list(dict.fromkeys(channels))
+
+
+def _is_noise_channel(channel: str) -> bool:
+    lower = channel.lower()
+    return any(marker in lower for marker in _NOISE_ONLY_CHANNEL_MARKERS)
+
+
+def _trigger_noise_probe_text(
+    trigger: TriggerContext,
+    signature: dict[str, Any],
+) -> str:
+    parts: list[str] = []
+    if trigger.seed_natural_text:
+        parts.append(trigger.seed_natural_text)
+    fragments = signature.get("batch_signal_fragments")
+    if isinstance(fragments, list):
+        for fragment in fragments:
+            if not isinstance(fragment, dict):
+                continue
+            text = fragment.get("text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text)
+    return "\n".join(parts)
+
+
 def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
@@ -338,11 +464,13 @@ def _coerce_raw_diff(diff: RawDiff | RawDiffClaimsOnly) -> RawDiff:
         trigger_ref=diff.trigger_ref,
         tenant_id=diff.tenant_id,
         claim_ops=list(diff.claim_ops),
+        formation_resolutions=list(diff.formation_resolutions),
         memory_lifecycle_ops=[],
         relation_claim_ops=[],
         relation_frame_ops=[],
         edge_ops=[],
         ontology_gap_ops=[],
+        open_question_ops=[],
         act_ops=[],
         resource_ops=[],
         new_predictions=[],
@@ -350,4 +478,4 @@ def _coerce_raw_diff(diff: RawDiff | RawDiffClaimsOnly) -> RawDiff:
     )
 
 
-__all__ = ["llm_reason", "ReasoningFailure"]
+__all__ = ["llm_reason", "ReasoningFailure", "build_noise_only_raw_diff"]

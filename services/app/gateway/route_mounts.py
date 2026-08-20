@@ -1,11 +1,11 @@
 """Gateway route mounting orchestration."""
+
 from __future__ import annotations
 
 from fastapi import FastAPI
 
 from services.app.gateway.logging_config import get_logger
 from services.app.gateway.settings import GatewaySettings
-
 
 log = get_logger("gateway")
 
@@ -20,19 +20,24 @@ def register_gateway_routes(
     if settings is None:
         settings = GatewaySettings.from_env()
 
+    from services.app.gateway.byoc_agent_router import build_byoc_agent_router
+    from services.app.gateway.byoc_control_panel_router import (
+        build_byoc_control_panel_router,
+    )
+    from services.app.gateway.byoc_control_plane_router import (
+        build_byoc_control_plane_router,
+    )
+    from services.app.gateway.byoc_onboarding_router import (
+        build_byoc_onboarding_router,
+    )
     from services.app.gateway.clarifications_router import build_clarifications_router
     from services.app.gateway.contest_router import build_contest_router
     from services.app.gateway.core_router import build_core_router
     from services.app.gateway.dashboard_router import build_dashboard_router
-    from services.app.gateway.byoc_agent_router import build_byoc_agent_router
-    from services.app.gateway.byoc_control_plane_router import (
-        build_byoc_control_plane_router,
-    )
-    from services.app.gateway.byoc_control_panel_router import (
-        build_byoc_control_panel_router,
-    )
     from services.app.gateway.dead_letter_router import build_dead_letter_admin_router
     from services.app.gateway.extension_router import build_extension_router
+    from services.app.gateway.facebook_pages_router import build_facebook_pages_router
+    from services.app.gateway.instagram_router import build_instagram_router
     from services.app.gateway.map_routes import register_map_routes
     from services.app.gateway.recommendations_router import (
         build_recommendations_router,
@@ -41,7 +46,13 @@ def register_gateway_routes(
     from services.app.gateway.structure_router import build_structure_router
     from services.app.gateway.substrate_router import build_substrate_router
     from services.app.gateway.today_core_router import build_today_core_router
-    from services.app.gateway.whatsapp_router import build_whatsapp_router
+    from services.ingest.integrations.facebook_pages.oauth import (
+        router as facebook_pages_oauth_router,
+    )
+    from services.ingest.integrations.instagram.oauth import (
+        router as instagram_oauth_router,
+    )
+    from services.ingest.integrations.router import build_integrations_router
 
     app.include_router(build_core_router())
     app.include_router(build_clarifications_router())
@@ -51,16 +62,19 @@ def register_gateway_routes(
     app.include_router(build_byoc_agent_router())
     app.include_router(build_byoc_control_plane_router())
     app.include_router(build_byoc_control_panel_router())
+    app.include_router(build_byoc_onboarding_router())
     app.include_router(build_dead_letter_admin_router())
     if settings.debug_endpoints_enabled:
-        from services.app.gateway.document_ingest_router import build_document_ingest_router
+        from services.app.gateway.document_ingest_router import (
+            build_document_ingest_router,
+        )
 
         app.include_router(build_document_ingest_router())
-    app.include_router(
-        build_whatsapp_router(
-            debug_endpoints_enabled=settings.debug_endpoints_enabled,
-        )
-    )
+    app.include_router(build_facebook_pages_router())
+    app.include_router(build_instagram_router())
+    app.include_router(facebook_pages_oauth_router)
+    app.include_router(instagram_oauth_router)
+    app.include_router(build_integrations_router())
     app.include_router(build_sage_internal_router())
     app.include_router(build_recommendations_router())
     app.include_router(build_structure_router())
@@ -116,44 +130,6 @@ def mount_gateway_routes(
     register_model_page_routes(app)
     register_today_routes(app)
 
-    from services.ingest.integrations.router import build_integrations_router
+    from services.ingest.connector_platform.install_router import build_install_router
 
-    app.include_router(build_integrations_router())
-
-    try:
-        from services.ingest.integrations.jira.oauth import router as jira_router
-
-        app.include_router(jira_router)
-        if emit_mount_logs:
-            log.info("jira_router_mounted")
-    except Exception as exc:  # noqa: BLE001 - never block startup
-        if emit_mount_logs:
-            log.error("jira_router_mount_failed", error=str(exc))
-
-    try:
-        from services.ingest.integrations.mercury.oauth import router as mercury_router
-        from services.ingest.integrations.quickbooks.oauth import router as qbo_router
-
-        app.include_router(mercury_router)
-        app.include_router(qbo_router)
-        if emit_mount_logs:
-            log.info("finance_install_routers_mounted")
-    except Exception as exc:  # noqa: BLE001 - never block startup
-        if emit_mount_logs:
-            log.error("finance_install_routers_mount_failed", error=str(exc))
-
-    if settings.finance_panel_enabled:
-        try:
-            from services.app.gateway.finance_router import build_finance_router
-
-            app.include_router(build_finance_router())
-        except Exception as exc:  # noqa: BLE001 - never block startup
-            log.error("finance_router_mount_failed", error=str(exc))
-
-    if settings.slack_dm_panel_enabled:
-        try:
-            from services.app.gateway.slack_router import build_slack_router
-
-            app.include_router(build_slack_router())
-        except Exception as exc:  # noqa: BLE001 - never block startup
-            log.error("slack_router_mount_failed", error=str(exc))
+    app.include_router(build_install_router())

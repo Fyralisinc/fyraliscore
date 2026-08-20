@@ -16,7 +16,8 @@
 #   consume : normalizer, observation_writer, dlq_writer,
 #             summarization_worker, summarization_batch_worker,
 #             embedding_worker
-#   app     : think_worker, post_commit_worker
+#   app     : think_worker, post_commit_worker, anomaly_processor_worker,
+#             entity_resolver_worker
 #   (UI + TLS edge live in the demo overlay repo's docker-compose.demo.yml)
 #
 # Secrets (per-source creds, MASTER_KEK, OAuth/HMAC keys) live in
@@ -38,13 +39,28 @@ x-app-env: &app-env
   # S3_ENDPOINT_URL="" and real IAM creds (here or in .env.production).
   S3_ENDPOINT_URL: http://minio:9000
   S3_RAW_BUCKET: fyralis-raw
+  # Durable source documents (e.g. complete Figma design JSON) are kept
+  # separately from short-retention raw ingestion envelopes.
+  S3_BLOB_BUCKET: fyralis-blobs
   S3_REGION_NAME: us-east-1
   AWS_ACCESS_KEY_ID: fyralis
   AWS_SECRET_ACCESS_KEY: fyralis-secret-change-me
   # Redis backs the embedding-backlog drainer's rate limiter.
   REDIS_URL: redis://redis:6379/0
+  # Shard fetch fans out independent source shards, e.g. Discord channels,
+  # while each shard still preserves its own cursor/page ordering. "auto"
+  # scales with backlog but is bounded to avoid task explosions on large orgs.
+  SHARD_FETCH_BATCH: "auto"
+  SHARD_FETCH_CONCURRENCY: "auto"
+  SHARD_FETCH_AUTO_CONCURRENCY_MAX: "32"
+  # Keep Discord gateway install misses short so a freshly authorized server
+  # starts resolving promptly after OAuth creates provider_installations.
+  DISCORD_GATEWAY_INSTALLATION_CACHE_TTL_SECONDS: "5"
   # Consumers expose /healthz + /metrics on this port (per container).
   INGESTION_HEALTH_PORT: "9300"
+  # Production reasoning authority starts only after a settled episode snapshot.
+  # Set to direct for the explicit rollback path.
+  REASONING_INGRESS_MODE: episode
 
 # Liveness probe for the Kafka consumers: /healthz is 503 if the worker
 # has not made progress recently (hung loop), so a wedged consumer is
@@ -211,7 +227,8 @@ services:
       /bin/sh -c "
       mc alias set local http://minio:9000 fyralis fyralis-secret-change-me &&
       mc mb --ignore-existing local/fyralis-raw &&
-      echo 'bucket fyralis-raw ready'"
+      mc mb --ignore-existing local/fyralis-blobs &&
+      echo 'buckets fyralis-raw and fyralis-blobs ready'"
     restart: "no"
 
   # ---- ingress (gateway: webhooks, Pub/Sub push, OAuth callbacks) --
@@ -253,6 +270,13 @@ services:
   reconciler:
     <<: *worker
     command: python -m services.ingest.ingestion.workflows.reconciler
+    healthcheck: *consumer-healthcheck
+
+  # Reconciles desired/observed connector installation state, health probes,
+  # credential retirement, artifact quarantine, and uninstall cleanup.
+  source_connector_lifecycle:
+    <<: *worker
+    command: python -m services.ingest.connector_platform.lifecycle_worker
     healthcheck: *consumer-healthcheck
 
   # Generic supervisor for EXTENSION-contributed background workers (ADR-0004).
@@ -334,72 +358,43 @@ services:
     command: python -m services.ingest.ingestion.recovery.embedding_backlog
     healthcheck: *consumer-healthcheck
 
-  # Cutover circuit breaker: a SINGLE long-running observer that measures
-  # consumer lag on every per-source raw lane (ingestion.raw.<source> vs.
-  # group normalizer.<source>) and, on sustained breach, flips a tenant's
-  # ingestion.kafka_path_enabled flag to FALSE — pulling that tenant back
-  # to the inline path. Auto-recovery is operator-driven (see the module
-  # docstring + scripts/reenable_kafka_path.py). NOT per-source: the flag is
-  # per-tenant, so one instance trips each tenant on its worst lane.
-  # Exposes /healthz + /metrics on INGESTION_HEALTH_PORT (9300, from app-env);
-  # /healthz goes 503 if the tick loop wedges, so a hung breaker is restarted.
-  circuit_breaker:
-    <<: *worker
-    container_name: company_os_circuit_breaker
-    command: python -m services.ingest.ingestion.feature_flags
-    healthcheck: *consumer-healthcheck
-    # Tuning knobs (defaults shown) — override in .env.production:
-    #   BREAKER_TICK_INTERVAL_SEC=60  BREAKER_THRESHOLD_SEC=60
-    #   BREAKER_WINDOW_TICKS=5        BREAKER_NORMALIZER_GROUP_BASE=normalizer
-    # INGESTION_ALERT_WEBHOOK_URL (if set) receives trip alerts.
-
   # ---- live source workers -----------------------------------------
   discord_gateway_worker:
     <<: *worker
     container_name: company_os_discord_gateway_worker
-    command: python scripts/run_discord_gateway_worker.py
+    command: python scripts/run_connector_gateway_worker.py --source discord
     healthcheck: *consumer-healthcheck
 
   telegram_gateway_worker:
     <<: *worker
     container_name: company_os_telegram_gateway_worker
-    command: python scripts/run_telegram_gateway_worker.py
+    command: python scripts/run_connector_gateway_worker.py --source telegram
     healthcheck: *consumer-healthcheck
 
   signal_gateway_worker:
     <<: *worker
     container_name: company_os_signal_gateway_worker
-    command: python scripts/run_signal_gateway_worker.py
+    command: python scripts/run_connector_gateway_worker.py --source signal
     healthcheck: *consumer-healthcheck
 
   gmail_watch_scheduler:
     <<: *worker
-    command: python scripts/run_gmail_watch_scheduler.py
+    command: python scripts/run_connector_subscription_scheduler.py --source gmail
     healthcheck: *consumer-healthcheck
 
-  gmail_history_poller:
+  connector_poll_worker:
     <<: *worker
-    command: python scripts/run_gmail_history_poller.py
-    healthcheck: *consumer-healthcheck
-
-  google_calendar_live_poller:
-    <<: *worker
-    command: python scripts/run_google_calendar_live_poller.py
-    healthcheck: *consumer-healthcheck
-
-  google_drive_live_poller:
-    <<: *worker
-    command: python scripts/run_google_drive_live_poller.py
+    command: python scripts/run_connector_poll_worker.py
     healthcheck: *consumer-healthcheck
 
   google_calendar_watch_scheduler:
     <<: *worker
-    command: python scripts/run_google_calendar_watch_scheduler.py
+    command: python scripts/run_connector_subscription_scheduler.py --source google_calendar
     healthcheck: *consumer-healthcheck
 
   google_drive_watch_scheduler:
     <<: *worker
-    command: python scripts/run_google_drive_watch_scheduler.py
+    command: python scripts/run_connector_subscription_scheduler.py --source google_drive
     healthcheck: *consumer-healthcheck
 
   # ---- think / post-commit application workers ---------------------
@@ -411,6 +406,56 @@ services:
     <<: *worker
     command: python scripts/run_think_worker.py
     healthcheck: *consumer-healthcheck
+
+  think_worker_reflex:
+    <<: *worker
+    profiles: ["think-lanes"]
+    command: python scripts/run_think_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      THINK_WORKER_ID: think-worker-reflex
+      THINK_WORKER_LANES: reflex
+
+  think_worker_batch_memory:
+    <<: *worker
+    profiles: ["think-lanes"]
+    command: python scripts/run_think_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      THINK_WORKER_ID: think-worker-batch-memory
+      THINK_WORKER_LANES: batch_memory
+
+  think_worker_relationship:
+    <<: *worker
+    profiles: ["think-lanes"]
+    command: python scripts/run_think_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      THINK_WORKER_ID: think-worker-relationship
+      THINK_WORKER_LANES: relationship
+
+  think_worker_deep_synthesis:
+    <<: *worker
+    profiles: ["think-lanes"]
+    command: python scripts/run_think_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      THINK_WORKER_ID: think-worker-deep-synthesis
+      THINK_WORKER_LANES: deep_synthesis
+
+  think_worker_repair:
+    <<: *worker
+    profiles: ["think-lanes"]
+    command: python scripts/run_think_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      THINK_WORKER_ID: think-worker-repair
+      THINK_WORKER_LANES: repair
 
   post_commit_worker:
     <<: *worker
@@ -437,6 +482,31 @@ services:
       ENTITY_RESOLVER_BATCH_SIZE: "50"
       ENTITY_RESOLVER_LLM_BUDGET_PER_MIN: "30"
 
+  identity_resolution_worker:
+    <<: *worker
+    command: python scripts/run_perception_pipeline_worker.py --role identity
+    healthcheck: *consumer-healthcheck
+
+  perception_knowledge_worker:
+    <<: *worker
+    command: python scripts/run_perception_pipeline_worker.py --role knowledge
+    healthcheck: *consumer-healthcheck
+
+  episode_constructor_worker:
+    <<: *worker
+    command: python scripts/run_perception_pipeline_worker.py --role episode
+    healthcheck: *consumer-healthcheck
+
+  episode_settlement_worker:
+    <<: *worker
+    command: python scripts/run_perception_pipeline_worker.py --role settlement
+    healthcheck: *consumer-healthcheck
+
+  episode_handoff_worker:
+    <<: *worker
+    command: python scripts/run_perception_pipeline_worker.py --role handoff
+    healthcheck: *consumer-healthcheck
+
   schema_drift_monitor:
     <<: *worker
     container_name: company_os_schema_drift_monitor
@@ -447,6 +517,26 @@ services:
       SCHEMA_DRIFT_CHECK_INTERVAL_S: "300"
       SCHEMA_DRIFT_CONNECT_TIMEOUT_S: "10"
       SCHEMA_DRIFT_STATEMENT_TIMEOUT_MS: "30000"
+
+  # Proactive deadline firing for prediction Models (incl. document-memory
+  # commitments, docs/plans/document-memory-substrate.md §4.6 / §7 step 11).
+  # Polls `models WHERE status='active' AND evaluate_at <= now()` per cycle and
+  # enqueues a T2 `prediction_overdue` trigger for Think — so an overdue
+  # commitment (e.g. an unsent SOW) fires BEFORE anyone asks, instead of only
+  # being recalled reactively. It never writes to `models`; Think's
+  # deterministic T2 handler owns the resolution. Global (scans all tenants), so
+  # a single instance — do NOT scale to >1 replica. Exposes /healthz + /metrics
+  # on INGESTION_HEALTH_PORT (9300, from app-env); /healthz goes 503 if the poll
+  # loop wedges, so a hung resolver is restarted.
+  deadline_resolver:
+    <<: *worker
+    container_name: company_os_deadline_resolver
+    command: python scripts/run_deadline_resolver_worker.py
+    healthcheck: *consumer-healthcheck
+    environment:
+      <<: *app-env
+      # Poll cadence (seconds). Override in .env.production.
+      DEADLINE_POLL_INTERVAL_S: "60"
 
   # ---- retrieval/memory feature workers (ported from dev) -----------
   sage_structural_features_worker:

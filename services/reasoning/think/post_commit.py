@@ -50,7 +50,7 @@ from lib.shared.backoff import (
 )
 from services.reasoning.retrieval.primary import TriggerContext
 
-from .diff_schema import ValidatedDiff
+from .diff_schema import ClaimOp, ValidatedDiff
 
 
 _log = structlog.get_logger(__name__)
@@ -71,6 +71,9 @@ BACKOFF_CAP_SECONDS = int(QUEUE_RETRY_BACKOFF_CAP_SECONDS)
 
 POLL_INTERVAL_SECONDS = 2.0
 BATCH_SIZE = 10
+PROJECTION_EVENTS_PER_MODEL = 8
+PROJECTION_MIN_EVENT_LIMIT = 24
+PROJECTION_MAX_EVENT_LIMIT = 1000
 VIEW_CEO_REFRESH_CHANNEL = "view_ceo_refresh"
 
 ACTION_KINDS = (
@@ -78,7 +81,9 @@ ACTION_KINDS = (
     "schedule_predictions",
     "broadcast_realtime",
     "invalidate_metrics",
+    "materialize_projections",
     "discover_model_edges",
+    "search_open_questions",
 )
 
 
@@ -94,6 +99,19 @@ dispatch, not exactly-once. A crash mid-dispatch leaves the action
 available for retry; if the handler partially completed, its second
 run should be a no-op for the already-done side effects.
 """
+
+
+@dataclass(frozen=True)
+class _ProjectionMaterializationDispatch:
+    mode: str
+    processed_events: int = 0
+    failed_events: int = 0
+    routed_events: int = 0
+    enqueued_jobs: int = 0
+    route_errors: int = 0
+    processed_jobs: int = 0
+    failed_jobs: int = 0
+    projection_errors: tuple[dict[str, Any], ...] = ()
 
 
 # Product-facing default handlers emit the durable CEO-view refresh NOTIFY
@@ -129,7 +147,8 @@ async def _default_schedule_predictions(
 ) -> None:
     predictions = payload.get("predictions", [])
     missing_schedule = [
-        index for index, prediction in enumerate(predictions)
+        index
+        for index, prediction in enumerate(predictions)
         if not isinstance(prediction, dict) or not prediction.get("evaluate_at")
     ]
     if missing_schedule:
@@ -185,6 +204,168 @@ async def _default_invalidate_metrics(
     )
 
 
+async def _projection_tables_ready(conn: asyncpg.Connection) -> bool:
+    rows = await conn.fetch(
+        """
+        SELECT to_regclass(name) IS NOT NULL AS exists
+        FROM unnest($1::text[]) AS name
+        """,
+        [
+            "public.model_events",
+            "public.projection_checkpoints",
+            "public.projection_snapshots",
+        ],
+    )
+    return bool(rows) and all(row["exists"] for row in rows)
+
+
+async def _projection_delta_tables_ready(conn: asyncpg.Connection) -> bool:
+    rows = await conn.fetch(
+        """
+        SELECT to_regclass(name) IS NOT NULL AS exists
+        FROM unnest($1::text[]) AS name
+        """,
+        [
+            "public.projection_refresh_jobs",
+            "public.projection_dependencies",
+            "public.projection_watch_keys",
+            "public.projection_inquiry_state",
+        ],
+    )
+    return bool(rows) and all(row["exists"] for row in rows)
+
+
+async def _default_materialize_projections(
+    payload: dict[str, Any],
+    tenant_id: UUID,
+    trigger_id: UUID,
+) -> None:
+    model_ids = _model_ids_from_payload(payload)
+    if not model_ids:
+        return
+
+    from lib.shared.db import get_pool
+    from services.domain.projections import (
+        ProjectionRunner,
+        enqueue_refreshes_for_event,
+    )
+    from services.domain.projections.catalog import projectors_for
+    from services.domain.projections.store import fetch_events_for_models
+
+    raw_limit = payload.get("limit")
+    limit = _projection_event_limit(len(model_ids), raw_limit=raw_limit)
+    projection_names = payload.get("projection_names")
+    if not isinstance(projection_names, list) or not projection_names:
+        projection_names = ["all"]
+    projectors = projectors_for(projection_names)
+    runner = ProjectionRunner(projectors)
+
+    async def _run(conn: asyncpg.Connection) -> _ProjectionMaterializationDispatch:
+        if not await _projection_tables_ready(conn):
+            _log.info(
+                "post_commit.materialize_projections.skipped",
+                tenant_id=str(tenant_id),
+                trigger_id=str(trigger_id),
+                reason="projection_tables_missing",
+            )
+            return _ProjectionMaterializationDispatch(mode="skipped")
+        if await _projection_delta_tables_ready(conn):
+            events = await fetch_events_for_models(
+                conn,
+                tenant_id=tenant_id,
+                model_ids=model_ids,
+                limit=limit,
+            )
+            route_reports = [
+                await enqueue_refreshes_for_event(conn, event, projectors)
+                for event in events
+            ]
+            enqueued_jobs = sum(len(report.enqueued_jobs) for report in route_reports)
+            refresh_report = await runner.run_queued_refresh_jobs_once_detailed(
+                conn,
+                tenant_id=tenant_id,
+                limit=max(1, limit, enqueued_jobs),
+            )
+            route_errors = [
+                {
+                    "projection_name": error.projection_name,
+                    "projection_version": error.projection_version,
+                    "event_id": str(route_report.event_id),
+                    "stage": error.stage,
+                    "message": error.message,
+                }
+                for route_report in route_reports
+                for error in route_report.errors
+            ]
+            refresh_errors = [
+                {
+                    "projection_name": error.projection_name,
+                    "projection_version": error.projection_version,
+                    "subject_key": error.subject_key,
+                    "job_id": str(error.job_id),
+                    "stage": error.stage,
+                    "message": error.message,
+                }
+                for error in refresh_report.errors
+            ]
+            return _ProjectionMaterializationDispatch(
+                mode="delta_queue",
+                routed_events=len(events),
+                enqueued_jobs=enqueued_jobs,
+                route_errors=len(route_errors),
+                processed_jobs=refresh_report.processed_jobs,
+                failed_jobs=refresh_report.failed_jobs,
+                projection_errors=tuple([*route_errors, *refresh_errors][:5]),
+            )
+
+        legacy_report = await runner.run_once_detailed(
+            conn,
+            tenant_id=tenant_id,
+            limit=limit,
+        )
+        return _ProjectionMaterializationDispatch(
+            mode="legacy_checkpoint",
+            processed_events=legacy_report.processed_events,
+            failed_events=legacy_report.failed_events,
+            projection_errors=tuple(
+                {
+                    "projection_name": error.projection_name,
+                    "projection_version": error.projection_version,
+                    "event_id": str(error.event_id),
+                    "model_id": str(error.model_id),
+                    "stage": error.stage,
+                    "message": error.message,
+                }
+                for error in legacy_report.errors[:5]
+            ),
+        )
+
+    conn = _DISPATCH_CONN.get()
+    if conn is not None:
+        report = await _run(conn)
+    else:
+        pool = get_pool()
+        async with pool.acquire() as acquired:
+            report = await _run(acquired)
+
+    _log.info(
+        "post_commit.materialize_projections.dispatched",
+        tenant_id=str(tenant_id),
+        trigger_id=str(trigger_id),
+        mode=report.mode,
+        model_count=len(model_ids),
+        limit=limit,
+        processed_events=report.processed_events,
+        failed_events=report.failed_events,
+        routed_events=report.routed_events,
+        enqueued_jobs=report.enqueued_jobs,
+        route_errors=report.route_errors,
+        processed_jobs=report.processed_jobs,
+        failed_jobs=report.failed_jobs,
+        projection_errors=list(report.projection_errors),
+    )
+
+
 async def _default_discover_model_edges(
     payload: dict[str, Any],
     tenant_id: UUID,
@@ -193,6 +374,11 @@ async def _default_discover_model_edges(
     model_ids = _model_ids_from_payload(payload)
     if not model_ids:
         return
+    enqueue_think = bool(payload.get("enqueue_think", True))
+    think_enqueue_budget = _think_enqueue_budget_from_payload(
+        payload,
+        default=len(model_ids) if enqueue_think else 0,
+    )
 
     from lib.shared.db import get_pool
     from services.reasoning.edge_intelligence import promote_pair_evidence_candidates
@@ -217,14 +403,16 @@ async def _default_discover_model_edges(
         nonlocal pair_evidence_candidates_inserted
         nonlocal pair_evidence_candidates_skipped
         nonlocal pair_evidence_failed
+        remaining_think_budget = think_enqueue_budget
         for model_id in model_ids:
+            model_enqueue_think = enqueue_think and remaining_think_budget > 0
             try:
                 async with conn.transaction():
                     result = await service.generate_for_model_id(
                         conn,
                         tenant_id=tenant_id,
                         model_id=model_id,
-                        enqueue_think=True,
+                        enqueue_think=model_enqueue_think,
                     )
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"{model_id}: {type(exc).__name__}: {exc}")
@@ -232,6 +420,11 @@ async def _default_discover_model_edges(
 
             candidates_inserted += len(result.inserted_candidates)
             think_triggers_enqueued += result.enqueued_think_triggers
+            if model_enqueue_think:
+                remaining_think_budget = max(
+                    0,
+                    remaining_think_budget - int(result.enqueued_think_triggers or 0),
+                )
             duplicates_suppressed += result.duplicates_suppressed
             if result.skipped_reason:
                 skipped[result.skipped_reason] = (
@@ -264,6 +457,11 @@ async def _default_discover_model_edges(
         tenant_id=str(tenant_id),
         trigger_id=str(trigger_id),
         model_count=len(model_ids),
+        enqueue_think=enqueue_think,
+        think_enqueue_budget=think_enqueue_budget,
+        source_trigger_kind=payload.get("source_trigger_kind"),
+        source_trigger_subkind=payload.get("source_trigger_subkind"),
+        selector=payload.get("selector"),
         candidates_inserted=candidates_inserted,
         think_triggers_enqueued=think_triggers_enqueued,
         duplicates_suppressed=duplicates_suppressed,
@@ -278,12 +476,101 @@ async def _default_discover_model_edges(
         raise RuntimeError("; ".join(errors[:3]))
 
 
+async def _default_search_open_questions(
+    payload: dict[str, Any],
+    tenant_id: UUID,
+    trigger_id: UUID,
+) -> None:
+    model_ids = _model_ids_from_payload(payload)
+    question_ids = _uuid_list_from_payload(payload, "open_question_ids")
+    if not model_ids and not question_ids:
+        return
+
+    from lib.shared.db import get_pool
+    from services.domain.models.open_questions import ModelOpenQuestionsRepo
+    from services.domain.triggers import enqueue_trigger
+
+    repo = ModelOpenQuestionsRepo()
+    raw_limit = payload.get("limit")
+    try:
+        limit = int(raw_limit) if raw_limit is not None else 50
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 200))
+    enqueued = 0
+    deduped = 0
+    searched_ids: list[UUID] = []
+
+    async def _run(conn: asyncpg.Connection) -> None:
+        nonlocal enqueued
+        nonlocal deduped
+        questions = await repo.list_due_for_search(
+            conn,
+            tenant_id=tenant_id,
+            question_ids=question_ids,
+            model_ids=model_ids,
+            limit=limit,
+        )
+        for question in questions:
+            key = f"{question.model_id}:{question.id}"
+            existing = await conn.fetchval(
+                """
+                SELECT id
+                FROM think_trigger_queue
+                WHERE tenant_id = $1
+                  AND trigger_kind = 'T4'
+                  AND trigger_subkind = 'open_question_search'
+                  AND completed_at IS NULL
+                  AND payload->>'open_question_key' = $2
+                LIMIT 1
+                """,
+                tenant_id,
+                key,
+            )
+            if existing is not None:
+                deduped += 1
+                searched_ids.append(question.id)
+                continue
+            await enqueue_trigger(
+                conn,
+                tenant_id=tenant_id,
+                trigger_kind="T4",
+                trigger_subkind="open_question_search",
+                model_id=question.model_id,
+                payload=_open_question_trigger_payload(question, key),
+            )
+            enqueued += 1
+            searched_ids.append(question.id)
+        await repo.mark_searched(conn, question_ids=searched_ids)
+
+    conn = _DISPATCH_CONN.get()
+    if conn is not None:
+        await _run(conn)
+    else:
+        pool = get_pool()
+        async with pool.acquire() as acquired:
+            async with acquired.transaction():
+                await _run(acquired)
+
+    _log.info(
+        "post_commit.search_open_questions.dispatched",
+        tenant_id=str(tenant_id),
+        trigger_id=str(trigger_id),
+        model_count=len(model_ids),
+        question_count=len(question_ids),
+        enqueued=enqueued,
+        deduped=deduped,
+    )
+
+
 _DISPATCHERS: dict[str, ActionHandler] = {
     "publish_anomalies": _default_publish_anomalies,
     "schedule_predictions": _default_schedule_predictions,
     "broadcast_realtime": _default_broadcast_realtime,
     "invalidate_metrics": _default_invalidate_metrics,
+    "materialize_projections": _default_materialize_projections,
     "discover_model_edges": _default_discover_model_edges,
+    "search_open_questions": _default_search_open_questions,
 }
 
 
@@ -305,7 +592,9 @@ def reset_handlers() -> None:
     _DISPATCHERS["schedule_predictions"] = _default_schedule_predictions
     _DISPATCHERS["broadcast_realtime"] = _default_broadcast_realtime
     _DISPATCHERS["invalidate_metrics"] = _default_invalidate_metrics
+    _DISPATCHERS["materialize_projections"] = _default_materialize_projections
     _DISPATCHERS["discover_model_edges"] = _default_discover_model_edges
+    _DISPATCHERS["search_open_questions"] = _default_search_open_questions
 
 
 async def _notify_view_ceo_refresh(
@@ -361,6 +650,7 @@ def _summarize_op_count(diff: ValidatedDiff) -> dict[str, int]:
         "relation_frame_ops": len(diff.relation_frame_ops),
         "edge_ops": len(diff.edge_ops),
         "ontology_gap_ops": len(diff.ontology_gap_ops),
+        "open_question_ops": len(diff.open_question_ops),
         "act_ops": len(diff.act_ops),
         "resource_ops": len(diff.resource_ops),
     }
@@ -409,6 +699,11 @@ def _affected_entities(diff: ValidatedDiff) -> list[dict[str, str]]:
         _add("model", op.target_model_id)
         for model_id in op.evidence_model_ids:
             _add("model", model_id)
+    for op in diff.open_question_ops:
+        _add("model", op.model_id)
+        _add("model", op.resolution_model_id)
+        for model_id in op.source_model_ids:
+            _add("model", model_id)
     for op in diff.act_ops:
         ent = op.entity or {}
         eid = ent.get("id")
@@ -444,14 +739,20 @@ def _anomalies_payload(anomalies: list[dict[str, Any]] | None) -> dict[str, Any]
 
 def _predictions_payload(diff: ValidatedDiff) -> dict[str, Any]:
     preds: list[dict[str, Any]] = []
-    for op in diff.new_predictions:
+    seen: set[str] = set()
+    for source, op in _iter_prediction_claim_inserts(diff):
         if op.op != "insert" or not isinstance(op.entry, dict):
             continue
         entry = op.entry
+        dedupe_key = _prediction_payload_key(entry)
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
         preds.append(
             {
                 "tenant_id": str(diff.tenant_id),
                 "trigger_ref": str(diff.trigger_ref),
+                "source": source,
                 "entry": entry,
                 "evaluate_at": entry.get("evaluate_at"),
             }
@@ -459,11 +760,99 @@ def _predictions_payload(diff: ValidatedDiff) -> dict[str, Any]:
     return {"predictions": preds}
 
 
+def _iter_prediction_claim_inserts(
+    diff: ValidatedDiff,
+) -> list[tuple[str, ClaimOp]]:
+    out: list[tuple[str, ClaimOp]] = []
+    out.extend(("new_predictions", op) for op in diff.new_predictions)
+    out.extend(
+        ("claim_ops", op)
+        for op in diff.claim_ops
+        if op.op == "insert"
+        and isinstance(op.entry, dict)
+        and _entry_is_prediction_like(op.entry)
+    )
+    return out
+
+
+def _entry_is_prediction_like(entry: dict[str, Any]) -> bool:
+    proposition = entry.get("proposition")
+    prop = proposition if isinstance(proposition, dict) else {}
+    falsifier = entry.get("falsifier")
+    falsifier_kind = falsifier.get("kind") if isinstance(falsifier, dict) else None
+    return (
+        entry.get("claim_role") == "prediction"
+        or prop.get("claim_role") == "prediction"
+        or prop.get("kind") == "prediction"
+        or falsifier_kind == "prediction_deadline"
+    )
+
+
+def _prediction_payload_key(entry: dict[str, Any]) -> str:
+    return json.dumps(
+        {
+            "natural": entry.get("natural"),
+            "proposition": entry.get("proposition"),
+            "evaluate_at": entry.get("evaluate_at"),
+            "resolution_criteria": entry.get("resolution_criteria"),
+        },
+        sort_keys=True,
+        default=str,
+    )
+
+
 def _edge_discovery_payload(
     applied_model_ids: list[UUID] | tuple[UUID, ...] | None,
+    *,
+    trigger: TriggerContext | Any | None = None,
+    applied_ops_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    selected_model_ids, selector = _edge_discovery_model_ids(
+        applied_model_ids,
+        applied_ops_summary=applied_ops_summary,
+    )
+    source_kind = str(getattr(trigger, "kind", "") or "")
+    source_subkind = str(getattr(trigger, "subkind", "") or "")
+    enqueue_think = source_kind == "T1"
+    return {
+        "model_ids": [str(model_id) for model_id in selected_model_ids],
+        "source_trigger_kind": source_kind or None,
+        "source_trigger_subkind": source_subkind or None,
+        "selector": selector,
+        # Only primary business-signal batches should promote fresh topology
+        # hints into immediate T4 Think. Downstream maintenance runs may still
+        # persist cheap candidate memory, but should not recursively spend LLM.
+        "enqueue_think": enqueue_think,
+        "think_enqueue_budget": _edge_discovery_think_enqueue_budget(
+            source_kind=source_kind,
+            model_count=len(selected_model_ids),
+        ),
+    }
+
+
+def _edge_discovery_think_enqueue_budget(
+    *,
+    source_kind: str,
+    model_count: int,
+) -> int:
+    if source_kind != "T1" or model_count <= 0:
+        return 0
+    return max(1, min(2, int(model_count)))
+
+
+def _edge_discovery_model_ids(
+    applied_model_ids: list[UUID] | tuple[UUID, ...] | None,
+    *,
+    applied_ops_summary: dict[str, Any] | None = None,
+) -> tuple[list[UUID], str]:
+    inserted = _inserted_model_ids_from_apply_summary(applied_ops_summary)
+    if inserted:
+        return inserted, "claim_insert_models"
+    if applied_ops_summary is not None:
+        return [], "no_claim_insert_models"
+
     seen: set[UUID] = set()
-    model_ids: list[str] = []
+    model_ids: list[UUID] = []
     for value in applied_model_ids or ():
         try:
             model_id = value if isinstance(value, UUID) else UUID(str(value))
@@ -472,14 +861,388 @@ def _edge_discovery_payload(
         if model_id in seen:
             continue
         seen.add(model_id)
-        model_ids.append(str(model_id))
-    return {"model_ids": model_ids}
+        model_ids.append(model_id)
+    return model_ids, "legacy_all_applied_models"
+
+
+def _inserted_model_ids_from_apply_summary(
+    applied_ops_summary: dict[str, Any] | None,
+) -> list[UUID]:
+    if not isinstance(applied_ops_summary, dict):
+        return []
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    for summary in applied_ops_summary.get("claim_ops") or ():
+        if not isinstance(summary, dict) or summary.get("op") != "insert":
+            continue
+        raw_model_id = summary.get("model_id")
+        try:
+            model_id = (
+                raw_model_id
+                if isinstance(raw_model_id, UUID)
+                else UUID(str(raw_model_id))
+            )
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if model_id not in seen:
+            seen.add(model_id)
+            out.append(model_id)
+    return out
+
+
+def _projection_materialization_payload(
+    applied_model_ids: list[UUID] | tuple[UUID, ...] | None,
+    *,
+    trigger: TriggerContext | Any | None = None,
+    applied_ops_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    selected_model_ids = _dedupe_model_ids(applied_model_ids)
+    source_kind = str(getattr(trigger, "kind", "") or "")
+    source_subkind = str(getattr(trigger, "subkind", "") or "")
+    model_count = len(selected_model_ids)
+    return {
+        "model_ids": [str(model_id) for model_id in selected_model_ids],
+        "source_trigger_kind": source_kind or None,
+        "source_trigger_subkind": source_subkind or None,
+        "selector": "all_applied_models",
+        "projection_names": _projection_names_for_apply_summary(applied_ops_summary),
+        "limit": _projection_event_limit(model_count),
+    }
+
+
+def _projection_names_for_apply_summary(
+    applied_ops_summary: dict[str, Any] | None,
+) -> list[str]:
+    if not isinstance(applied_ops_summary, dict):
+        return ["all"]
+
+    names: set[str] = set()
+    if _summary_has_entity_projection_signal(
+        applied_ops_summary,
+        entity_types={
+            "candidate_commitment",
+            "commitment",
+            "jira",
+            "pr",
+            "pull_request",
+            "ticket",
+            "work_item",
+        },
+        domain_tags={
+            "commitment",
+            "commitments",
+            "deadline",
+            "deliverable",
+            "handoff",
+            "obligation",
+            "promise",
+        },
+        act_ops=(),
+    ):
+        names.add("commitments")
+    if _summary_has_entity_projection_signal(
+        applied_ops_summary,
+        entity_types={
+            "account",
+            "candidate_customer",
+            "customer",
+            "customer_resource",
+            "org",
+            "organization",
+        },
+        domain_tags={
+            "account",
+            "churn",
+            "customer",
+            "customers",
+            "implementation",
+            "onboarding",
+            "relationship",
+            "renewal",
+            "retention",
+            "revenue",
+            "trust",
+        },
+        act_ops=(),
+    ):
+        names.add("customers")
+    if _summary_has_entity_projection_signal(
+        applied_ops_summary,
+        entity_types={
+            "candidate_goal",
+            "goal",
+            "initiative",
+            "objective",
+            "project",
+            "workstream",
+        },
+        domain_tags={
+            "goal",
+            "goals",
+            "initiative",
+            "milestone",
+            "northstar",
+            "objective",
+            "outcome",
+            "roadmap",
+        },
+        act_ops=(),
+    ):
+        names.add("goals")
+    if _summary_has_entity_projection_signal(
+        applied_ops_summary,
+        entity_types={"candidate_decision", "choice", "decision"},
+        domain_tags={
+            "approval",
+            "decision",
+            "decision_pressure",
+            "decisions",
+            "escalation",
+            "go/no-go",
+            "option",
+            "prioritize",
+            "tradeoff",
+        },
+        act_ops=("create_decision", "transition_decision"),
+    ):
+        names.add("decisions")
+    if _summary_has_items(applied_ops_summary, "resource_ops"):
+        names.add("resources")
+    if _summary_has_actor_profile_signal(applied_ops_summary):
+        names.add("employee_profiles")
+    if _summary_has_decision_surface_signal(applied_ops_summary):
+        names.add("decision_surfaces")
+    if any(
+        _summary_has_items(applied_ops_summary, key)
+        for key in (
+            "claim_ops",
+            "memory_lifecycle_ops",
+            "relation_claim_ops",
+            "relation_frame_ops",
+            "edge_ops",
+            "ontology_gap_ops",
+            "open_question_ops",
+            "act_ops",
+        )
+    ):
+        names.add("constraints")
+    if not names:
+        names.add("constraints")
+    return sorted(names)
+
+
+def _summary_has_items(summary: dict[str, Any], key: str) -> bool:
+    value = summary.get(key)
+    return isinstance(value, list) and bool(value)
+
+
+def _summary_has_entity_projection_signal(
+    summary: dict[str, Any],
+    *,
+    entity_types: set[str],
+    domain_tags: set[str],
+    act_ops: tuple[str, ...],
+) -> bool:
+    for item in summary.get("claim_ops") or ():
+        if not isinstance(item, dict):
+            continue
+        tags = _summary_item_domain_tags(item)
+        if tags.intersection(domain_tags):
+            return True
+        for entity in _summary_item_scope_entities(item):
+            entity_type = str(entity.get("type") or "").strip().casefold()
+            if entity_type in entity_types:
+                return True
+
+    if act_ops:
+        expected = {op.casefold() for op in act_ops}
+        for item in summary.get("act_ops") or ():
+            if not isinstance(item, dict):
+                continue
+            op = str(item.get("op") or item.get("act_op") or "").casefold()
+            if op in expected:
+                return True
+    return False
+
+
+def _summary_item_domain_tags(item: dict[str, Any]) -> set[str]:
+    sources = [item]
+    for key in ("entry", "payload", "proposition"):
+        value = item.get(key)
+        if isinstance(value, dict):
+            sources.append(value)
+    tags: set[str] = set()
+    for source in sources:
+        tags.update(
+            str(tag).casefold()
+            for tag in source.get("domain_tags") or ()
+            if str(tag).strip()
+        )
+    return tags
+
+
+def _summary_item_scope_entities(item: dict[str, Any]) -> list[dict[str, Any]]:
+    sources = [item]
+    for key in ("entry", "payload", "proposition"):
+        value = item.get(key)
+        if isinstance(value, dict):
+            sources.append(value)
+    out: list[dict[str, Any]] = []
+    for source in sources:
+        for entity in source.get("scope_entities") or ():
+            if isinstance(entity, dict):
+                out.append(entity)
+    return out
+
+
+def _summary_has_actor_profile_signal(summary: dict[str, Any]) -> bool:
+    employee_tags = {
+        "actor",
+        "capacity",
+        "employee",
+        "employees",
+        "mentorship",
+        "people",
+        "preference",
+        "support_need",
+        "team",
+        "work_pattern",
+        "work_style",
+        "workload",
+    }
+    profile_roles = {
+        "capability",
+        "concern",
+        "pattern",
+        "relation",
+        "recommendation",
+    }
+    for item in summary.get("claim_ops") or ():
+        if not isinstance(item, dict):
+            continue
+        tags = _summary_item_domain_tags(item)
+        if tags.intersection(employee_tags):
+            return True
+        scope_actors = item.get("scope_actors") or {}
+        entry = item.get("entry") if isinstance(item.get("entry"), dict) else {}
+        if not scope_actors and isinstance(entry, dict):
+            scope_actors = entry.get("scope_actors") or ()
+        if str(
+            item.get("claim_role") or entry.get("claim_role") or ""
+        ).casefold() in profile_roles and bool(scope_actors):
+            return True
+    return False
+
+
+def _summary_has_decision_surface_signal(summary: dict[str, Any]) -> bool:
+    decision_tags = {
+        "approval",
+        "blocker",
+        "blocked",
+        "bottleneck",
+        "capacity",
+        "constraint",
+        "decision",
+        "decision_pressure",
+        "dependency",
+        "escalation",
+        "execution",
+        "owner",
+        "pressure",
+        "priority",
+        "resource",
+        "risk",
+        "tradeoff",
+    }
+    decision_roles = {"concern", "recommendation", "situation"}
+    for item in summary.get("claim_ops") or ():
+        if not isinstance(item, dict):
+            continue
+        tags = _summary_item_domain_tags(item)
+        entry = item.get("entry") if isinstance(item.get("entry"), dict) else {}
+        role = str(item.get("claim_role") or entry.get("claim_role") or "").casefold()
+        if tags.intersection(decision_tags):
+            return True
+        if role in decision_roles and tags.intersection(decision_tags):
+            return True
+
+    for item in summary.get("act_ops") or ():
+        if not isinstance(item, dict):
+            continue
+        op = str(item.get("op") or item.get("act_op") or "").casefold()
+        if op in {"create_decision", "transition_decision"}:
+            return True
+    return False
+
+
+def _projection_event_limit(model_count: int, *, raw_limit: Any = None) -> int:
+    if raw_limit is not None:
+        try:
+            explicit = int(raw_limit)
+        except (TypeError, ValueError):
+            explicit = None
+        if explicit is not None:
+            return max(1, min(explicit, PROJECTION_MAX_EVENT_LIMIT))
+
+    scaled = max(
+        PROJECTION_MIN_EVENT_LIMIT,
+        max(0, int(model_count)) * PROJECTION_EVENTS_PER_MODEL,
+    )
+    return max(1, min(scaled, PROJECTION_MAX_EVENT_LIMIT))
+
+
+def _open_questions_payload(
+    validated_diff: ValidatedDiff,
+    *,
+    applied_model_ids: list[UUID] | tuple[UUID, ...] | None,
+    applied_open_question_ids: list[UUID] | tuple[UUID, ...] | None,
+) -> dict[str, Any]:
+    model_ids: list[UUID] = []
+    seen_models: set[UUID] = set()
+    for value in applied_model_ids or ():
+        try:
+            model_id = value if isinstance(value, UUID) else UUID(str(value))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if model_id not in seen_models:
+            seen_models.add(model_id)
+            model_ids.append(model_id)
+    has_insert = False
+    for op in validated_diff.open_question_ops:
+        if op.op == "insert":
+            has_insert = True
+        if op.model_id is not None and op.model_id not in seen_models:
+            seen_models.add(op.model_id)
+            model_ids.append(op.model_id)
+    question_ids: list[UUID] = []
+    seen_questions: set[UUID] = set()
+    for value in applied_open_question_ids or ():
+        try:
+            question_id = value if isinstance(value, UUID) else UUID(str(value))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if question_id not in seen_questions:
+            seen_questions.add(question_id)
+            question_ids.append(question_id)
+    if not has_insert and not question_ids:
+        return {"model_ids": [], "open_question_ids": []}
+    return {
+        "model_ids": [str(model_id) for model_id in model_ids],
+        "open_question_ids": [str(question_id) for question_id in question_ids],
+        "limit": max(20, min(200, max(1, len(question_ids) + len(model_ids)) * 12)),
+    }
 
 
 def _model_ids_from_payload(payload: dict[str, Any]) -> list[UUID]:
+    return _dedupe_model_ids(payload.get("model_ids") or ())
+
+
+def _dedupe_model_ids(
+    values: list[UUID] | tuple[UUID, ...] | list[Any] | tuple[Any, ...] | Any,
+) -> list[UUID]:
     out: list[UUID] = []
     seen: set[UUID] = set()
-    for value in payload.get("model_ids") or ():
+    for value in values or ():
         try:
             model_id = value if isinstance(value, UUID) else UUID(str(value))
         except (TypeError, ValueError, AttributeError):
@@ -489,6 +1252,71 @@ def _model_ids_from_payload(payload: dict[str, Any]) -> list[UUID]:
         seen.add(model_id)
         out.append(model_id)
     return out
+
+
+def _think_enqueue_budget_from_payload(
+    payload: dict[str, Any],
+    *,
+    default: int,
+) -> int:
+    try:
+        raw_budget = payload.get("think_enqueue_budget", default)
+        budget = int(raw_budget)
+    except (TypeError, ValueError):
+        budget = int(default)
+    return max(0, budget)
+
+
+def _uuid_list_from_payload(payload: dict[str, Any], key: str) -> list[UUID]:
+    out: list[UUID] = []
+    seen: set[UUID] = set()
+    values = payload.get(key)
+    if not isinstance(values, list):
+        return []
+    for value in values:
+        try:
+            uid = value if isinstance(value, UUID) else UUID(str(value))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if uid in seen:
+            continue
+        seen.add(uid)
+        out.append(uid)
+    return out
+
+
+def _open_question_trigger_payload(question: Any, key: str) -> dict[str, Any]:
+    search_signature = (
+        question.search_signature if isinstance(question.search_signature, dict) else {}
+    )
+    expected_signal = (
+        question.expected_resolution_signal
+        if isinstance(question.expected_resolution_signal, dict)
+        else {}
+    )
+    seed_parts = [f"Open question search: {question.question}"]
+    if question.rationale:
+        seed_parts.append(str(question.rationale))
+    signal_shape = expected_signal.get("signal_shape") or expected_signal.get("answer")
+    if signal_shape:
+        seed_parts.append(str(signal_shape))
+    source_model_ids = [str(model_id) for model_id in question.source_model_ids]
+    return {
+        "open_question_key": key,
+        "open_question_id": str(question.id),
+        "source_model_id": str(question.model_id),
+        "source_model_ids": source_model_ids,
+        "model_ids": [str(question.model_id)],
+        "question": question.question,
+        "question_type": question.question_type,
+        "rationale": question.rationale,
+        "priority": question.priority,
+        "expected_resolution_signal": expected_signal,
+        "search_signature": search_signature,
+        "seed_natural_text": " ".join(part for part in seed_parts if part)[:2000],
+        "seed_occurred_at": question.created_at.isoformat(),
+        "question_primitive": "OPEN_QUESTION",
+    }
 
 
 def _payload_has_content(kind: str, payload: dict[str, Any]) -> bool:
@@ -504,8 +1332,12 @@ def _payload_has_content(kind: str, payload: dict[str, Any]) -> bool:
         return True
     if kind == "invalidate_metrics":
         return bool(payload.get("affected_entities"))
+    if kind == "materialize_projections":
+        return bool(payload.get("model_ids"))
     if kind == "discover_model_edges":
         return bool(payload.get("model_ids"))
+    if kind == "search_open_questions":
+        return bool(payload.get("model_ids") or payload.get("open_question_ids"))
     return False
 
 
@@ -521,6 +1353,8 @@ async def enqueue_post_commit_actions(
     *,
     anomalies: list[dict[str, Any]] | None = None,
     applied_model_ids: list[UUID] | tuple[UUID, ...] | None = None,
+    applied_open_question_ids: list[UUID] | tuple[UUID, ...] | None = None,
+    applied_ops_summary: dict[str, Any] | None = None,
 ) -> list[UUID]:
     """Enqueue post-commit actions derived from `validated_diff`.
 
@@ -542,7 +1376,30 @@ async def enqueue_post_commit_actions(
             "invalidate_metrics",
             {"affected_entities": _affected_entities(validated_diff)},
         ),
-        ("discover_model_edges", _edge_discovery_payload(applied_model_ids)),
+        (
+            "materialize_projections",
+            _projection_materialization_payload(
+                applied_model_ids,
+                trigger=trigger,
+                applied_ops_summary=applied_ops_summary,
+            ),
+        ),
+        (
+            "discover_model_edges",
+            _edge_discovery_payload(
+                applied_model_ids,
+                trigger=trigger,
+                applied_ops_summary=applied_ops_summary,
+            ),
+        ),
+        (
+            "search_open_questions",
+            _open_questions_payload(
+                validated_diff,
+                applied_model_ids=applied_model_ids,
+                applied_open_question_ids=applied_open_question_ids,
+            ),
+        ),
     ]
 
     inserted: list[UUID] = []
@@ -782,60 +1639,101 @@ async def process_batch(
     limit: int = BATCH_SIZE,
     stats: WorkerStats | None = None,
     tenant_id: UUID | None = None,
+    action_timeout_seconds: float | None = None,
 ) -> WorkerStats:
-    """Process one batch of pending actions. One DB connection per
-    batch; each action is dispatched under its own savepoint so a
-    handler crash doesn't roll back the bookkeeping.
+    """Process one batch of pending actions. Each action is fetched and
+    dispatched in its own transaction so one slow or failing side effect
+    cannot roll back bookkeeping for earlier successful actions.
 
     Returns the (updated) WorkerStats. Callers that want to drive the
     worker in-process one batch at a time (tests) use this directly.
     `tenant_id` restricts processing to a single tenant (per-tenant
-    workers, test isolation).
+    workers, test isolation). `action_timeout_seconds` bounds each
+    individual side effect; the outer drain may still impose a total
+    batch timeout.
     """
     stats = stats or WorkerStats()
     stats.iterations += 1
 
+    for _ in range(max(0, int(limit))):
+        dispatched = await _process_one_pending_action(
+            pool,
+            stats=stats,
+            tenant_id=tenant_id,
+            action_timeout_seconds=action_timeout_seconds,
+        )
+        if not dispatched:
+            break
+    return stats
+
+
+async def _process_one_pending_action(
+    pool: asyncpg.Pool,
+    *,
+    stats: WorkerStats,
+    tenant_id: UUID | None,
+    action_timeout_seconds: float | None,
+) -> bool:
     async with pool.acquire() as conn:
         async with conn.transaction():
             actions = await fetch_pending_actions(
                 conn,
-                limit=limit,
+                limit=1,
                 tenant_id=tenant_id,
             )
-            for action in actions:
-                try:
-                    token = _DISPATCH_CONN.set(conn)
-                    try:
-                        await dispatch_action(action)
-                    finally:
-                        _DISPATCH_CONN.reset(token)
-                except Exception as exc:
-                    err = f"{type(exc).__name__}: {exc}"
-                    new_attempts = await increment_attempts(
+            if not actions:
+                return False
+            action = actions[0]
+            try:
+                await _dispatch_action_in_transaction(
+                    action,
+                    conn,
+                    action_timeout_seconds=action_timeout_seconds,
+                )
+            except Exception as exc:
+                err = f"{type(exc).__name__}: {exc}"
+                new_attempts = await increment_attempts(
+                    conn,
+                    action.id,
+                    error=err,
+                )
+                if new_attempts >= MAX_ATTEMPTS:
+                    await move_to_dead_letter(
                         conn,
                         action.id,
-                        error=err,
+                        error=(f"exceeded max attempts ({MAX_ATTEMPTS}): {err}"),
                     )
-                    if new_attempts >= MAX_ATTEMPTS:
-                        await move_to_dead_letter(
-                            conn,
-                            action.id,
-                            error=(f"exceeded max attempts ({MAX_ATTEMPTS}): {err}"),
-                        )
-                        stats.dead_lettered += 1
-                    else:
-                        stats.failed += 1
-                    _log.warning(
-                        "post_commit.dispatch_failed",
-                        action_id=str(action.id),
-                        action_kind=action.action_kind,
-                        attempts=new_attempts,
-                        error=err[:200],
-                    )
+                    stats.dead_lettered += 1
                 else:
-                    await mark_action_processed(conn, action.id)
-                    stats.processed += 1
-    return stats
+                    stats.failed += 1
+                _log.warning(
+                    "post_commit.dispatch_failed",
+                    action_id=str(action.id),
+                    action_kind=action.action_kind,
+                    attempts=new_attempts,
+                    error=err[:200],
+                )
+            else:
+                await mark_action_processed(conn, action.id)
+                stats.processed += 1
+    return True
+
+
+async def _dispatch_action_in_transaction(
+    action: PendingAction,
+    conn: asyncpg.Connection,
+    *,
+    action_timeout_seconds: float | None,
+) -> None:
+    token = _DISPATCH_CONN.set(conn)
+    try:
+        dispatch = dispatch_action(action)
+        if action_timeout_seconds is not None and action_timeout_seconds > 0:
+            await asyncio.wait_for(dispatch, timeout=float(action_timeout_seconds))
+        else:
+            await dispatch
+    finally:
+        _DISPATCH_CONN.reset(token)
 
 
 async def post_commit_worker(

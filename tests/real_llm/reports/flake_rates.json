@@ -113,6 +113,50 @@
         "threshold": 2,
         "timestamp": "2026-05-18T17:00:18.226126+00:00",
         "total": 3
+      },
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-06-22T11:27:19.479187+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-06-22T11:43:55.375767+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "fail",
+        "passes": 1,
+        "threshold": 2,
+        "timestamp": "2026-06-22T12:11:42.417848+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-06-22T12:19:35.678073+00:00",
+        "total": 1
       }
     ]
   },
@@ -574,6 +618,14 @@
         "passes": 2,
         "threshold": 2,
         "timestamp": "2026-05-18T17:06:36.140799+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-06-22T11:33:37.366213+00:00",
         "total": 3
       }
     ]
@@ -3362,6 +3414,28 @@
         "threshold": 2,
         "timestamp": "2026-05-18T19:07:01.583302+00:00",
         "total": 3
+      },
+      {
+        "attempts": [],
+        "outcome": "fail",
+        "passes": 0,
+        "threshold": 2,
+        "timestamp": "2026-06-22T11:32:32.076227+00:00",
+        "total": 3
+      },
+      {
+        "attempts": [
+          {
+            "attempt": 1,
+            "error": null,
+            "status": "pass"
+          }
+        ],
+        "outcome": "pass",
+        "passes": 1,
+        "threshold": 1,
+        "timestamp": "2026-06-22T12:29:04.810373+00:00",
+        "total": 1
       }
     ]
   },

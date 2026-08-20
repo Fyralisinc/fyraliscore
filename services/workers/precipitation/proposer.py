@@ -1,12 +1,13 @@
 """
-services/workers/precipitation/proposer.py — candidate proposal + promotion.
+services/workers/precipitation/proposer.py — candidate proposal + guarded promotion.
 
 Handles two transitions:
 
 1. Cluster → pattern_candidate row → T4 pattern_review trigger.
    Called by the nightly precipitation worker.
-2. pattern_candidate + Think T4 accept → Pattern Model + promoted_at.
-   Called by Think's deterministic T4 handler on `pattern_review`.
+2. pattern_candidate + semantic Think accept → Pattern Model + promoted_at.
+   The deterministic T4 handler must not call this just because a cluster
+   exists; clustering is weak evidence, not proof.
 
 Think T4 rejection path (too speculative): mark rejected_at +
 rejection_reason. Called by the same Think handler.
@@ -14,10 +15,11 @@ rejection_reason. Called by the same Think handler.
 from __future__ import annotations
 
 import json
-from typing import Any, Sequence
+from typing import Any, Literal, Sequence
 from uuid import UUID
 
 import asyncpg
+import structlog
 
 from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
@@ -27,6 +29,9 @@ from services.workers.precipitation.clustering import (
     ClusterResult,
     synthesize_candidate_payload,
 )
+
+
+_log = structlog.get_logger(__name__)
 
 
 def _jsonb(value: Any) -> str:
@@ -108,7 +113,9 @@ async def enqueue_pattern_review_triggers(
     for cid in candidate_ids:
         row = await conn.fetchrow(
             """
-            SELECT tenant_id, promoted_at, rejected_at
+            SELECT tenant_id, promoted_at, rejected_at,
+                   proposed_signature, observed_tendency,
+                   constituent_model_ids, cluster_size, density
             FROM pattern_candidates
             WHERE id = $1
             """,
@@ -123,15 +130,42 @@ async def enqueue_pattern_review_triggers(
             tenant_id=row["tenant_id"],
             trigger_kind="T4",
             trigger_subkind="pattern_review",
-            payload={"pattern_candidate_id": str(cid)},
+            payload={
+                "pattern_candidate_id": str(cid),
+                "source": "precipitation_cluster",
+                "review_mode": "semantic_required",
+                "proposed_signature": _json_obj(row["proposed_signature"]),
+                "observed_tendency": _json_obj(row["observed_tendency"]),
+                "constituent_model_ids": [
+                    str(model_id) for model_id in row["constituent_model_ids"]
+                ],
+                "cluster_size": int(row["cluster_size"]),
+                "density": float(row["density"]),
+            },
         )
         out.append(trig_id)
     return out
 
 
 # ---------------------------------------------------------------------
-# Promotion / rejection — called by Think T4 `pattern_review` branch
+# Promotion / rejection — called only after semantic review accepts/rejects
 # ---------------------------------------------------------------------
+
+
+def _json_obj(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode()
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
 
 
 async def promote_pattern_candidate(
@@ -289,6 +323,12 @@ async def promote_pattern_candidate(
         candidate_id,
         inserted.id,
     )
+    await _record_pattern_review_feedback_best_effort(
+        conn,
+        candidate_id=candidate_id,
+        outcome="accepted",
+        promoted_pattern_model_id=inserted.id,
+    )
     return inserted.id
 
 
@@ -331,7 +371,7 @@ async def reject_pattern_candidate(
     reason: str,
 ) -> None:
     """Mark a pattern_candidate as rejected. Idempotent."""
-    await conn.execute(
+    row = await conn.fetchrow(
         """
         UPDATE pattern_candidates
         SET rejected_at = now(),
@@ -339,10 +379,55 @@ async def reject_pattern_candidate(
         WHERE id = $1
           AND rejected_at IS NULL
           AND promoted_at IS NULL
+        RETURNING tenant_id
         """,
         candidate_id,
         reason,
     )
+    if row is not None:
+        await _record_pattern_review_feedback_best_effort(
+            conn,
+            candidate_id=candidate_id,
+            outcome="rejected",
+            rejection_reason=reason,
+        )
+
+
+async def _record_pattern_review_feedback_best_effort(
+    conn: asyncpg.Connection,
+    *,
+    candidate_id: UUID,
+    outcome: Literal["accepted", "rejected"],
+    promoted_pattern_model_id: UUID | None = None,
+    rejection_reason: str | None = None,
+) -> None:
+    """Let SAGE learn from a reviewed candidate without owning the verdict."""
+    from services.reasoning.sage.patterns.feedback import (
+        record_pattern_review_feedback,
+    )
+
+    try:
+        report = await record_pattern_review_feedback(
+            conn,
+            candidate_id=candidate_id,
+            outcome=outcome,
+            promoted_pattern_model_id=promoted_pattern_model_id,
+            rejection_reason=rejection_reason,
+        )
+    except Exception:
+        _log.exception(
+            "pattern_review_feedback_failed",
+            candidate_id=str(candidate_id),
+            outcome=outcome,
+        )
+        return
+    if report.skipped_reason:
+        _log.info(
+            "pattern_review_feedback_skipped",
+            candidate_id=str(candidate_id),
+            outcome=outcome,
+            skipped_reason=report.skipped_reason,
+        )
 
 
 __all__ = [

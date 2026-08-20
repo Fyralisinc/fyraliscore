@@ -1,0 +1,101 @@
+{{- if .Values.jobs.migrate.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "fyralis.fullname" . }}-migrate
+  labels:
+    {{- include "fyralis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: migrate
+spec:
+  backoffLimit: {{ .Values.jobs.migrate.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "fyralis.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "fyralis.serviceAccountName" . }}
+      initContainers:
+        {{- include "fyralis.waitForLocalServices" . | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "fyralis.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- toYaml .Values.jobs.migrate.command | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "fyralis.appEnvConfigName" . }}
+            - secretRef:
+                name: {{ include "fyralis.appSecretName" . }}
+---
+{{- end }}
+{{- if .Values.jobs.kafkaInit.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "fyralis.fullname" . }}-kafka-init
+  labels:
+    {{- include "fyralis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: kafka-init
+spec:
+  backoffLimit: {{ .Values.jobs.kafkaInit.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "fyralis.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: kafka-init
+    spec:
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "fyralis.serviceAccountName" . }}
+      initContainers:
+        {{- include "fyralis.waitForLocalServices" . | nindent 8 }}
+      containers:
+        - name: kafka-init
+          image: {{ include "fyralis.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            {{- toYaml .Values.jobs.kafkaInit.command | nindent 12 }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "fyralis.appEnvConfigName" . }}
+            - secretRef:
+                name: {{ include "fyralis.appSecretName" . }}
+---
+{{- end }}
+{{- if .Values.jobs.minioInit.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "fyralis.fullname" . }}-minio-init
+  labels:
+    {{- include "fyralis.labels" . | nindent 4 }}
+    app.kubernetes.io/component: minio-init
+spec:
+  backoffLimit: {{ .Values.jobs.minioInit.backoffLimit }}
+  template:
+    metadata:
+      labels:
+        {{- include "fyralis.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: minio-init
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: minio-init
+          image: {{ .Values.minio.mcImage }}
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+            - |
+              until mc alias set local http://{{ include "fyralis.minioName" . }}:9000 {{ .Values.minio.rootUser }} "$MINIO_ROOT_PASSWORD"; do sleep 2; done
+              mc mb --ignore-existing local/{{ .Values.minio.bucket }}
+              mc mb --ignore-existing local/{{ .Values.minio.blobBucket }}
+          env:
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "fyralis.appSecretName" . }}
+                  key: MINIO_ROOT_PASSWORD
+{{- end }}

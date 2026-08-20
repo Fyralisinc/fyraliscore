@@ -9,93 +9,19 @@ from __future__ import annotations
 from typing import Literal
 
 from lib.observability import counter, histogram
+from lib.observability.product_workflow_events import (
+    PRODUCT_WORKFLOW_EVENT_OUTCOMES,
+    PRODUCT_WORKFLOW_EVENTS,
+    PRODUCT_WORKFLOWS,
+    ProductWorkflow,
+    ProductWorkflowEvent,
+    ProductWorkflowOutcome,
+    record_product_workflow_event,
+)
 
 
-ProductWorkflow = Literal[
-    "today",
-    "ask",
-    "recommendations",
-    "forecasts",
-    "decision_review",
-    "model_map",
-    "ceo_view",
-    "source_onboarding",
-    "dashboard",
-    "substrate",
-    "rendering",
-    "history",
-]
 StatusClass = Literal["1xx", "2xx", "3xx", "4xx", "5xx"]
-ProductWorkflowEvent = Literal[
-    "recommendation_action",
-    "recommendation_dismissal",
-    "recommendation_watch_started",
-    "recommendation_watch_cleared",
-    "recommendation_triage",
-    "hypothesis_ratification",
-    "source_install_completed",
-    "source_install_failed",
-    "source_onboarding_started",
-    "source_onboarding_completed",
-    "source_onboarding_failed",
-    "source_status_checked",
-    "source_uninstalled",
-    "forecast_created",
-    "forecast_detail_reviewed",
-    "forecast_accuracy_reviewed",
-    "forecast_ask_answered",
-]
-ProductWorkflowOutcome = Literal[
-    "success",
-    "bad_request",
-    "forbidden",
-    "not_found",
-    "conflict",
-    "error",
-]
-
-PRODUCT_WORKFLOWS: tuple[ProductWorkflow, ...] = (
-    "today",
-    "ask",
-    "recommendations",
-    "forecasts",
-    "decision_review",
-    "model_map",
-    "ceo_view",
-    "source_onboarding",
-    "dashboard",
-    "substrate",
-    "rendering",
-    "history",
-)
 STATUS_CLASSES: tuple[StatusClass, ...] = ("1xx", "2xx", "3xx", "4xx", "5xx")
-PRODUCT_WORKFLOW_EVENTS: tuple[ProductWorkflowEvent, ...] = (
-    "recommendation_action",
-    "recommendation_dismissal",
-    "recommendation_watch_started",
-    "recommendation_watch_cleared",
-    "recommendation_triage",
-    "hypothesis_ratification",
-    "source_install_completed",
-    "source_install_failed",
-    "source_onboarding_started",
-    "source_onboarding_completed",
-    "source_onboarding_failed",
-    "source_status_checked",
-    "source_uninstalled",
-    "forecast_created",
-    "forecast_detail_reviewed",
-    "forecast_accuracy_reviewed",
-    "forecast_ask_answered",
-)
-PRODUCT_WORKFLOW_EVENT_OUTCOMES: tuple[ProductWorkflowOutcome, ...] = (
-    "success",
-    "bad_request",
-    "forbidden",
-    "not_found",
-    "conflict",
-    "error",
-)
 
 _REQUESTS = counter(
     "product_workflow_requests_total",
@@ -112,18 +38,6 @@ _DURATION = histogram(
     ("workflow",),
     allowed_label_values={"workflow": PRODUCT_WORKFLOWS},
 )
-_EVENTS = counter(
-    "product_workflow_events_total",
-    "Bounded product workflow business events by outcome.",
-    ("workflow", "event", "outcome"),
-    allowed_label_values={
-        "workflow": PRODUCT_WORKFLOWS,
-        "event": PRODUCT_WORKFLOW_EVENTS,
-        "outcome": PRODUCT_WORKFLOW_EVENT_OUTCOMES,
-    },
-)
-
-
 def classify_product_workflow(route_template: str) -> ProductWorkflow | None:
     route = str(route_template or "").rstrip("/") or "/"
 
@@ -219,15 +133,6 @@ def record_product_workflow_request(
     _REQUESTS.inc(workflow=workflow, status_class=status_class(status_code))
     _DURATION.observe(max(0.0, float(duration_seconds)), workflow=workflow)
     return workflow
-
-
-def record_product_workflow_event(
-    *,
-    workflow: ProductWorkflow,
-    event: ProductWorkflowEvent,
-    outcome: ProductWorkflowOutcome = "success",
-) -> None:
-    _EVENTS.inc(workflow=workflow, event=event, outcome=outcome)
 
 
 __all__ = [

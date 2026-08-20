@@ -56,7 +56,10 @@ async def _add_model(
     )
 
 
-@pytest.mark.timeout(90)
+# This correctness stress case builds 500+ models and runs five complete deep
+# inquiries. Shared CI Postgres runners can legitimately take over 90 seconds;
+# latency is governed by the dedicated benchmark/SLO gates, not this test.
+@pytest.mark.timeout(240)
 async def test_inquiry_relevance_gate_on_rich_high_density_model_universe(
     tx_conn,
     fresh_db,

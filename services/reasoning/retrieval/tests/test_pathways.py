@@ -31,6 +31,7 @@ from services.reasoning.retrieval.pathways import (
     pathway_c_temporal,
     pathway_d_pattern,
     pathway_g_model_edges,
+    pathway_l_semantic_terms,
 )
 
 from services.reasoning.retrieval.tests._fixtures import build_fixture, make_embedding
@@ -207,6 +208,93 @@ async def test_pathway_b_representation_tags_rescue_deep_tagged_model(
     assert "source_code" in result.notes["seed_tags"]
 
 
+async def test_pathway_b_representation_tags_uses_unified_feature_postings_when_present():
+    tenant_id = uuid.uuid4()
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
+
+        async def fetchval(self, query: str, *_args: object) -> str | None:
+            if "model_representation_feature_postings" in query:
+                return "model_representation_feature_postings"
+            return None
+
+        async def fetch(self, query: str, *args: object) -> list[object]:
+            self.fetch_calls.append((query, args))
+            return []
+
+    conn = FakeConn()
+
+    result = await pathway_b_representation_tags(
+        "github production deploy risk is recurring around PR review",
+        tenant_id,
+        conn,  # type: ignore[arg-type]
+        limit=8,
+    )
+
+    assert result.notes["representation_postings_index"] is True
+    assert result.notes["representation_feature_postings_index"] is True
+    assert (
+        result.notes["representation_postings_table"]
+        == "model_representation_feature_postings"
+    )
+    assert len(conn.fetch_calls) == 1
+    query, args = conn.fetch_calls[0]
+    assert "model_representation_feature_postings post" in query
+    assert "CROSS JOIN LATERAL" in query
+    assert "post.status = 'active'" in query
+    assert "post.feature_type = qt.feature_type" in query
+    assert "post.feature = qt.feature" in query
+    assert "LIMIT $4" in query
+    assert "proposition->'retrieval_tags'" not in query
+    assert "proposition->'coverage_roles'" not in query
+    assert "?|" not in query
+    assert args[0] == tenant_id
+    assert args[3] == 48
+    assert args[4] == 8
+
+
+async def test_pathway_b_representation_tags_falls_back_to_legacy_postings():
+    tenant_id = uuid.uuid4()
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
+
+        async def fetchval(self, query: str, *_args: object) -> str | None:
+            if "model_representation_feature_postings" in query:
+                return None
+            if "model_representation_tag_postings" in query:
+                return "model_representation_tag_postings"
+            return None
+
+        async def fetch(self, query: str, *args: object) -> list[object]:
+            self.fetch_calls.append((query, args))
+            return []
+
+    conn = FakeConn()
+
+    result = await pathway_b_representation_tags(
+        "github production deploy risk is recurring around PR review",
+        tenant_id,
+        conn,  # type: ignore[arg-type]
+        limit=8,
+    )
+
+    assert result.notes["representation_postings_index"] is True
+    assert result.notes["representation_feature_postings_index"] is False
+    assert (
+        result.notes["representation_postings_table"]
+        == "model_representation_tag_postings"
+    )
+    query, args = conn.fetch_calls[0]
+    assert "model_representation_tag_postings post" in query
+    assert "post.tag_type = qt.tag_type" in query
+    assert "post.tag = qt.tag" in query
+    assert args[3] == 48
+
+
 async def test_pathway_b_precomputed_vector_finds_clustered_models(
     tx_conn, fresh_db, tenant
 ):
@@ -224,6 +312,66 @@ async def test_pathway_b_precomputed_vector_finds_clustered_models(
     # At least one returned Model should be scoped to tenant.
     for m in result.models:
         assert m.tenant_id == tenant
+
+
+async def test_pathway_b_exact_fallback_hydrates_only_ranked_models(
+    tx_conn, fresh_db, tenant
+):
+    born_from_event_id = uuid7()
+    await tx_conn.execute(
+        """
+        INSERT INTO observations (
+            id, tenant_id, occurred_at, kind, source_channel, content,
+            content_text, embedding_pending, trust_tier, entities_mentioned
+        ) VALUES (
+            $1, $2, now(), 'signal', 'fixture:pathway-b-fallback',
+            '{}'::jsonb, 'pathway b fallback seed', TRUE, 'authoritative',
+            '[]'::jsonb
+        )
+        """,
+        born_from_event_id,
+        tenant,
+    )
+    inserted: list[tuple[uuid.UUID, str]] = []
+    for natural, activation in (
+        ("target semantic exact", 0.5),
+        ("nearby semantic exact", 0.7),
+        ("distant finance note", 1.0),
+    ):
+        model_id = uuid7()
+        await tx_conn.execute(
+            """
+            INSERT INTO models
+              (id, tenant_id, born_from_event_id, proposition, "natural",
+               embedding, scope_actors, scope_entities, scope_temporal,
+               confidence, activation, status, confidence_at_assertion,
+               activation_coefficient)
+            VALUES ($1, $2, $3, $4::jsonb, $5, $6, '{}'::uuid[], '[]'::jsonb,
+                    '{}'::jsonb, 0.72, $7, 'active', 0.72, 1.0)
+            """,
+            model_id,
+            tenant,
+            born_from_event_id,
+            json.dumps({"kind": "belief", "summary": natural}),
+            natural,
+            make_embedding(natural),
+            activation,
+        )
+        inserted.append((model_id, natural))
+
+    result = await pathway_b_semantic(
+        "target semantic exact",
+        tenant,
+        tx_conn,
+        k=10,
+        precomputed_vector=make_embedding("target semantic exact"),
+    )
+
+    fallback = result.notes["exact_fallback"]
+    assert fallback["candidate_rows"] == len(inserted)
+    assert fallback["hydrated_rows"] == len(result.models) == len(inserted)
+    assert fallback["returned"] == len(inserted)
+    assert result.models[0].natural == "target semantic exact"
 
 
 async def test_pathway_b_empty_seed_returns_empty(tx_conn, fresh_db, tenant):
@@ -270,6 +418,120 @@ async def test_pathway_b_real_ollama_semantic_cluster(
         )
     assert result.notes["vector_source"] == "ollama"
     assert len(result.models) <= 10
+
+
+# =====================================================================
+# Pathway L — semantic terms
+# =====================================================================
+
+
+async def test_pathway_l_semantic_terms_uses_model_specific_lexical_tags(
+    tx_conn,
+    fresh_db,
+    tenant,
+):
+    fs = await build_fixture(tx_conn, tenant, pool=fresh_db, n_models=8)
+    tagged_model_id = fs.model_ids[0]
+    await tx_conn.execute(
+        """
+        INSERT INTO model_semantic_terms (
+          tenant_id, model_id, semantic_terms
+        ) VALUES ($1, $2, $3::text[])
+        ON CONFLICT (tenant_id, model_id) DO UPDATE
+        SET semantic_terms = EXCLUDED.semantic_terms
+        """,
+        tenant,
+        tagged_model_id,
+        [
+            "refund replay drift",
+            "duplicate invoice reversal",
+            "idempotency key collision",
+        ],
+    )
+    posting_count = await tx_conn.fetchval(
+        """
+        SELECT count(*)::int
+        FROM model_semantic_term_postings
+        WHERE tenant_id = $1
+          AND model_id = $2
+        """,
+        tenant,
+        tagged_model_id,
+    )
+    feature_posting_count = await tx_conn.fetchval(
+        """
+        SELECT count(*)::int
+        FROM model_representation_feature_postings
+        WHERE tenant_id = $1
+          AND model_id = $2
+          AND feature_type = 'lexical'
+        """,
+        tenant,
+        tagged_model_id,
+    )
+
+    result = await pathway_l_semantic_terms(
+        "refund replay drift caused an idempotency key collision",
+        tenant,
+        tx_conn,
+    )
+
+    assert result.source_pathway == "L"
+    assert posting_count == 3
+    assert feature_posting_count == 3
+    assert result.notes["postings_index"] is True
+    assert result.notes["feature_postings_index"] is True
+    assert result.notes["postings_table"] == "model_representation_feature_postings"
+    assert tagged_model_id in {model.id for model in result.models}
+    assert "refund replay drift" in result.notes["query_terms"]
+
+
+async def test_pathway_l_semantic_terms_filters_active_scope_before_posting_limit():
+    tenant_id = uuid.uuid4()
+    entity_id = uuid.uuid4()
+
+    class FakeConn:
+        def __init__(self) -> None:
+            self.fetch_calls: list[tuple[str, tuple[object, ...]]] = []
+
+        async def fetchval(self, query: str, *_args: object) -> str | None:
+            if "model_representation_feature_postings" in query:
+                return "model_representation_feature_postings"
+            return None
+
+        async def fetch(self, query: str, *args: object) -> list[object]:
+            self.fetch_calls.append((query, args))
+            return []
+
+    conn = FakeConn()
+
+    result = await pathway_l_semantic_terms(
+        "refund replay drift caused an idempotency key collision",
+        tenant_id,
+        conn,  # type: ignore[arg-type]
+        scope_entities=[{"type": "customer", "id": str(entity_id)}],
+        limit=8,
+    )
+
+    assert result.notes["postings_index"] is True
+    assert result.notes["feature_postings_index"] is True
+    assert result.notes["postings_table"] == "model_representation_feature_postings"
+    assert len(conn.fetch_calls) == 1
+    query, args = conn.fetch_calls[0]
+    lateral_sql = query.split("CROSS JOIN LATERAL (", 1)[1].split(") hit", 1)[0]
+    assert "JOIN models m" in lateral_sql
+    assert "m.status = 'active'" in lateral_sql
+    assert "post.status = 'active'" in lateral_sql
+    assert "post.feature_type = 'lexical'" in lateral_sql
+    assert "post.feature = qt.term" in lateral_sql
+    assert "m.scope_entities @>" in lateral_sql
+    assert lateral_sql.index("m.scope_entities @>") < lateral_sql.index("LIMIT $4")
+    assert args[0] == tenant_id
+    assert args[3] == 48
+    assert args[4] == json.dumps(
+        [{"type": "customer", "id": str(entity_id)}],
+        sort_keys=True,
+    )
 
 
 # =====================================================================

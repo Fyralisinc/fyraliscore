@@ -6,6 +6,7 @@ while removing copy-pasted INSERT statements from producers.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from typing import Any
@@ -21,6 +22,11 @@ _log = structlog.get_logger(__name__)
 
 def _jsonb(value: Any) -> str:
     return json.dumps(value if value is not None else {}, default=str)
+
+
+def _trigger_lock_key(*parts: object) -> int:
+    digest = hashlib.sha256("\0".join(map(str, parts)).encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") & 0x7FFFFFFFFFFFFFFF
 
 
 async def enqueue_trigger(
@@ -95,6 +101,57 @@ async def enqueue_trigger(
             scheduled_for,
         )
     return new_id
+
+
+async def ensure_event_arrival_trigger(
+    conn: asyncpg.Connection,
+    *,
+    tenant_id: UUID,
+    observation_id: UUID,
+    payload: dict[str, Any] | None = None,
+    scheduled_for: datetime | None = None,
+    trigger_id: UUID | None = None,
+) -> UUID:
+    """Return the idempotent T1:event_arrival trigger for an observation.
+
+    This is the producer-side metabolism invariant: once an observation exists,
+    duplicate ingest may reuse the observation row, but it must not silently skip
+    the Think trigger that metabolizes the signal.
+    """
+
+    lock_key = _trigger_lock_key(tenant_id, observation_id, "T1", "event_arrival")
+    await conn.execute("SELECT pg_advisory_lock($1)", lock_key)
+    try:
+        existing = await conn.fetchval(
+            """
+            SELECT id
+            FROM think_trigger_queue
+            WHERE tenant_id = $1
+              AND observation_id = $2
+              AND trigger_kind = 'T1'
+              AND trigger_subkind = 'event_arrival'
+            ORDER BY
+              CASE WHEN completed_at IS NULL THEN 0 ELSE 1 END,
+              enqueued_at ASC
+            LIMIT 1
+            """,
+            tenant_id,
+            observation_id,
+        )
+        if existing is not None:
+            return existing
+        return await enqueue_trigger(
+            conn,
+            tenant_id=tenant_id,
+            trigger_kind="T1",
+            trigger_subkind="event_arrival",
+            observation_id=observation_id,
+            payload=payload,
+            scheduled_for=scheduled_for,
+            trigger_id=trigger_id,
+        )
+    finally:
+        await conn.execute("SELECT pg_advisory_unlock($1)", lock_key)
 
 
 async def enqueue_model_reeval(
@@ -192,4 +249,4 @@ async def _mirror_model_reeval_obligation(
         )
 
 
-__all__ = ["enqueue_model_reeval", "enqueue_trigger"]
+__all__ = ["enqueue_model_reeval", "enqueue_trigger", "ensure_event_arrival_trigger"]

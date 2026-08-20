@@ -115,6 +115,7 @@ async def test_reconciler_sigterm_subprocess(
     env["RECONCILER_BATCH"] = "5"
     env["RECONCILER_INSTANCE"] = instance
     env["WORKFLOWS_LOG_LEVEL"] = "WARNING"
+    env["RECONCILER_DISABLE_KAFKA"] = "1"
 
     proc = subprocess.Popen(
         [sys.executable, "-m",

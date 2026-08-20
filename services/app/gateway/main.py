@@ -4,15 +4,18 @@ Route implementations live in focused router modules. This file owns the
 FastAPI factory, lifespan dependency construction, middleware registration,
 exception handlers, and route mounting orchestration.
 """
+
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 from dataclasses import dataclass
 from typing import AsyncIterator, Awaitable, TypeVar
 
 import asyncpg
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from lib.embeddings.ollama import OllamaClient, OllamaConfig
 from lib.shared.db import assert_pool_database_startup_safety
@@ -55,15 +58,50 @@ from services.app.gateway.state_wiring import (
 )
 from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
-from services.ingest.integrations.github.gateway_wiring import (
-    close_github_gateway_state,
-    wire_github_gateway_state,
+from services.ingest.connector_platform.startup import (
+    wire_source_connector_runtime,
 )
 
 
 log = get_logger("gateway")
 
 _T = TypeVar("_T")
+
+
+def _cors_allowed_origins(settings: GatewaySettings) -> tuple[str, ...]:
+    """Browser origins allowed to call the gateway in local development."""
+    raw = os.environ.get("GATEWAY_CORS_ALLOW_ORIGINS", "").strip()
+    if raw:
+        return tuple(
+            origin.rstrip("/")
+            for origin in (part.strip() for part in raw.split(","))
+            if origin
+        )
+    if settings.is_production:
+        return ()
+    return (
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+        "http://localhost:3002",
+        "http://127.0.0.1:3002",
+        "http://localhost:3003",
+        "http://127.0.0.1:3003",
+        "http://localhost:3004",
+        "http://127.0.0.1:3004",
+        "http://localhost:3005",
+        "http://127.0.0.1:3005",
+    )
+
+
+async def _stop_background_task(
+    task: asyncio.Task[None],
+    stop_event: asyncio.Event,
+) -> None:
+    stop_event.set()
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,9 +159,7 @@ async def _await_startup(
     try:
         return await asyncio.wait_for(awaitable, timeout=timeout_s)
     except TimeoutError as exc:
-        raise TimeoutError(
-            f"{component} startup exceeded {timeout_s:g}s"
-        ) from exc
+        raise TimeoutError(f"{component} startup exceeded {timeout_s:g}s") from exc
 
 
 def _clear_app_state(app_: FastAPI, *names: str) -> None:
@@ -184,9 +220,7 @@ async def _stop_ceo_view_for_lifespan(app_: FastAPI, ceo_view: object) -> None:
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
-    query_handler = (
-        ceo_view.get("qry_handler") if isinstance(ceo_view, dict) else None
-    )
+    query_handler = ceo_view.get("qry_handler") if isinstance(ceo_view, dict) else None
     if query_handler is not None:
         close_query_handler = getattr(query_handler, "aclose", None)
         if close_query_handler is not None:
@@ -243,26 +277,8 @@ async def _close_owned_pool_for_lifespan(
         app_,
         "secret_store",
         "tenant_resolver",
-        "tenant_flags",
         "gateway_runtime",
     )
-
-
-def _prepare_existing_github_cleanup(
-    app_: FastAPI,
-    stack: contextlib.AsyncExitStack,
-) -> object | None:
-    if not bool(getattr(app_.state, "gateway_owns_github_client", False)):
-        return None
-    existing_github_client = getattr(app_.state, "github_client", None)
-    if existing_github_client is None:
-        return None
-    stack.push_async_callback(
-        close_github_gateway_state,
-        app_,
-        client=existing_github_client,
-    )
-    return existing_github_client
 
 
 async def _start_gateway_deps(
@@ -401,7 +417,9 @@ async def _start_gateway_deps(
         app_.include_router(
             build_ask_router(
                 ask_orchestrator,
-                default_tenant_id=_AskUUID(_default_tenant) if _default_tenant else None,
+                default_tenant_id=_AskUUID(_default_tenant)
+                if _default_tenant
+                else None,
                 default_viewer_id=_AskUUID(_default_actor) if _default_actor else None,
             )
         )
@@ -487,11 +505,6 @@ async def _start_integration_runtime(
         required=True,
         detail="created" if wiring.tenant_resolver_created else "reused",
     )
-    startup_status.ok(
-        "integration_state.tenant_flags",
-        required=True,
-        detail="created" if wiring.tenant_flags_created else "reused",
-    )
 
     try:
         probe_results = await validate_integration_runtime_state(
@@ -516,62 +529,6 @@ async def _start_integration_runtime(
         startup_status.ok(result.component, required=True)
     startup_status.ok("integration_state", required=True)
     return wiring
-
-
-async def _start_github_gateway_state(
-    app_: FastAPI,
-    stack: contextlib.AsyncExitStack,
-    *,
-    pool: asyncpg.Pool,
-    startup_status: StartupStatus,
-    settings: GatewaySettings,
-    cleanup_client: object | None,
-) -> object | None:
-    try:
-        github_wiring = wire_github_gateway_state(
-            app_,
-            pool=pool,
-            tenant_resolver=getattr(app_.state, "tenant_resolver", None),
-        )
-        github_client = getattr(app_.state, "github_client", None)
-        if github_wiring.owns_client and github_client is not cleanup_client:
-            cleanup_client = github_client
-            stack.push_async_callback(
-                close_github_gateway_state,
-                app_,
-                client=github_client,
-            )
-        startup_status.ok(
-            "github_gateway_state",
-            required=settings.require_github_integration,
-        )
-    except Exception as exc:  # noqa: BLE001
-        partial_client = getattr(app_.state, "github_client", None)
-        if (
-            partial_client is not None
-            and partial_client is not cleanup_client
-            and bool(getattr(app_.state, "gateway_owns_github_client", False))
-        ):
-            await close_github_gateway_state(app_, client=partial_client)
-        if settings.require_github_integration:
-            startup_status.failed_component(
-                "github_gateway_state",
-                required=True,
-                exc=exc,
-            )
-            raise
-        startup_status.degraded(
-            "github_gateway_state",
-            required=False,
-            detail="optional startup failed",
-            exc=exc,
-        )
-        log.warning(
-            "github_gateway_state_degraded",
-            error=str(exc),
-            error_type=type(exc).__name__,
-        )
-    return cleanup_client
 
 
 def _start_oauth_sweeper(
@@ -699,10 +656,7 @@ async def _start_ceo_view(
         startup_status.ok("ceo_view", required=False)
     except Exception as ceo_exc:  # noqa: BLE001
         partial_ceo_view = getattr(app_.state, "ceo_view", None)
-        if (
-            partial_ceo_view is not None
-            and partial_ceo_view is not previous_ceo_view
-        ):
+        if partial_ceo_view is not None and partial_ceo_view is not previous_ceo_view:
             await _stop_ceo_view_for_lifespan(app_, partial_ceo_view)
         startup_status.degraded(
             "ceo_view",
@@ -743,9 +697,7 @@ async def _start_ingestion_data_plane(
             exc=exc,
         )
     data_plane_wired = bool(data_plane_wiring)
-    data_plane_owned = bool(
-        getattr(data_plane_wiring, "owned", data_plane_wired)
-    )
+    data_plane_owned = bool(getattr(data_plane_wiring, "owned", data_plane_wired))
     if data_plane_wired:
         if data_plane_owned:
             stack.push_async_callback(
@@ -780,9 +732,7 @@ def build_app(
         configure_structlog(settings.log_level)
 
     if pool is None and (actor_repo is not None or alias_repo is not None):
-        raise ValueError(
-            "pool is required when actor_repo or alias_repo is injected"
-        )
+        raise ValueError("pool is required when actor_repo or alias_repo is injected")
 
     @contextlib.asynccontextmanager
     async def _lifespan(app_: FastAPI) -> AsyncIterator[None]:
@@ -795,9 +745,6 @@ def build_app(
 
         async with contextlib.AsyncExitStack() as stack:
             stack.callback(startup_status.mark_stopped)
-            github_cleanup_client = _prepare_existing_github_cleanup(
-                app_, stack
-            )
             runtime = await _start_gateway_deps(
                 app_,
                 stack,
@@ -810,6 +757,52 @@ def build_app(
                 rate_limiter=rate_limiter,
             )
 
+            connector_wiring = wire_source_connector_runtime(
+                app_.state,
+                pool=runtime.pool,
+                actor="gateway",
+            )
+            stack.push_async_callback(connector_wiring.close)
+            await connector_wiring.refresh_routing()
+            artifact_admission = await connector_wiring.refresh_artifact_admission()
+            if (
+                connector_wiring.rollout is not None
+                or connector_wiring.artifact_admission is not None
+            ):
+                connector_rollout_stop = asyncio.Event()
+                connector_rollout_task = asyncio.create_task(
+                    connector_wiring.run_control_loop(connector_rollout_stop),
+                    name="source-connector-control-loop",
+                )
+                stack.push_async_callback(
+                    _stop_background_task,
+                    connector_rollout_task,
+                    connector_rollout_stop,
+                )
+            startup_status.ok(
+                "source_connector_runtime",
+                required=False,
+                detail=(
+                    f"connectors={len(connector_wiring.composition.registry)} "
+                    f"fingerprint={connector_wiring.composition.registry_fingerprint}"
+                ),
+            )
+            if artifact_admission is not None:
+                admitted, quarantined = artifact_admission
+                detail = f"admitted={admitted} quarantined={quarantined}"
+                if quarantined:
+                    startup_status.degraded(
+                        "source_connector_artifact_admission",
+                        required=False,
+                        detail=detail,
+                    )
+                else:
+                    startup_status.ok(
+                        "source_connector_artifact_admission",
+                        required=False,
+                        detail=detail,
+                    )
+
             await _start_extension_startup_hooks(
                 app_,
                 pool=runtime.pool,
@@ -821,14 +814,6 @@ def build_app(
                 pool=runtime.pool,
                 startup_status=startup_status,
                 settings=settings,
-            )
-            github_cleanup_client = await _start_github_gateway_state(
-                app_,
-                stack,
-                pool=runtime.pool,
-                startup_status=startup_status,
-                settings=settings,
-                cleanup_client=github_cleanup_client,
             )
             _start_oauth_sweeper(
                 app_,
@@ -892,34 +877,19 @@ def build_app(
         )
         app.state.gateway_runtime = _GatewayRuntime(pool=pool, deps=deps)
         wire_integration_runtime_state(app, pool)
-        try:
-            github_wiring = wire_github_gateway_state(
-                app,
-                pool=pool,
-                tenant_resolver=getattr(app.state, "tenant_resolver", None),
-            )
-            if github_wiring.owns_client:
-                app.state.gateway_owns_github_client = True
-        except Exception as exc:  # noqa: BLE001
-            _clear_app_state(app, "github_client", "github_replay_cache")
-            app.state.gateway_owns_github_client = False
-            if settings.require_github_integration:
-                raise
-            app.state.startup_status.degraded(
-                "github_gateway_state",
-                required=False,
-                detail="optional pre-lifespan wiring failed",
-                exc=exc,
-            )
-            log.warning(
-                "github_gateway_state_prewire_degraded",
-                error=str(exc),
-                error_type=type(exc).__name__,
-            )
 
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(BearerAuthMiddleware)
     app.add_middleware(RequestContextMiddleware)
+    cors_origins = _cors_allowed_origins(settings)
+    if cors_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(cors_origins),
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=["Authorization", "Content-Type", "X-Tenant-Id"],
+        )
 
     install_safe_error_handlers(app)
     app.add_exception_handler(IngestSizeError, ingest_size_error_handler)

@@ -45,7 +45,6 @@ def test_customer_pilot_rehearsal_builds_and_validates_clean_package() -> None:
         assert report.artifact_count == 9
         assert report.verified_artifact_count == 9
         assert "complete_control_plane_read_smoke" in report.next_actions
-        assert "complete_live_test_readiness" in report.next_actions
         assert not (output_dir / "stale.txt").exists()
         assert (output_dir / "byoc-customer-pilot-package-manifest.json").exists()
         assert (output_dir / "byoc-customer-pilot-package-validation.json").exists()

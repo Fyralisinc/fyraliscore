@@ -23,6 +23,14 @@ _SERVER_DSN = os.environ.get(
 async def _make_db() -> str:
     if "://" not in _SERVER_DSN:
         pytest.skip("no DATABASE_URL")
+    from services.platform.extensions.tests._migration_test_helpers import (
+        require_pgvector_server_privilege_or_skip,
+    )
+
+    await require_pgvector_server_privilege_or_skip(
+        _SERVER_DSN,
+        feature="extension marketplace",
+    )
     admin = await asyncpg.connect(_SERVER_DSN)
     try:
         await admin.execute('DROP DATABASE IF EXISTS fyralis_m8_test WITH (FORCE)')
@@ -47,15 +55,16 @@ def _manifest(ext_id, *, publisher="Acme Inc", **extra):
 @pytest.fixture
 async def env():
     import lib
-    from lib.shared.migrations import apply_migrations_dir, schema_bootstrap_lock
     from services.app.gateway.db_bootstrap import create_gateway_pool
+    from services.platform.extensions.tests._migration_test_helpers import (
+        apply_core_migrations_or_skip,
+    )
 
     dsn = await _make_db()
     conn = await asyncpg.connect(dsn)
     try:
         core = pathlib.Path(lib.__file__).resolve().parents[1] / "db" / "migrations"
-        async with schema_bootstrap_lock(conn):
-            await apply_migrations_dir(conn, core)
+        await apply_core_migrations_or_skip(conn, core, feature="extension marketplace")
     finally:
         await conn.close()
     pool = await create_gateway_pool(dsn)

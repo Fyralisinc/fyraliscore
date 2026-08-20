@@ -1,0 +1,32 @@
+# Fyralis BYOC Control Plane — Python dependencies
+#
+# Pinned loosely (>=) so the Verify step can resolve a working set; tighten to
+# exact pins before a release tag.
+
+# --- crypto: trust roots, mTLS certs, ed25519 signing ----------------------
+cryptography>=42.0
+pynacl>=1.5
+
+# --- services: auth-proxy, console, onboarding, licensing APIs -------------
+fastapi>=0.110
+uvicorn[standard]>=0.29
+httpx>=0.27
+# auth-proxy: sans-IO HTTP/1.1 state machine for the mTLS-terminating reverse proxy
+h11>=0.14
+# WS-AGENT (data-plane agent): the single OUTBOUND https client for heartbeats +
+# signed-bundle fetch. The agent imports it lazily and opens no listener (I2).
+requests>=2.31
+
+# --- observability / telemetry --------------------------------------------
+prometheus-client>=0.20
+
+# --- config / serialization / logging --------------------------------------
+pydantic>=2.0
+pyyaml>=6.0
+structlog>=24.1
+
+# --- tests -----------------------------------------------------------------
+pytest>=8.0
+pytest-asyncio>=0.23
+# auth-proxy security review (WS-AUTHPROXY-SEC): SAST over the proxy source
+bandit>=1.9

@@ -45,7 +45,37 @@ def test_runtime_metrics_residual_summary_tolerates_bad_elapsed_values() -> None
     assert summary == {
         "total_ms": 100,
         "retrieval_action_timings_ms_total": 40,
+        "retrieval_action_work_timings_ms_total": 40,
+        "retrieval_action_wait_timings_ms_total": 0,
         "retrieval_stage_timings_ms_total": 25,
         "measured_ms_total": 65,
+        "non_wait_measured_ms_total": 65,
+        "parallel_wait_overcount_ms": 0,
         "unaccounted_ms": 35,
+        "work_unaccounted_ms": 35,
+    }
+
+
+def test_runtime_metrics_residual_summary_splits_in_flight_waits() -> None:
+    summary = runtime_metrics.runtime_residual_summary(
+        total_ms=100,
+        action_timings=[
+            {"elapsed_ms": 40, "timing_kind": "owner_work"},
+            {"elapsed_ms": 25, "timing_kind": "in_flight_wait"},
+            {"elapsed_ms": 7, "timing_kind": "cache_hit"},
+        ],
+        stage_timings=[{"elapsed_ms": 10}],
+    )
+
+    assert summary == {
+        "total_ms": 100,
+        "retrieval_action_timings_ms_total": 72,
+        "retrieval_action_work_timings_ms_total": 47,
+        "retrieval_action_wait_timings_ms_total": 25,
+        "retrieval_stage_timings_ms_total": 10,
+        "measured_ms_total": 82,
+        "non_wait_measured_ms_total": 57,
+        "parallel_wait_overcount_ms": 25,
+        "unaccounted_ms": 18,
+        "work_unaccounted_ms": 43,
     }

@@ -170,14 +170,11 @@ async def _run_migrations(conn: asyncpg.Connection) -> None:
     # failures roll back cleanly instead of poisoning the
     # connection. See lib/shared/migrations.py.
     from lib.shared.migrations import apply_migrations_dir
-    # on_error="warn": the test DB is long-lived and the Python runner has no
-    # schema_migrations ledger (unlike the production scripts/docker-migrate.sh),
-    # so it re-applies every file each run. An intermediate constraint-widening
-    # migration (e.g. 0059, which re-adds a narrower source CHECK that later
-    # migrations widen again) fails when re-applied against a DB already holding
-    # rows from a later source. Warn-and-continue lets the subsequent migrations
-    # re-establish the correct final schema; production applies each file exactly
-    # once and is unaffected. See lib/shared/migrations.py docstring.
+    # on_error="warn": local dev/test databases are long-lived, and older runs
+    # may predate the schema_migrations ledger. Warn-and-continue lets later
+    # migrations re-establish the correct final schema when a stale DB replays an
+    # already-superseded migration. Once recorded, the ledger is preserved across
+    # per-test TRUNCATEs by _tables_to_truncate below.
     await apply_migrations_dir(conn, MIGRATIONS_DIR, on_error="warn")
 
 
@@ -290,9 +287,54 @@ async def _tables_to_truncate(conn: asyncpg.Connection) -> list[str]:
         WHERE n.nspname = 'public'
           AND c.relkind IN ('r', 'p')
           AND c.relispartition = FALSE
+          AND c.relname <> 'schema_migrations'
+          AND c.relname NOT LIKE 'schema_migrations_ext_%'
         """
     )
     return [r["relname"] for r in rows]
+
+
+async def _truncate_public_tables(conn: asyncpg.Connection) -> None:
+    tables = await _tables_to_truncate(conn)
+    if not tables:
+        return
+    table_list = ", ".join(f'"{t}"' for t in tables)
+    await conn.execute(f"TRUNCATE {table_list} RESTART IDENTITY CASCADE")
+
+
+async def _prune_empty_out_of_window_partitions(conn: asyncpg.Connection) -> None:
+    rows = await conn.fetch(
+        """
+        WITH bounds AS (
+          SELECT
+            (date_trunc('month', CURRENT_DATE)::date - INTERVAL '36 months')::date AS keep_start,
+            (date_trunc('month', CURRENT_DATE)::date + INTERVAL '7 months')::date AS keep_end
+        ),
+        parts AS (
+          SELECT
+            parent.relname AS parent_name,
+            child.relname AS partition_name,
+            to_date(substring(child.relname FROM '_(\\d{4}_\\d{2})$'), 'YYYY_MM') AS month_start
+          FROM pg_inherits inh
+          JOIN pg_class child ON child.oid = inh.inhrelid
+          JOIN pg_class parent ON parent.oid = inh.inhparent
+          JOIN pg_namespace n ON n.oid = parent.relnamespace
+          WHERE n.nspname = 'public'
+            AND parent.relname IN ('observations', 'resource_transactions')
+            AND child.relkind = 'r'
+            AND child.relname ~ '_(\\d{4}_\\d{2})$'
+        )
+        SELECT parent_name, partition_name
+        FROM parts, bounds
+        WHERE month_start < keep_start OR month_start >= keep_end
+        ORDER BY parent_name, partition_name
+        """
+    )
+    for row in rows:
+        partition_name = row["partition_name"]
+        row_count = await conn.fetchval(f'SELECT count(*) FROM "{partition_name}"')
+        if row_count == 0:
+            await conn.execute(f'DROP TABLE IF EXISTS "{partition_name}"')
 
 
 # ---------------------------------------------------------------------
@@ -330,12 +372,14 @@ async def fresh_db(db_pool: asyncpg.Pool) -> AsyncGenerator[asyncpg.Pool, None]:
     """
     async with db_pool.acquire() as conn:
         async with schema_bootstrap_lock(conn):
-            tables = await _tables_to_truncate(conn)
-            if tables:
-                table_list = ", ".join(f'"{t}"' for t in tables)
-                await conn.execute(f"TRUNCATE {table_list} RESTART IDENTITY CASCADE")
+            await _truncate_public_tables(conn)
+            await _prune_empty_out_of_window_partitions(conn)
             await _seed_test_baseline(conn)
-            yield db_pool
+            try:
+                yield db_pool
+            finally:
+                await _truncate_public_tables(conn)
+                await _prune_empty_out_of_window_partitions(conn)
 
 
 # ---------------------------------------------------------------------

@@ -27,11 +27,16 @@ refresh exchange existed. Implemented end-to-end in
   client creds in the body; **Carta has NO refresh grant** and re-mints via
   `grant_type=client_credentials` (the per-install `refresh_secret_ref` holds the
   client-credentials secret, not an OAuth refresh token).
-- **Proactive** (`needs_refresh` skew + `ensure_fresh_access_token`): refresh
-  when within the expiry skew, before a poll races the cutover.
+- **Proactive** (`maybe_proactive_refresh`): **live-wired** through the fetch
+  path — `token_expires_at` is loaded by the four shard install SELECTs
+  (`shard_fetch.py`), threaded through the `_clients.py` builders into each
+  client, and checked once at the top of `Client._request`; if the token is
+  within the expiry skew the client re-mints up front so the first call doesn't
+  burn a guaranteed 401. (A NULL `token_expires_at` is left to the reactive path.)
 - **Reactive 401 re-mint**: wired into all four read clients (`QuickBooks/Ramp/
   Gusto/Carta Client._request`) — on a 401 the client refreshes via the install's
-  refresh material and retries once (inert in the gate's spammer mode).
+  refresh material and retries once. Both paths are inert in the gate's spammer
+  mode (preset token + no secret_store → no-op).
 - **Persistence** (`refresh_and_persist`): `put` the new access (+ rotated
   refresh) ciphertext and `UPDATE` the install row's `secret_ref` /
   `refresh_secret_ref` / `token_expires_at` (generic across the four
@@ -43,8 +48,10 @@ refresh exchange existed. Implemented end-to-end in
 
 **Validated:** the 4 `oauth_token` contract fixtures (Intuit/Ramp/Gusto/Carta)
 + 7 contract tests + 6 integration unit tests (skew / persist / rotation / Carta
-client-credentials / degraded) + 2 QBO-client end-to-end tests (401→refresh→retry,
-failed-refresh→degraded). **15 tests, all green.**
+client-credentials / degraded) + 4 QBO-client end-to-end tests
+(**proactive: expired→refresh-up-front→fetch with no 401**; valid-token→no
+refresh; reactive 401→refresh→retry; failed-refresh→degraded). **17 tests, all
+green**, plus the all-25 gate re-run after the proactive wiring.
 
 ## 2. Ramp Signature Ambiguity — dual hex/base64 parser
 

@@ -16,7 +16,10 @@ from .config import _env_float, _env_int
 from .evidence_utils import jsonable as _jsonable
 from .retrieval_learning import (
     learn_retrieval_motifs as _learn_retrieval_motifs,
+    learn_sage_route_utilities as _learn_sage_route_utilities,
     penalize_retrieval_motifs as _penalize_retrieval_motifs,
+    profile_prior_outcomes_from_result as _profile_prior_outcomes_from_result,
+    record_profile_prior_residuals as _record_profile_prior_residuals,
 )
 from .reflective_learning import (
     learn_reflective_rules as _learn_reflective_rules,
@@ -75,6 +78,9 @@ async def _persist_inquiry(
         else ("internal" if trigger.model_id is None else "internal")
     )
     signal_ref_id = trigger.observation_id or trigger.model_id
+    profile_prior_outcomes = _profile_prior_outcomes_from_result(result)
+    if profile_prior_outcomes:
+        result.notes["sage_profile_prior_outcomes"] = profile_prior_outcomes
     await conn.execute(
         """
         INSERT INTO inquiry_sessions (
@@ -144,6 +150,8 @@ async def _persist_inquiry(
             ],
         )
     if not result.evidence_cards:
+        await _learn_sage_route_utilities_best_effort(conn, result, trigger)
+        await _record_profile_prior_residuals_best_effort(conn, result, trigger)
         await _penalize_retrieval_motifs(conn, result, trigger)
         await _learn_reflective_rules_best_effort(conn, result, trigger)
         await _emit_phase1_traces(conn, result, trigger)
@@ -189,10 +197,46 @@ async def _persist_inquiry(
             for card in result.evidence_cards
         ],
     )
+    await _learn_sage_route_utilities_best_effort(conn, result, trigger)
+    await _record_profile_prior_residuals_best_effort(conn, result, trigger)
     await _learn_retrieval_motifs(conn, result, trigger)
     await _penalize_retrieval_motifs(conn, result, trigger)
     await _learn_reflective_rules_best_effort(conn, result, trigger)
     await _emit_phase1_traces(conn, result, trigger)
+
+
+async def _learn_sage_route_utilities_best_effort(
+    conn: asyncpg.Connection,
+    result: InquiryResult,
+    trigger: TriggerContext,
+) -> None:
+    try:
+        await _learn_sage_route_utilities(conn, result, trigger)
+    except Exception as exc:  # noqa: BLE001
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "sage_route_utility_learning.failed",
+            session_id=str(result.session_id),
+            error=str(exc),
+        )
+
+
+async def _record_profile_prior_residuals_best_effort(
+    conn: asyncpg.Connection,
+    result: InquiryResult,
+    trigger: TriggerContext,
+) -> None:
+    try:
+        await _record_profile_prior_residuals(conn, result, trigger)
+    except Exception as exc:  # noqa: BLE001
+        import structlog
+
+        structlog.get_logger(__name__).warning(
+            "profile_prior_residual_record_failed",
+            tenant_id=str(trigger.tenant_id),
+            error=str(exc),
+        )
 
 
 async def _learn_reflective_rules_best_effort(

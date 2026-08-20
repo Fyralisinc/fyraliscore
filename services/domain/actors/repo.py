@@ -12,11 +12,11 @@ Public API (per BUILD-PLAN §2 Prompt 1-B, with Q5 + Q6 resolutions applied):
         type is Literal["human_internal", "human_external", "ai_agent"]
         (Q5 resolution: three-value enum, NOT 'human'|'agent'.)
 
-  - add_identity_mapping(actor_id, source_channel, source_actor_ref,
+  - add_identity_mapping(actor_id, tenant_id, source_channel, source_actor_ref,
                          confidence=1.0)
         Column names per S5.2 (Q6: NOT source_system / external_id).
 
-  - resolve_by_source_actor_ref(ref: "<channel>:<external_ref>")
+  - resolve_by_source_actor_ref(ref, tenant_id, connector_installation_id=None)
         Splits on the first ':' and looks up the mapping. Returns the
         canonical actor_id or None.
 
@@ -138,15 +138,17 @@ class ActorRepo:
         self,
         *,
         actor_id: UUID,
+        tenant_id: UUID,
         source_channel: str,
         source_actor_ref: str,
+        connector_installation_id: UUID | None = None,
         confidence: float = 1.0,
     ) -> ActorIdentityMappingRow:
         """
-        Insert a (source_channel, source_actor_ref) -> actor_id mapping.
+        Insert a tenant/installation-scoped native identity projection.
 
-        The (source_channel, source_actor_ref) pair is the table's
-        primary key (S5.2), so a duplicate raises a clear
+        The tenant/installation/channel/native-ref tuple is the table's
+        primary key, so a duplicate raises a clear
         ValidationError rather than the raw UniqueViolation.
         """
         if not source_channel or ":" in source_channel and source_channel.startswith(":"):
@@ -166,17 +168,41 @@ class ActorRepo:
                 value=confidence,
             )
 
+        actor_tenant = await self._pool.fetchval(
+            "SELECT tenant_id FROM actors WHERE id = $1",
+            actor_id,
+        )
+        if actor_tenant is None:
+            raise ValidationError(f"actor_id {actor_id} does not exist")
+        if actor_tenant != tenant_id:
+            raise ValidationError(
+                "identity mapping tenant must match actor tenant",
+                actor_id=str(actor_id),
+                actor_tenant_id=str(actor_tenant),
+                tenant_id=str(tenant_id),
+            )
+        installation_scope = (
+            str(connector_installation_id)
+            if connector_installation_id is not None
+            else f"stateless:{source_channel}"
+        )
+
         try:
             row = await self._pool.fetchrow(
                 """
                 INSERT INTO actor_identity_mappings (
-                    actor_id, source_channel, source_actor_ref,
+                    actor_id, tenant_id, connector_installation_id,
+                    installation_scope, source_channel, source_actor_ref,
                     confidence, created_at
-                ) VALUES ($1, $2, $3, $4, now())
-                RETURNING actor_id, source_channel, source_actor_ref,
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+                RETURNING actor_id, tenant_id, connector_installation_id,
+                          installation_scope, source_channel, source_actor_ref,
                           confidence, created_at
                 """,
                 actor_id,
+                tenant_id,
+                connector_installation_id,
+                installation_scope,
                 source_channel,
                 source_actor_ref,
                 confidence,
@@ -202,7 +228,12 @@ class ActorRepo:
     # -----------------------------------------------------------------
     # resolve_by_source_actor_ref
     # -----------------------------------------------------------------
-    async def resolve_by_source_actor_ref(self, ref: str) -> UUID | None:
+    async def resolve_by_source_actor_ref(
+        self,
+        ref: str,
+        tenant_id: UUID,
+        connector_installation_id: UUID | None = None,
+    ) -> UUID | None:
         """
         Resolve a `<channel>:<external_ref>` string to an actor_id.
 
@@ -225,13 +256,25 @@ class ActorRepo:
                 field="ref",
                 value=ref,
             )
+        installation_scope = (
+            str(connector_installation_id)
+            if connector_installation_id is not None
+            else f"stateless:{source_channel}"
+        )
         val = await self._pool.fetchval(
             """
             SELECT actor_id FROM actor_identity_mappings
-            WHERE source_channel = $1 AND source_actor_ref = $2
+            WHERE tenant_id = $1
+              AND source_channel = $2
+              AND source_actor_ref = $3
+              AND installation_scope IN ($4, 'legacy:' || $2)
+            ORDER BY CASE WHEN installation_scope = $4 THEN 0 ELSE 1 END
+            LIMIT 1
             """,
+            tenant_id,
             source_channel,
             source_actor_ref,
+            installation_scope,
         )
         return val  # asyncpg returns UUID or None
 

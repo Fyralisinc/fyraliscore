@@ -17,7 +17,6 @@ from services.app.gateway.route_access import (
 from services.app.gateway.route_mounts import mount_gateway_routes
 from services.app.gateway.settings import GatewaySettings
 
-
 _PROD_BOOTSTRAP_SECRET = "prod-bootstrap-secret-32chars-minimum"
 
 
@@ -71,12 +70,20 @@ def test_static_gateway_route_inventory_classifies_security_boundaries() -> None
     assert by_path["/ingest/{channel:path}"].policy.access is RouteAccess.BEARER
     assert by_path["/ingest/{channel:path}"].policy.gateway_bearer_required is True
     assert by_path["/webhooks/{provider}"].policy.access is RouteAccess.PROVIDER_SIGNED
+    # Stable connector webhooks enter through the generic provider-signed
+    # surface; Instagram remains an explicit supplemental webhook adapter.
     assert (
-        by_path["/integrations/whatsapp/webhook"].policy.access
+        by_path["/integrations/instagram/webhook"].policy.access
         is RouteAccess.PROVIDER_SIGNED
     )
     assert by_path["/ext/oauth/token"].policy.access is RouteAccess.EXTENSION_AUTH
     assert by_path["/ext/v1/observations"].policy.access is RouteAccess.EXTENSION_AUTH
+    connector_callback = by_path["/integrations/{source}/callback"].policy
+    assert connector_callback.access is RouteAccess.SELF_AUTHENTICATED
+    assert connector_callback.gateway_bearer_required is False
+    connector_install = by_path["/integrations/{source}/install"].policy
+    assert connector_install.access is RouteAccess.BEARER
+    assert connector_install.gateway_bearer_required is True
     byoc_intake = by_path["/byoc/control-plane/evidence-packages"].policy
     assert byoc_intake.access is RouteAccess.SELF_AUTHENTICATED
     assert byoc_intake.gateway_bearer_required is False
@@ -86,9 +93,7 @@ def test_static_gateway_route_inventory_classifies_security_boundaries() -> None
     byoc_preflight = by_path["/byoc/control-plane/preflight-reports"].policy
     assert byoc_preflight.access is RouteAccess.SELF_AUTHENTICATED
     assert byoc_preflight.gateway_bearer_required is False
-    byoc_control_panel_state = by_path[
-        "/byoc/control-plane/control-panel-state"
-    ].policy
+    byoc_control_panel_state = by_path["/byoc/control-plane/control-panel-state"].policy
     assert byoc_control_panel_state.access is RouteAccess.SELF_AUTHENTICATED
     assert byoc_control_panel_state.gateway_bearer_required is False
     byoc_browser_control_panel = by_path["/byoc/control-panel/state"].policy
@@ -163,12 +168,10 @@ def test_production_mount_skips_non_production_extensions(
 
     assert "/v1/demo/ping" in dev_paths
     assert "/v1/demo/ping" not in prod_paths
-    assert gateway_extensions.extension_public_path_prefixes(
-        production=False
-    ) == ("/v1/demo",)
-    assert gateway_extensions.extension_public_path_prefixes(
-        production=True
-    ) == ()
+    assert gateway_extensions.extension_public_path_prefixes(production=False) == (
+        "/v1/demo",
+    )
+    assert gateway_extensions.extension_public_path_prefixes(production=True) == ()
 
 
 def test_debug_routes_are_classified_when_explicitly_enabled() -> None:
@@ -185,7 +188,12 @@ def test_only_health_readiness_and_metrics_are_fully_public() -> None:
         entry.path for entry in entries if entry.policy.access is RouteAccess.PUBLIC
     }
 
-    assert public_paths == {"/healthz", "/readyz", "/metrics"}
+    assert public_paths == {
+        "/healthz",
+        "/readyz",
+        "/metrics",
+        "/legal/local-test-privacy",
+    }
 
 
 def test_extension_routes_use_extension_auth_not_gateway_bearer_auth() -> None:

@@ -10,6 +10,8 @@ useful model layer, and does that model layer improve future reasoning?
 
 - Benchmark runner:
   `scripts/run_storyline_batch_benchmark.py`
+- Long-term vitals proposal:
+  `docs/evaluation/company_understanding_vitals_harness.md`
 - Unit tests:
   `tests/unit/test_storyline_batch_benchmark.py`
 - Real-run reports:
@@ -154,6 +156,92 @@ Build-only smoke check:
   --run-id storyline-batch-buildonly-check
 ```
 
+Reusable seeded baseline for retrieval optimization:
+
+```bash
+.venv/bin/python scripts/run_storyline_batch_benchmark.py \
+  --mode seed-only \
+  --run-id retrieval-opt-seed-5000 \
+  --target-t1-batches 0 \
+  --seed-models 5000 \
+  --seed-families 100
+```
+
+Before any expensive Codex-backed append validation, run the retrieval hot-path
+probe against the seeded tenant:
+
+```bash
+.venv/bin/python scripts/run_storyline_batch_benchmark.py \
+  --mode retrieval-probe \
+  --append-to-run-id retrieval-opt-seed-5000 \
+  --run-id retrieval-opt-seed-5000-probe \
+  --target-t1-batches 0 \
+  --retrieval-probe-max-ms 1000 \
+  --skip-migrations
+```
+
+This probe is intentionally LLM-free and non-mutating. It exercises focused
+answerability, focused scoped sparse lookup, focused direct scope lookup, and
+SAGE answerability over static noisy cases plus the tenant's highest-DF sparse
+and answerability terms. The probe checks both latency and minimum non-empty
+recall for positive cases, so a path cannot pass merely by returning quickly with
+no useful rows. Treat a failed probe as a blocker for a full batch run; fix the
+hot path first, then rerun the probe.
+
+By default, `retrieval-probe` fails if it cannot find scoped Model sidecars,
+because that means the focused scope paths were not exercised. Use
+`--retrieval-probe-allow-missing-scope` only for tiny local smoke tests, not as a
+gate before a full E2E run.
+
+Before spending another full real-LLM batch on a previously reported run, use
+the artifact-only rerender gate. It recomputes the scorecard from saved
+`run_summary.json`, `waves.json`, and storyline scores using the current harness
+logic, then emits an explicit `rerun_readiness` block:
+
+```bash
+.venv/bin/python scripts/run_storyline_batch_benchmark.py \
+  --mode rerender-report \
+  --append-to-run-id projection-delta-10batch-final-20260630 \
+  --run-id projection-delta-10batch-final-20260630-rerender-current
+```
+
+The rerender mode does not touch Postgres and does not call an LLM. Treat
+`rerun_readiness.ready_for_fresh_10batch=false` as a blocker for another
+expensive batch; run the emitted targeted DB proof command first. The optional
+capability/noise canary starts at horizon batch 8 so it exercises
+`capability_probe_wave_009` and `background_noise_wave_010`; it is only a live
+health smoke and does not replace the DB assertions for noise negative-memory or
+question-policy stats.
+
+Then run repeated append validations without paying the 5k-model seed cost:
+
+```bash
+RUN_REAL_LLM=1 LLM_PROVIDER=codex CODEX_TRANSPORT=cli \
+.venv/bin/python scripts/run_storyline_batch_benchmark.py \
+  --mode run \
+  --append-to-run-id retrieval-opt-seed-5000 \
+  --run-id retrieval-opt-validation-5batch-a \
+  --target-t1-batches 5 \
+  --signals-per-storyline 20 \
+  --seed-models 0 \
+  --downstream-steps-per-wave 0 \
+  --adaptive-drain-cycles 1 \
+  --adaptive-drain-steps-per-cycle 0 \
+  --skip-topology-optimizer
+```
+
+Do not pass `--cleanup` to the seed-only baseline if you want to reuse it. Append
+runs intentionally mutate the reused tenant, so this workflow is fast and useful
+for iterative retrieval validation, not a clean identical A/B baseline for every
+run. Use a fresh seed-only run when you need an untouched baseline.
+
+Do not try to clean only an append run out of a reused tenant yet. The appended
+observations and Think runs can be identified, but Think may also revise
+pre-existing Models and relationship structures. Current Model rows do not carry
+a benchmark `run_id`, and these revisions are not fully reversible from the
+benchmark harness. Treat append runs as cumulative until the system has explicit
+run-scoped provenance or tenant clone/restore support.
+
 Real LLM run:
 
 ```bash
@@ -164,8 +252,8 @@ RUN_REAL_LLM=1 LLM_CACHE_BYPASS=1 \
   --signals-per-storyline 25 \
   --future-validation-signals-per-storyline 3 \
   --noise-signals 25 \
-  --seed-models 15000 \
-  --seed-families 120 \
+  --seed-models 5000 \
+  --seed-families 100 \
   --t1-batch-window-s 0.1 \
   --t1-batch-min-size 20 \
   --t1-batch-max-size 30 \

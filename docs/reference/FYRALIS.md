@@ -543,7 +543,7 @@ Executable organizational primitives. Legal transitions are defined **only** in 
 `services/domain/observations/`. An ingested signal event: source channel, content, actor, timestamp, and **trust tier** (`authoritative`/`high`/`medium`/`low` and external variants, `TrustTierValue` in `lib/shared/types.py`; per-channel `CHANNEL_TRUST_MAP`). A new Observation is the **T1** reasoning trigger.
 
 - **Partitioned** monthly by `occurred_at`; composite PK `(id, occurred_at)`, so all FKs *into* observations are application-level.
-- Dedup on `UNIQUE (source_channel, external_id, occurred_at)`; 768-d `embedding` with HNSW cosine index; `embedding_pending` set when Ollama is down (retried by the backlog worker).
+- Dedup on `UNIQUE (source_channel, external_id, occurred_at)`; 768-d `embedding` is retained as an optional T1 seed vector with `embedding_pending` set when Ollama is down (retried by the backlog worker). Direct raw-observation ANN was retired; hot semantic retrieval searches Models.
 - `cascade_trace` is a recursive CTE up the `cause_id` chain. `state_change.emit_state_change` is the canonical helper every other domain write calls to record a `kind='state_change'` observation *inside the caller's transaction* — building the audit/cause chain. Post-commit `observations_new` NOTIFY is buffered in a ContextVar and flushed after commit (`events.py`).
 
 ### Entity alias — fast-path text→entity
@@ -1158,7 +1158,7 @@ PostgreSQL 16 + `pgvector` is the single substrate and control plane for Fyralis
 
 Substrate-wide invariants worth knowing:
 
-- **pgvector / 768-d.** `vector` extension (plus `pg_trgm`, `btree_gin`) is created in `0001`. Semantic columns are `VECTOR(768)` (Ollama `nomic-embed-text`), indexed with HNSW `vector_cosine_ops` (`observations.embedding`, `models.embedding`, `entity_aliases.alias_embedding`).
+- **pgvector / 768-d.** `vector` extension (plus `pg_trgm`, `btree_gin`) is created in `0001`. Semantic columns are `VECTOR(768)` (Ollama `nomic-embed-text`). Hot ANN surfaces are indexed with HNSW `vector_cosine_ops` (`models.embedding`, `entity_aliases.alias_embedding`, and chunk/vector sidecars when present); `observations.embedding` is a retained seed vector, not a primary ANN surface.
 - **Partitioning.** `observations` and `resource_transactions` are `PARTITION BY RANGE (occurred_at)`, one partition per calendar month; `0001` seeds the current month + 3. Because the partition key must be in every unique constraint, their PKs are composite — `observations` is `PRIMARY KEY (id, occurred_at)` with `UNIQUE (source_channel, external_id, occurred_at)`.
 - **App-level FKs.** Foreign keys *into* the partitioned tables (e.g. every `*_event_id` column) are **not** DB-enforced — Postgres cannot FK a partitioned PK that includes the partition column — the application layer enforces them.
 - **RLS.** Row-Level Security policies exist (foundational cluster `0036`–`0041`; many later per-feature migrations re-enable `ROW LEVEL SECURITY` on their own tables). RLS is defense-in-depth; **app-level tenant filtering on `tenant_id` is the primary isolation mechanism**, and a superuser/owner DSN bypasses RLS (a common test gotcha).

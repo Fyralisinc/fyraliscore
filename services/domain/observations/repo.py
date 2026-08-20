@@ -2,11 +2,11 @@
 
 BUILD-PLAN.md §2 Prompt 1.A item 1:
     repo.py — async repository with:
-      - insert(obs) — dedup via (source_channel, external_id); returns
-        existing on conflict; computes embedding; embedding_pending=True
+      - insert(obs) — dedup via immutable source evidence id; returns
+        existing on exact-revision replay; computes embedding; embedding_pending=True
         fallback if Ollama is down.
       - get_by_id(id, tenant_id)
-      - search_by_embedding(vec, tenant_id, k, filters) — HNSW cosine
+      - search_by_embedding(vec, tenant_id, k, filters) — cosine order
       - by_actor_time_range
       - by_channel_time_range
       - by_entities
@@ -30,6 +30,7 @@ Design:
 - Vector columns: we register pgvector's codec once per pool so
   `list[float]` round-trips transparently as VECTOR(768).
 """
+
 from __future__ import annotations
 
 import json
@@ -50,6 +51,10 @@ from lib.shared.db import RowHydrationError
 from lib.shared.errors import CompanyOSError
 from lib.shared.ids import uuid7
 from lib.shared.types import ObservationCreate, ObservationRow, TrustTierValue
+from services.platform.access_control.authority import (
+    record_observation_access_labels,
+    record_provenance_edge,
+)
 
 from .events import NewObservationEvent, schedule_notify
 
@@ -82,6 +87,7 @@ _COLUMNS = (
     "cause_id",
     "sequence_num",
     "entities_mentioned",
+    "evidence_id",
 )
 _SELECT_COLS = ", ".join(_COLUMNS)
 
@@ -112,11 +118,23 @@ def _hydrate_row(record: asyncpg.Record) -> ObservationRow:
             v = v.decode()
         if isinstance(v, str):
             raw[key] = json.loads(v)
-    # pgvector's asyncpg codec returns numpy arrays when registered;
-    # convert to list[float] so Pydantic validates cleanly.
+    # pgvector's asyncpg codec can return text, numpy arrays, or Vector objects
+    # depending on the driver/code path. Normalize all supported forms.
     emb = raw.get("embedding")
     if emb is not None and not isinstance(emb, list):
-        raw["embedding"] = [float(x) for x in emb]
+        if isinstance(emb, (bytes, bytearray)):
+            emb = emb.decode()
+        if isinstance(emb, str):
+            try:
+                raw["embedding"] = json.loads(emb)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        elif hasattr(emb, "to_list"):
+            raw["embedding"] = [float(x) for x in emb.to_list()]
+        elif hasattr(emb, "to_numpy"):
+            raw["embedding"] = [float(x) for x in emb.to_numpy()]
+        else:
+            raw["embedding"] = [float(x) for x in emb]
     try:
         return ObservationRow.model_validate(raw)
     except Exception as e:
@@ -178,21 +196,16 @@ class ObservationRepository:
 
         1. Compute embedding via Ollama (unless Ollama is unreachable
            — fall back to embedding_pending=True).
-        2. Dedup via UNIQUE (source_channel, external_id, occurred_at):
-           if an observation with the same (channel, external_id)
-           already exists, return the existing row rather than raising.
+        2. Dedup via immutable ``evidence_id``. Replaying one source revision
+           returns the existing row; a later revision of the same source
+           object creates a new observation.
         3. Schedule post-commit NOTIFY via `schedule_notify` (a no-op
            outside an active `notify_scope()`).
 
-        The unique constraint was widened to include `occurred_at` in
-        Wave 0 because PG requires every unique key on a partitioned
-        table to include the partition key. For dedup purposes the
-        `(source_channel, external_id)` pair is still effectively
-        unique because ingestion assigns a stable `occurred_at` per
-        external event. To handle the edge case of the same external
-        event being re-submitted at a different `occurred_at`, dedup
-        does a pre-check on `(source_channel, external_id)` ignoring
-        occurred_at.
+        The database constraint includes ``occurred_at`` because PostgreSQL
+        requires every unique key on this partitioned table to include the
+        partition key. The repository pre-check on ``evidence_id`` preserves
+        idempotency even when a replay carries a different arrival timestamp.
         """
         _validate_trust_tier(obs.trust_tier)
 
@@ -235,20 +248,21 @@ class ObservationRepository:
     ) -> ObservationRow:
         await _ensure_vector_codec(conn)
 
-        # Dedup pre-check: if external_id is NULL, skip (NULLs are
-        # never equal in the unique constraint — each insert is new).
-        if obs.external_id is not None:
+        # Evidence revisions are the idempotency authority.  A stable source
+        # object may produce many revisions; only replay of the same evidence
+        # id is a duplicate.
+        if obs.evidence_id is not None:
             existing = await conn.fetchrow(
                 f"SELECT {_SELECT_COLS} FROM observations "
-                "WHERE tenant_id = $1 AND source_channel = $2 "
-                "  AND external_id = $3 "
+                "WHERE tenant_id = $1 AND evidence_id = $2 "
                 "ORDER BY occurred_at DESC LIMIT 1",
                 obs.tenant_id,
-                obs.source_channel,
-                obs.external_id,
+                obs.evidence_id,
             )
             if existing is not None:
-                return _hydrate_row(existing)
+                hydrated = _hydrate_row(existing)
+                await _record_observation_authority_metadata(conn, hydrated)
+                return hydrated
 
         # Vector: pgvector.asyncpg wants a list[float] (or np array).
         emb_value: Any = embedding
@@ -260,16 +274,16 @@ class ObservationRepository:
                 content, content_text,
                 embedding, embedding_pending,
                 trust_tier, external_id, cause_id,
-                entities_mentioned
+                entities_mentioned, evidence_id
             ) VALUES (
                 $1, $2, $3, $4, $5,
                 $6, $7,
                 $8::jsonb, $9,
                 $10, $11,
                 $12, $13, $14,
-                $15::jsonb
+                $15::jsonb, $16
             )
-            ON CONFLICT (tenant_id, source_channel, external_id, occurred_at) DO NOTHING
+            ON CONFLICT (tenant_id, evidence_id, occurred_at) DO NOTHING
             RETURNING {_SELECT_COLS}
             """,
             obs_id,
@@ -287,48 +301,49 @@ class ObservationRepository:
             obs.external_id,
             obs.cause_id,
             json.dumps(obs.entities_mentioned),
+            obs.evidence_id,
         )
 
         if row is None:
             # ON CONFLICT DO NOTHING → fetch the existing row.
-            if obs.external_id is None:
-                # Shouldn't happen — without external_id the unique
+            if obs.evidence_id is None:
+                # Shouldn't happen — without evidence_id the unique
                 # constraint can't trigger — but be defensive.
                 raise ObservationError(
-                    "insert conflict with NULL external_id",
+                    "insert conflict with NULL evidence_id",
                     source_channel=obs.source_channel,
                     occurred_at=obs.occurred_at.isoformat(),
                 )
             existing = await conn.fetchrow(
                 f"SELECT {_SELECT_COLS} FROM observations "
-                "WHERE tenant_id = $1 AND source_channel = $2 "
-                "  AND external_id = $3 AND occurred_at = $4",
+                "WHERE tenant_id = $1 AND evidence_id = $2 "
+                "  AND occurred_at = $3",
                 obs.tenant_id,
-                obs.source_channel,
-                obs.external_id,
+                obs.evidence_id,
                 obs.occurred_at,
             )
             if existing is None:
-                # Still race: the conflict hit on a different
-                # occurred_at. Fall back to the broader dedup query.
+                # Defensive fallback for a concurrent exact-evidence replay.
                 existing = await conn.fetchrow(
                     f"SELECT {_SELECT_COLS} FROM observations "
-                    "WHERE tenant_id = $1 AND source_channel = $2 "
-                    "  AND external_id = $3 "
+                    "WHERE tenant_id = $1 AND evidence_id = $2 "
                     "ORDER BY occurred_at DESC LIMIT 1",
                     obs.tenant_id,
-                    obs.source_channel,
-                    obs.external_id,
+                    obs.evidence_id,
                 )
             if existing is None:
                 raise ObservationError(
                     "insert conflict but no existing row found",
                     source_channel=obs.source_channel,
-                    external_id=obs.external_id,
+                    evidence_id=str(obs.evidence_id),
                 )
-            return _hydrate_row(existing)
+            hydrated = _hydrate_row(existing)
+            await _record_observation_authority_metadata(conn, hydrated)
+            return hydrated
 
-        return _hydrate_row(row)
+        hydrated = _hydrate_row(row)
+        await _record_observation_authority_metadata(conn, hydrated)
+        return hydrated
 
     async def _maybe_embed(self, text: str) -> tuple[list[float] | None, bool]:
         """
@@ -369,7 +384,7 @@ class ObservationRepository:
         return _hydrate_row(row) if row is not None else None
 
     # -----------------------------------------------------------------
-    # Method 3: search_by_embedding (HNSW cosine)
+    # Method 3: search_by_embedding (cosine)
     # -----------------------------------------------------------------
     async def search_by_embedding(
         self,
@@ -381,7 +396,10 @@ class ObservationRepository:
         conn: asyncpg.Connection | None = None,
     ) -> list[ObservationRow]:
         """
-        Cosine-similarity nearest-neighbour search, HNSW-indexed.
+        Cosine-similarity nearest-neighbour search over raw observations.
+        The direct observation HNSW index was retired in migration 0155; the
+        hot semantic path searches Model embeddings instead. Keep this API for
+        low-volume/debug callers and tests.
         Always filters embedding_pending = FALSE (pending rows have
         NULL vectors that would throw off the operator anyway) and
         tenant_id = $tenant_id for isolation.
@@ -426,8 +444,13 @@ class ObservationRepository:
                 raise ObservationError(
                     f"unknown filter key {key!r}",
                     supported=sorted(
-                        ("kind", "source_channel", "actor_id",
-                         "occurred_after", "occurred_before")
+                        (
+                            "kind",
+                            "source_channel",
+                            "actor_id",
+                            "occurred_after",
+                            "occurred_before",
+                        )
                     ),
                 )
         params.append(k)
@@ -618,13 +641,36 @@ class ObservationRepository:
         return [_hydrate_row(r) for r in rows]
 
 
+async def _record_observation_authority_metadata(
+    conn: asyncpg.Connection,
+    row: ObservationRow,
+) -> None:
+    await record_observation_access_labels(
+        conn=conn,
+        tenant_id=row.tenant_id,
+        observation_id=row.id,
+        source_channel=row.source_channel,
+    )
+    if row.cause_id is not None:
+        await record_provenance_edge(
+            conn=conn,
+            tenant_id=row.tenant_id,
+            derived_kind="observation",
+            derived_id=row.id,
+            source_kind="observation",
+            source_id=row.cause_id,
+            derivation_kind="observation_cause",
+            metadata={"source_column": "cause_id"},
+        )
+
+
 async def _exact_embedding_fallback(
     conn: asyncpg.Connection,
     sql: str,
     params: list[Any],
     indexed_rows: list[asyncpg.Record],
 ) -> list[asyncpg.Record]:
-    """Retry vector search as an exact scan when HNSW post-filter recall is low."""
+    """Retry vector search as an exact scan when an ANN index under-recovers."""
     async with conn.transaction():
         await conn.execute("SET LOCAL enable_indexscan = off")
         await conn.execute("SET LOCAL enable_bitmapscan = off")
@@ -635,6 +681,7 @@ async def _exact_embedding_fallback(
 # ---------------------------------------------------------------------
 # Connection helper — use caller's conn if provided, else acquire.
 # ---------------------------------------------------------------------
+
 
 class _connection:
     """

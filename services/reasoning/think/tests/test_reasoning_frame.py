@@ -88,6 +88,31 @@ def test_reasoning_frame_normalizes_latent_topology_candidate() -> None:
     assert frame.budget["act_ops"] == 0
 
 
+def test_reasoning_frame_normalizes_representation_repair() -> None:
+    trigger = TriggerContext(
+        kind="T4",
+        subkind="representation_repair",
+        tenant_id=uuid7(),
+        seed_signature={
+            "audit_warning_code": "prediction_lifecycle_not_exercised",
+            "repair_intent": "exercise_prediction_lifecycle",
+        },
+    )
+
+    frame = ReasoningFrame.from_trigger(trigger)
+    prompt = build_prompt(trigger, ContextBundle(), reasoning_frame=frame)
+
+    assert frame.job_source == "representation_audit"
+    assert frame.job_intent == "repair_representation_gap"
+    assert frame.budget["memory_lifecycle_ops"] == 2
+    assert "truth_maintenance" in frame.priority_dimensions
+    assert "repair a representation gap" in prompt.system
+    assert "authoritative outcome oracle" in prompt.system
+    assert "human_correction_submitted" in prompt.system
+    assert "prediction_lifecycle_not_exercised" in prompt.system
+    assert "memory_lifecycle_ops action='confirm'" in prompt.system
+
+
 def test_build_prompt_renders_reasoning_frame_section() -> None:
     tenant_id = uuid7()
     trigger = TriggerContext(

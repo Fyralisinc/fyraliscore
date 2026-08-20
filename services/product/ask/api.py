@@ -100,6 +100,7 @@ def build_router(
     ) -> EvidenceExpansionResponse:
         evidence, omitted = await orchestrator.expand_evidence(
             tenant_id=auth.tenant_id,
+            viewer_id=auth.viewer_id,
             retrieval_run_id=body.retrieval_run_id,
         )
         return EvidenceExpansionResponse(

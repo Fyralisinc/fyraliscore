@@ -65,7 +65,9 @@ class _FakeMigrationConn:
     async def fetchrow(self, _sql: str) -> dict[str, bool]:
         return self._state
 
-    async def execute(self, _sql: str, filename: str) -> None:
+    async def execute(
+        self, _sql: str, filename: str, _checksum: str | None = None
+    ) -> None:
         self.recorded.append(filename)
 
 

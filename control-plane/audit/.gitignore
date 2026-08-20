@@ -1,0 +1,16 @@
+# audit-local ignores.
+# (The repo-level .gitignore already covers **/keys/, __pycache__.)
+
+# Compiled python.
+__pycache__/
+*.pyc
+
+# Runtime audit-log artifacts. The hash-chained log + its signed checkpoint + the
+# break-glass grant store are operational state written at runtime to a persisted
+# path (a volume in prod), NOT into the repo. Tracking them would also fight the
+# append-only invariant on every commit.
+*.log.jsonl
+*.log.jsonl.checkpoint.json
+*.checkpoint.json
+breakglass_grants.json
+breakglass_grants.json.tmp

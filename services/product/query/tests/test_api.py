@@ -28,6 +28,7 @@ from services.product.query.tests._helpers import (
 
 
 TENANT = uuid4()
+VIEWER = uuid4()
 
 
 class _ProductionSettings:
@@ -53,7 +54,7 @@ def fake_strategies(monkeypatch):
     monkeypatch.setattr(strat_pkg, "STRATEGIES", replacements, raising=True)
     from services.product.query import strategies as strategies_mod
     monkeypatch.setattr(strategies_mod, "STRATEGIES", replacements, raising=True)
-    yield
+    yield replacements
 
 
 @pytest.fixture
@@ -67,10 +68,15 @@ def app(fake_strategies):
     )
     app = FastAPI()
     app.include_router(
-        build_router(handler, default_tenant_id=TENANT),
+        build_router(
+            handler,
+            default_tenant_id=TENANT,
+            default_viewer_id=VIEWER,
+        ),
     )
     app.state.handler = handler
     app.state.cache = cache
+    app.state.strategies = fake_strategies
     return app
 
 
@@ -88,6 +94,30 @@ async def test_ask_happy_path(app):
     assert body["response_html"]
     assert {"id": "followup", "label": "Follow up"} in body["verbs"]
     assert body["latency_ms"] >= 0
+    access = app.state.strategies["arbitrary"].last_access_context
+    assert access.requestor_actor_id == VIEWER
+
+
+async def test_ask_requires_viewer_when_no_auth_default(fake_strategies):
+    handler = QueryHandler(
+        conn_provider=fake_conn_provider(),
+        classifier=ScriptedClassifier("arbitrary"),
+        rendering_adapter=FakeRenderingAdapter(),
+        cache_adapter=InMemoryCacheAdapter(),
+    )
+    no_viewer_app = FastAPI()
+    no_viewer_app.include_router(
+        build_router(handler, default_tenant_id=TENANT),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=no_viewer_app), base_url="http://test"
+    ) as client:
+        r = await client.post(
+            "/view/ceo/ask",
+            json={"query": "why is Acme at risk?"},
+        )
+    assert r.status_code == 401
 
 
 async def test_ask_rejects_empty_query(app):
@@ -107,7 +137,13 @@ async def test_ask_maps_rendering_unavailable_to_503(fake_strategies):
         cache_adapter=InMemoryCacheAdapter(),
     )
     app = FastAPI()
-    app.include_router(build_router(handler, default_tenant_id=TENANT))
+    app.include_router(
+        build_router(
+            handler,
+            default_tenant_id=TENANT,
+            default_viewer_id=VIEWER,
+        )
+    )
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
@@ -135,6 +171,7 @@ async def test_ask_hits_prefetch_cache(app):
     await handler.answer_query(
         AnswerQueryRequest(
             tenant_id=TENANT,
+            viewer_id=VIEWER,
             query="preloaded: why is Acme at risk?",
             query_id="chip_preloaded",
         )

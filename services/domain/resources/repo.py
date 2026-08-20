@@ -37,6 +37,7 @@ from lib.shared.types import (
     ResourceUtilizationState,
 )
 from services.domain.observations.state_change import emit_state_change
+from services.platform.access_control.authority import record_resource_access_labels
 
 
 _VALID_KINDS: tuple[str, ...] = get_args(ResourceKind)
@@ -165,6 +166,12 @@ async def create(
                 "identity": identity,
                 "utilization_state": utilization_state,
             },
+        )
+        await record_resource_access_labels(
+            conn=tx,
+            tenant_id=tenant_id,
+            resource_id=resource_id,
+            resource_kind=kind,
         )
         return _resource_row_from_record(row)
 

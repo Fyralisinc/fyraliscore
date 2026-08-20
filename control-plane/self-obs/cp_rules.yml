@@ -1,0 +1,349 @@
+# =============================================================================
+# control-plane / self-obs / cp_rules.yml  —  WS-SELFOBS (NFR-10)
+# -----------------------------------------------------------------------------
+# Recording + ALERT rules for control-plane SELF-observability. Loaded by
+# cp-prometheus.yml (rule_files). These evaluate against the series the
+# cp-self-obs-exporter (cp_exporter.py) exposes plus the Prometheus-native `up`
+# series for the directly-scraped CP targets.
+#
+# THE GOVERNING PRINCIPLE (NFR-10): "the control plane monitors itself; silence
+# != health." Every "down" alert below has a SILENCE TWIN so that the ABSENCE of
+# the signal — exporter dead, Prometheus not scraping, target never came up —
+# pages just as loudly as an explicit failure. A green dashboard with no data is
+# the failure mode we refuse to ship.
+#
+# severity convention (mirrors fleet-sli): page = wake-someone; ticket = digest.
+# scope=control-plane distinguishes these from the per-tenant fleet alerts.
+# =============================================================================
+
+groups:
+
+  # ===========================================================================
+  # Recording rules — stable names dashboards + alerts depend on. Do not rename.
+  # ===========================================================================
+  - name: cp_self_recording
+    interval: 15s
+    rules:
+      # Fraction of configured CP services currently healthy (0..1).
+      - record: cp:services_healthy_ratio
+        expr: cp_services_up / clamp_min(cp_services_total, 1)
+
+      # Age (seconds) of the exporter's silence heartbeat, as seen by Prometheus
+      # "now". This is THE silence signal: it grows without bound the moment the
+      # exporter stops being scraped or stops producing.
+      - record: cp:self_scrape_heartbeat_age_seconds
+        expr: time() - cp_self_scrape_heartbeat_timestamp_seconds
+
+      # Age (seconds) since the ingest path was last observed alive.
+      - record: cp:ingest_path_last_success_age_seconds
+        expr: time() - cp_ingest_path_last_success_timestamp_seconds
+
+      # Per-service age since the last successful probe (one series per service).
+      - record: cp:service_last_success_age_seconds
+        expr: time() - cp_service_last_success_timestamp_seconds
+
+      # 5-minute average probe latency per service (smooths single-scrape spikes).
+      - record: cp:probe_latency_seconds:avg5m
+        expr: avg_over_time(cp_probe_latency_seconds[5m])
+
+  # ===========================================================================
+  # CRITICAL — the control-plane SILENCE alerts (NFR-10). These MUST be able to
+  # fire from the absence of data, which is why they use absent()/staleness and
+  # not a value comparison on a series that would itself be missing.
+  # ===========================================================================
+  - name: cp_self_silence
+    rules:
+      # (a) The exporter's heartbeat series is entirely GONE: exporter crashed,
+      #     was never scraped, or cp-prometheus lost its target. absent() yields
+      #     a series (=1) precisely WHEN the input is missing — the canonical
+      #     "silence != health" page.
+      - alert: ControlPlaneSelfObsSilent
+        expr: absent(cp_self_scrape_heartbeat_timestamp_seconds)
+        for: 1m
+        labels:
+          severity: page
+          scope: control-plane
+          silence: "true"
+        annotations:
+          summary: "Control-plane self-observability is SILENT (no exporter heartbeat)"
+          description: >-
+            cp_self_scrape_heartbeat_timestamp_seconds has been absent for >1m.
+            The cp-self-obs exporter is down or cp-prometheus is not scraping it.
+            We are BLIND to control-plane health — treat as a control-plane
+            outage until proven otherwise (NFR-10: silence != health).
+
+      # (b) The exporter is present but its heartbeat is STALE — it is up but no
+      #     longer completing scrape sweeps (wedged probe loop, slow upstream).
+      - alert: ControlPlaneSelfObsStale
+        expr: cp:self_scrape_heartbeat_age_seconds > 90
+        for: 1m
+        labels:
+          severity: page
+          scope: control-plane
+          silence: "true"
+        annotations:
+          summary: "Control-plane self-obs heartbeat is STALE (>90s)"
+          description: >-
+            The exporter heartbeat is {{ $value | humanizeDuration }} old. The
+            prober is no longer producing fresh self-obs data; control-plane
+            health is unverified.
+
+      # (c) The dedicated CP Prometheus cannot even scrape its own prober target.
+      - alert: ControlPlaneProberTargetDown
+        expr: up{job="cp-self-obs-exporter"} == 0
+        for: 2m
+        labels:
+          severity: page
+          scope: control-plane
+          silence: "true"
+        annotations:
+          summary: "cp-prometheus cannot scrape the self-obs exporter"
+          description: >-
+            up{job="cp-self-obs-exporter"} == 0 for >2m. The prober endpoint is
+            unreachable from cp-prometheus; self-obs is degraded.
+
+  # ===========================================================================
+  # Per-service DOWN alerts (explicit failure). Each pairs with a silence twin
+  # in cp_self_service_silence below so a never-seen service also pages.
+  # ===========================================================================
+  - name: cp_self_service_down
+    rules:
+      # auth-proxy: the ingress that fronts the whole metrics/log push path. Its
+      # liveness is the TLS-handshake probe (it has no plaintext health).
+      - alert: AuthProxyDown
+        expr: cp_service_up{service="auth-proxy"} == 0
+        for: 1m
+        labels:
+          severity: page
+          scope: control-plane
+          cp_service: auth-proxy
+        annotations:
+          summary: "auth-proxy is DOWN (mTLS listener not answering)"
+          description: >-
+            The auth-proxy TLS-handshake probe has failed for >1m. Tenant agents
+            cannot push metrics/logs into the control plane — the ingest edge is
+            down. (Probed via handshake because the proxy is mTLS-only.)
+
+      # mimir: central metrics store. Unreachable => no fleet metrics land.
+      - alert: MimirUnreachable
+        expr: cp_service_up{service="mimir"} == 0
+        for: 1m
+        labels:
+          severity: page
+          scope: control-plane
+          cp_service: mimir
+        annotations:
+          summary: "Mimir is unreachable (readiness probe failing)"
+          description: >-
+            Mimir /ready has failed for >1m. The central metrics store is down;
+            ingest and operator queries will fail.
+
+      # loki: central log store (Tier-2). Unreachable => no logs land.
+      - alert: LokiUnreachable
+        expr: cp_service_up{service="loki"} == 0
+        for: 1m
+        labels:
+          severity: page
+          scope: control-plane
+          cp_service: loki
+        annotations:
+          summary: "Loki is unreachable (readiness probe failing)"
+          description: >-
+            Loki /ready has failed for >1m. The central Tier-2 log store is down.
+
+      # console: operator fleet UI/API.
+      - alert: ConsoleDown
+        expr: cp_service_up{service="console"} == 0
+        for: 2m
+        labels:
+          severity: page
+          scope: control-plane
+          cp_service: console
+        annotations:
+          summary: "Fleet console is DOWN (/healthz failing)"
+          description: >-
+            console /healthz has failed for >2m. Operators cannot see fleet
+            heartbeats; agents' heartbeats are not being recorded.
+
+      # config-dist: signed per-deployment config distribution.
+      - alert: ConfigDistDown
+        expr: cp_service_up{service="config-dist"} == 0
+        for: 2m
+        labels:
+          severity: page
+          scope: control-plane
+          cp_service: config-dist
+        annotations:
+          summary: "config-dist is DOWN (/healthz failing)"
+          description: >-
+            config-dist /healthz has failed for >2m. Agents cannot pull signed
+            config/flag/tier changes; existing applied config keeps running.
+
+      # release-registry: serves signed release bundles.
+      - alert: ReleaseRegistryDown
+        expr: cp_service_up{service="release-registry"} == 0
+        for: 5m
+        labels:
+          severity: ticket
+          scope: control-plane
+          cp_service: release-registry
+        annotations:
+          summary: "release-registry is DOWN (/healthz failing)"
+          description: >-
+            release-registry /healthz has failed for >5m. New rollouts cannot
+            fetch bundles; running deployments are unaffected (ticket severity).
+
+      # grafana: operator dashboards.
+      - alert: GrafanaDown
+        expr: cp_service_up{service="grafana"} == 0
+        for: 5m
+        labels:
+          severity: ticket
+          scope: control-plane
+          cp_service: grafana
+        annotations:
+          summary: "Grafana is DOWN (/api/health failing)"
+          description: >-
+            Grafana /api/health has failed for >5m. Operator dashboards are
+            unavailable (the underlying metrics/logs are unaffected).
+
+  # ===========================================================================
+  # Per-service SILENCE twins — a service we EXPECT to probe has no series at
+  # all (exporter never reported it). Pairs 1:1 with the down alerts above.
+  # ===========================================================================
+  - name: cp_self_service_silence
+    rules:
+      - alert: AuthProxyProbeMissing
+        expr: absent(cp_service_up{service="auth-proxy"})
+        for: 2m
+        labels:
+          severity: page
+          scope: control-plane
+          cp_service: auth-proxy
+          silence: "true"
+        annotations:
+          summary: "No probe data for auth-proxy (silence != health)"
+          description: "cp_service_up{service=\"auth-proxy\"} is absent for >2m."
+
+      - alert: MimirProbeMissing
+        expr: absent(cp_service_up{service="mimir"})
+        for: 2m
+        labels:
+          severity: page
+          scope: control-plane
+          cp_service: mimir
+          silence: "true"
+        annotations:
+          summary: "No probe data for Mimir (silence != health)"
+          description: "cp_service_up{service=\"mimir\"} is absent for >2m."
+
+      - alert: LokiProbeMissing
+        expr: absent(cp_service_up{service="loki"})
+        for: 2m
+        labels:
+          severity: page
+          scope: control-plane
+          cp_service: loki
+          silence: "true"
+        annotations:
+          summary: "No probe data for Loki (silence != health)"
+          description: "cp_service_up{service=\"loki\"} is absent for >2m."
+
+      - alert: ConsoleProbeMissing
+        expr: absent(cp_service_up{service="console"})
+        for: 2m
+        labels:
+          severity: ticket
+          scope: control-plane
+          cp_service: console
+          silence: "true"
+        annotations:
+          summary: "No probe data for console (silence != health)"
+          description: "cp_service_up{service=\"console\"} is absent for >2m."
+
+      - alert: ConfigDistProbeMissing
+        expr: absent(cp_service_up{service="config-dist"})
+        for: 2m
+        labels:
+          severity: ticket
+          scope: control-plane
+          cp_service: config-dist
+          silence: "true"
+        annotations:
+          summary: "No probe data for config-dist (silence != health)"
+          description: "cp_service_up{service=\"config-dist\"} is absent for >2m."
+
+  # ===========================================================================
+  # Ingest-path-alive synthetic alerts — the proxy->mimir push path.
+  # ===========================================================================
+  - name: cp_self_ingest_path
+    rules:
+      # The synthetic reports the path is NOT usable right now.
+      - alert: IngestPathDown
+        expr: max(cp_ingest_path_alive) == 0
+        for: 2m
+        labels:
+          severity: page
+          scope: control-plane
+        annotations:
+          summary: "Ingest path (agent->auth-proxy->mimir) is DOWN"
+          description: >-
+            The ingest-path-alive synthetic reports the proxy->mimir push path
+            is unusable for >2m. Tenant data planes cannot land metrics even if
+            each component looks individually up.
+
+      # The path has not been observed alive for too long (covers a flapping or
+      # never-succeeded synthetic — staleness, not a single 0).
+      - alert: IngestPathStale
+        expr: cp:ingest_path_last_success_age_seconds > 300
+        for: 1m
+        labels:
+          severity: page
+          scope: control-plane
+        annotations:
+          summary: "Ingest path has not succeeded recently (>5m)"
+          description: >-
+            cp_ingest_path_last_success_timestamp_seconds is
+            {{ $value | humanizeDuration }} old. No successful proxy->mimir
+            ingest observation in over 5 minutes.
+
+      # The synthetic series itself is gone — silence twin for the ingest path.
+      - alert: IngestPathProbeMissing
+        expr: absent(cp_ingest_path_alive)
+        for: 2m
+        labels:
+          severity: page
+          scope: control-plane
+          silence: "true"
+        annotations:
+          summary: "No ingest-path synthetic data (silence != health)"
+          description: "cp_ingest_path_alive is absent for >2m; the synthetic is not reporting."
+
+  # ===========================================================================
+  # Latency / degradation (ticket-level) — slow but not down.
+  # ===========================================================================
+  - name: cp_self_latency
+    rules:
+      - alert: CPProbeLatencyHigh
+        expr: cp:probe_latency_seconds:avg5m > 2
+        for: 10m
+        labels:
+          severity: ticket
+          scope: control-plane
+        annotations:
+          summary: "CP service {{ $labels.service }} probe latency high (>2s)"
+          description: >-
+            5m-avg health-probe latency for {{ $labels.service }} is
+            {{ $value | humanize }}s. The service is reachable but slow.
+
+      - alert: CPServicesDegraded
+        expr: cp:services_healthy_ratio < 1
+        for: 5m
+        labels:
+          severity: ticket
+          scope: control-plane
+        annotations:
+          summary: "Not all control-plane services are healthy"
+          description: >-
+            {{ $value | humanizePercentage }} of configured CP services are
+            healthy. At least one CP service is failing its probe.

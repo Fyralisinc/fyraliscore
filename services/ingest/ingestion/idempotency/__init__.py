@@ -203,6 +203,13 @@ def telegram_message(
     )
 
 
+# --- Facebook Pages --------------------------------------------------
+def facebook_page_message(page_id: str, message_id: str) -> str:
+    """`facebook_pages:{page_id}:{message_id}` — immutable Meta message id,
+    namespaced by Page so webhook and backfill twins collapse."""
+    return f"facebook_pages:{page_id}:{message_id}"
+
+
 # --- Brex (Bearer / Mercury archetype) -------------------------------
 def brex_transaction(account_id: str, txn_id: str, status: str) -> str:
     """`brex:{account}:txn:{id}:{status}` — VERSIONED by status so a
@@ -301,6 +308,17 @@ def figma_event(team_id: str, event_id: str, version: object) -> str:
     return f"figma:{team_id}:event:{event_id}:{version}"
 
 
+def figma_file_snapshot(scope_id: str, file_key: str, version: object) -> str:
+    """``figma:{scope}:file_snapshot:{file}:{version}``.
+
+    A Figma file is mutable, so the upstream document version (falling back to
+    its captured content hash when Figma omits a version) is part of the key.
+    ``scope_id`` is the tenant installation id when available, avoiding a
+    global collision when the same Figma team is connected by two tenants.
+    """
+    return f"figma:{scope_id}:file_snapshot:{file_key}:{version}"
+
+
 # --- LinkedIn (poll/backfill archetype) ------------------------------
 def linkedin_entity(
     organization_urn: str, entity_kind: str, entity_id: str,
@@ -345,8 +363,8 @@ def carta_entity(
     """`carta:{firm}:{kind}:{id}:{version}` — namespaced by the issuer id
     (`firm_id` holds the Carta issuer id) and discriminated by entity_kind (so
     multiple cap-table entity kinds sharing an id never collide), VERSIONED by
-    `handlers.carta.carta_version(entity)` (a content digest — Carta v1alpha1
-    entities have no revision counter) so each mutation re-observes."""
+    the Carta connector's content digest (Carta v1alpha1 entities have no
+    revision counter) so each mutation re-observes."""
     return f"carta:{firm_id}:{entity_kind}:{entity_id}:{version}"
 
 
@@ -392,6 +410,45 @@ def whatsapp_status(phone_number_id: object, wamid: str, status: str) -> str:
     return f"whatsapp:{phone_number_id}:status:{wamid}:{status}"
 
 
+# --- Instagram Messaging (DM webhooks + conversation backfill) -------
+def instagram_message(ig_business_account_id: object, message_id: str) -> str:
+    """`instagram:{business}:message:{message}` — IMMUTABLE. The message id
+    comes from Meta's webhook/Conversations APIs; namespacing by the connected
+    Instagram Professional account prevents cross-tenant collisions in the
+    global observations uniqueness surface."""
+    return f"instagram:{ig_business_account_id}:message:{message_id}"
+
+
+def instagram_status(
+    ig_business_account_id: object,
+    message_id: str,
+    state: str,
+    watermark: object,
+) -> str:
+    """`instagram:{business}:status:{message}:{state}:{watermark}` — VERSIONED
+    by status/read-delivery watermark so state progressions land as distinct
+    observations while webhook redeliveries dedup."""
+    return f"instagram:{ig_business_account_id}:status:{message_id}:{state}:{watermark}"
+
+
+def instagram_event(
+    ig_business_account_id: object,
+    event_type: str,
+    event_id: str,
+    version: object,
+) -> str:
+    """Version an Instagram interaction that is not the base DM itself.
+
+    Reactions, edits, deletes, postbacks, and seen events can reference a
+    message's ``mid``. They must therefore not reuse ``instagram_message`` or
+    they would be silently deduplicated against the original DM.
+    """
+    return (
+        f"instagram:{ig_business_account_id}:event:{event_type}:"
+        f"{event_id}:{version}"
+    )
+
+
 ADOPTED_VERBATIM_KEYS = {
     "calendar:event": "first-party calendar event id",
     "email:message": "RFC-5322 Message-ID",
@@ -416,6 +473,8 @@ __all__ = [
     "deel_payment",
     "discord_event",
     "figma_event",
+    "figma_file_snapshot",
+    "facebook_page_message",
     "fireflies_transcript",
     "github_push",
     "github_object",
@@ -430,6 +489,9 @@ __all__ = [
     "gusto_entity",
     "hibob_change",
     "hibob_entity",
+    "instagram_message",
+    "instagram_event",
+    "instagram_status",
     "jira_comment",
     "jira_issue",
     "jira_transition",

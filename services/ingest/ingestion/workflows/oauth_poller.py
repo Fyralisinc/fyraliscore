@@ -87,8 +87,10 @@ PATTERN-ALIGNMENT MAPPING
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 from dataclasses import dataclass
+from typing import Any
 from uuid import UUID
 
 import asyncpg
@@ -131,7 +133,7 @@ DEFAULT_MAX_TRIGGERS_PER_TICK = 50
 # becomes claimable again to another poller.
 _CLAIM_ONE_TRIGGER_SQL = """
 SELECT id, tenant_id, source, trigger_kind,
-       installation_row_id, gmail_installation_id, payload,
+       connector_installation_id, payload,
        consume_attempts
   FROM onboarding_triggers
  WHERE consumed_at IS NULL
@@ -202,9 +204,7 @@ async def _create_onboarding_run(
 
     `sources_enabled` is populated with the trigger's single source.
     The M6.1 TenantOnboarding orchestrator (Phase 2) uses
-    `provider_installations` as the source-applicability source of
-    truth and may fan out beyond this list per the design decision
-    documented in tenant_onboarding.py.
+    Ready common connector installations as the applicability source of truth.
     """
     run_id = uuid7()
     workflow_id = f"onboarding:{trigger['id']}"
@@ -231,6 +231,30 @@ async def _mark_trigger_consumed(
     await conn.execute(
         _MARK_TRIGGER_CONSUMED_SQL, trigger_id, workflow_id,
     )
+
+
+def _trigger_payload_dict(payload: Any) -> dict[str, Any]:
+    """Return the trigger payload as a dict across asyncpg jsonb codecs."""
+    if isinstance(payload, dict):
+        return payload
+    if isinstance(payload, (str, bytes, bytearray)):
+        try:
+            decoded = json.loads(payload)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(decoded, dict):
+            return decoded
+    return {}
+
+
+def _payload_uuid_string(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    try:
+        return str(UUID(str(value)))
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------------------------------------------------------------------
@@ -315,19 +339,35 @@ class OAuthPoller(LongRunningService):
                 # inbox for the orchestrator-family of consumers.
                 # Per-run identity lives in idempotency_key (which is
                 # str(run_id)) and signal_data.
+                signal_data = {
+                    "onboarding_run_id": str(run_id),
+                    "tenant_id": str(trigger["tenant_id"]),
+                    "trigger_id": str(trigger["id"]),
+                    "source": trigger["source"],
+                    "trigger_kind": trigger["trigger_kind"],
+                }
+                payload = _trigger_payload_dict(trigger["payload"])
+                if trigger["installation_row_id"] is not None:
+                    signal_data["installation_row_id"] = str(
+                        trigger["installation_row_id"],
+                    )
+                elif payload_installation_row_id := _payload_uuid_string(
+                    payload,
+                    "installation_row_id",
+                ):
+                    signal_data["installation_row_id"] = payload_installation_row_id
+                if trigger["gmail_installation_id"] is not None:
+                    signal_data["gmail_installation_id"] = str(
+                        trigger["gmail_installation_id"],
+                    )
+
                 await emit_signal(
                     conn,
                     workflow_kind="tenant_onboarding",
                     workflow_id="tenant_onboarding",
                     signal_kind=SIGNAL_KIND_RUN_CREATED,
                     idempotency_key=str(run_id),
-                    signal_data={
-                        "onboarding_run_id": str(run_id),
-                        "tenant_id": str(trigger["tenant_id"]),
-                        "trigger_id": str(trigger["id"]),
-                        "source": trigger["source"],
-                        "trigger_kind": trigger["trigger_kind"],
-                    },
+                    signal_data=signal_data,
                 )
 
                 await _mark_trigger_consumed(

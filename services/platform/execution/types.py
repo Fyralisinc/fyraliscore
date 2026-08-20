@@ -31,6 +31,7 @@ InquiryStopStatus = Literal[
 RetrievalActionPath = Literal[
     "structural",
     "focused_index",
+    "semantic_terms",
     "semantic",
     "temporal",
     "pattern",
@@ -194,6 +195,19 @@ class EvidenceCard:
 
 
 @dataclass(frozen=True, slots=True)
+class ResidualDebtCard:
+    """Compact non-canonical model-metabolism debt for packet sidecars."""
+
+    residual_id: UUID | str | None
+    residual_kind: str
+    compact_summary: str
+    reason: str = ""
+    status: str = "open"
+    source_observation_id: UUID | str | None = None
+    model_id: UUID | str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class QuestionAnswer:
     question_id: str
     answer_status: str
@@ -254,6 +268,7 @@ __all__ = [
     "QuestionAnswer",
     "QuestionPolicySignal",
     "ReconstructionState",
+    "ResidualDebtCard",
     "RetrievalAction",
     "RetrievalActionPath",
     "SignalRoute",

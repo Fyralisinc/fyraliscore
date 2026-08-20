@@ -55,12 +55,12 @@ ALTER TABLE extension_grants FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS tenant_isolation ON extension_grants;
 CREATE POLICY tenant_isolation ON extension_grants
   USING (
-    current_setting('app.current_tenant', true) IS NULL
-    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+    NULLIF(current_setting('app.current_tenant', true), '') IS NULL
+    OR tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
   )
   WITH CHECK (
-    current_setting('app.current_tenant', true) IS NULL
-    OR tenant_id = current_setting('app.current_tenant', true)::uuid
+    NULLIF(current_setting('app.current_tenant', true), '') IS NULL
+    OR tenant_id = NULLIF(current_setting('app.current_tenant', true), '')::uuid
   );
 
 -- ---------------------------------------------------------------------
@@ -71,25 +71,38 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'fyralis_ext_readonly') THEN
     CREATE ROLE fyralis_ext_readonly NOLOGIN;
   END IF;
+EXCEPTION WHEN insufficient_privilege THEN
+  -- Dev/test DB users often lack CREATEROLE. The schema remains valid; the
+  -- structural read-only role is activated in environments that can create it.
+  NULL;
 END $$;
 
 -- Schema usage + SELECT on the read substrate ONLY. No INSERT/UPDATE/DELETE is
 -- granted anywhere, so any write under this role fails with "permission denied".
-GRANT USAGE ON SCHEMA public TO fyralis_ext_readonly;
-GRANT SELECT ON observations        TO fyralis_ext_readonly;
-GRANT SELECT ON models              TO fyralis_ext_readonly;
-GRANT SELECT ON commitments         TO fyralis_ext_readonly;
-GRANT SELECT ON goals               TO fyralis_ext_readonly;
-GRANT SELECT ON decisions           TO fyralis_ext_readonly;
-GRANT SELECT ON resources           TO fyralis_ext_readonly;
-GRANT SELECT ON extension_grants    TO fyralis_ext_readonly;
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'fyralis_ext_readonly') THEN
+    GRANT USAGE ON SCHEMA public TO fyralis_ext_readonly;
+    GRANT SELECT ON observations        TO fyralis_ext_readonly;
+    GRANT SELECT ON models              TO fyralis_ext_readonly;
+    GRANT SELECT ON commitments         TO fyralis_ext_readonly;
+    GRANT SELECT ON goals               TO fyralis_ext_readonly;
+    GRANT SELECT ON decisions           TO fyralis_ext_readonly;
+    GRANT SELECT ON resources           TO fyralis_ext_readonly;
+    GRANT SELECT ON extension_grants    TO fyralis_ext_readonly;
+  END IF;
+EXCEPTION WHEN insufficient_privilege OR undefined_object THEN
+  NULL;
+END $$;
 
 -- Let the role that runs the app / migrations SET ROLE into the restricted role.
 -- (A superuser can SET ROLE regardless; this matters for a non-superuser app
 -- role in production.)
 DO $$
 BEGIN
-  EXECUTE format('GRANT fyralis_ext_readonly TO %I', current_user);
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'fyralis_ext_readonly') THEN
+    EXECUTE format('GRANT fyralis_ext_readonly TO %I', current_user);
+  END IF;
 EXCEPTION WHEN OTHERS THEN
   -- e.g. already a member, or insufficient privilege in an exotic setup —
   -- non-fatal; SET ROLE still works for superusers.

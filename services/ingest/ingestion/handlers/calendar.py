@@ -120,6 +120,7 @@ def _fmt_time(dt: datetime) -> str:
 async def _resolve_attendees(
     attendees: list[dict[str, Any]],
     actor_resolver: Any,
+    tenant_id: Any,
 ) -> list[dict[str, Any]]:
     """Map attendee emails to actor_ids via actor_resolver.
 
@@ -138,7 +139,7 @@ async def _resolve_attendees(
         if actor_resolver is not None:
             try:
                 actor_id = await actor_resolver.resolve_by_source_actor_ref(
-                    f"email:{email}"
+                    f"email:{email}", tenant_id
                 )
             except Exception:
                 actor_id = None
@@ -235,7 +236,7 @@ async def handle_calendar_webhook(
     if organizer_email and actor_resolver is not None:
         try:
             organizer_actor_id = await actor_resolver.resolve_by_source_actor_ref(
-                f"email:{organizer_email}"
+                f"email:{organizer_email}", tenant_id
             )
         except Exception:
             organizer_actor_id = None
@@ -263,7 +264,7 @@ async def handle_calendar_webhook(
         kind = "state_change"
 
     attendees = event.get("attendees") or []
-    entities_hint = await _resolve_attendees(attendees, actor_resolver)
+    entities_hint = await _resolve_attendees(attendees, actor_resolver, tenant_id)
     # Organizer added too (if known).
     if organizer_actor_id:
         entities_hint.insert(0, {"type": "actor", "id": str(organizer_actor_id)})

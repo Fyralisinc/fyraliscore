@@ -14,6 +14,7 @@ from services.reasoning.think.diff_schema import ClaimOp
 from services.reasoning.topology import ExpectedPair, run_topology_eval
 from services.reasoning.topology.field import (
     LatentTopologyService,
+    _downstream_governor_decision_for_record,
     _embedding_to_float_list,
     impact_signature,
 )
@@ -63,6 +64,32 @@ def test_impact_signature_tracks_consequence_not_just_text() -> None:
 def test_embedding_to_float_list_accepts_pgvector_text_without_codec() -> None:
     assert _embedding_to_float_list("[0.1,0.2,-0.3]") == [0.1, 0.2, -0.3]
     assert _embedding_to_float_list("") == []
+
+
+def test_downstream_governor_record_adapter_uses_persisted_candidate_shape() -> None:
+    decision = _downstream_governor_decision_for_record(
+        {
+            "candidate_kind": "edge",
+            "edge_kind": "same_issue_as",
+            "basis": "topology_suggested",
+            "source": "latent_topology",
+            "judgment_leverage_score": 0.69,
+            "member_model_ids": [str(uuid7()), str(uuid7())],
+            "metadata": {
+                "topology": {
+                    "score_components": {
+                        "actionability": 0.12,
+                        "business_leverage": 0.21,
+                    }
+                }
+            },
+        },
+        run_threshold=0.66,
+    )
+
+    assert decision.decision == "suppress"
+    assert decision.features["candidate_kind"] == "edge"
+    assert decision.features["generic_edge"] is True
 
 
 def test_relocate_claim_op_is_not_part_of_active_topology() -> None:

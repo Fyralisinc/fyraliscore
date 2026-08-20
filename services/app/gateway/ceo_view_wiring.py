@@ -204,49 +204,6 @@ def _include_push_ingress_routers(app_: FastAPI) -> None:
     except Exception as exc:  # noqa: BLE001
         log.warning("gmail_pubsub_mount_failed", error=str(exc))
 
-    try:
-        from services.app.webhooks.google_push import router as _google_push_router
-
-        app_.include_router(_google_push_router)
-        log.info("google_push_ingress_mounted")
-    except Exception as exc:  # noqa: BLE001
-        log.warning("google_push_mount_failed", error=str(exc))
-
-
-def _include_google_admin_routers(app_: FastAPI) -> None:
-    if not (
-        os.environ.get("GMAIL_SERVICE_ACCOUNT_JSON_FILE")
-        or os.environ.get("GMAIL_SERVICE_ACCOUNT_JSON")
-    ):
-        return
-
-    try:
-        from services.ingest.integrations.gmail.oauth import router as _gmail_oauth_router
-
-        app_.include_router(_gmail_oauth_router)
-        log.info("gmail_routers_mounted")
-    except Exception as exc:  # noqa: BLE001
-        log.warning("gmail_mount_failed", error=str(exc))
-
-    try:
-        from services.ingest.integrations.google_calendar.oauth import (
-            router as _gcal_oauth_router,
-        )
-
-        app_.include_router(_gcal_oauth_router)
-        log.info("google_calendar_router_mounted")
-    except Exception as exc:  # noqa: BLE001
-        log.warning("google_calendar_mount_failed", error=str(exc))
-
-    try:
-        from services.ingest.integrations.google_drive.oauth import (
-            router as _gdrive_oauth_router,
-        )
-
-        app_.include_router(_gdrive_oauth_router)
-        log.info("google_drive_router_mounted")
-    except Exception as exc:  # noqa: BLE001
-        log.warning("google_drive_mount_failed", error=str(exc))
 
 
 def _include_debug_router(app_: FastAPI, *, settings: GatewaySettings) -> None:
@@ -304,6 +261,5 @@ async def configure_ceo_view(
     # the /simulation panel (router + slack_ui static) via its gateway extension
     # startup hook. Core no longer imports the `simulation` package.
     _include_push_ingress_routers(app_)
-    _include_google_admin_routers(app_)
     _include_debug_router(app_, settings=resolved_settings)
     _publish_ceo_view_state(app_, greeting=greeting, qry_handler=qry_handler)

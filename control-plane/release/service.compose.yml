@@ -1,0 +1,80 @@
+# WS-RELEASE — release registry service (signed release bundles, served to the fleet).
+#
+# This is a STANDALONE compose fragment for the release-registry HTTP server
+# (`publish.py serve`). It is intentionally NOT merged into the master
+# docker-compose.control-plane.yml (that file is owned by the scaffold agent); to
+# bring this up alongside the rest of the control plane, run it as an overlay:
+#
+#     docker compose \
+#       -f docker-compose.control-plane.yml \
+#       -f release/service.compose.yml \
+#       up release-registry
+#
+# It serves published bundles in the exact layout the data-plane agent's
+# config_pull / verify_bundle already consumes:
+#     GET /releases/<version>/<tarball>[.sig|.manifest.json]
+#     GET /releases/latest        (JSON pointer)
+#     GET /index.json             (full registry index)
+# so an agent points at `…/<tarball>`, pulls the trio, VERIFIES it against its
+# trust root, and applies only on success (I6).
+#
+# build_release.py and rollout.py are operator/CD CLIs, not long-running services,
+# so they are run on demand (CI job / operator shell), not declared here.
+
+networks:
+  # Shared control-plane network (declared by the master compose). Marked external
+  # so this overlay attaches to the existing network rather than redefining it.
+  cp-net:
+    external: true
+    name: cp-net
+
+volumes:
+  # Durable registry: published bundles + index.json survive a container restart.
+  release-registry-data:
+
+services:
+  # --- release-registry: serves signed release bundles by version ------------
+  # FastAPI/uvicorn over the on-disk ReleaseRegistry. BUILD CONTEXT is the
+  # control-plane ROOT (.) — the image needs control-plane/signing (verify before
+  # publish/serve) and control-plane/lib, exactly like the console/agent images.
+  release-registry:
+    build:
+      context: ..
+      dockerfile: release/Dockerfile
+    image: fyralis/release-registry
+    environment:
+      # Registry root on the mounted volume (published bundles + index.json).
+      - CP_RELEASE_REGISTRY=/app/release/_registry
+      - CP_RELEASE_HOST=0.0.0.0
+      - CP_RELEASE_PORT=8090
+    command:
+      - python
+      - release/publish.py
+      - serve
+      - --registry
+      - /app/release/_registry
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8090"
+    volumes:
+      - release-registry-data:/app/release/_registry
+    ports:
+      # Published so an agent (or operator) can pull bundles. In a real BYOC deploy
+      # this sits behind the auth-proxy / a TLS vendor endpoint; for single-host
+      # dev it is reachable on cp-net as http://release-registry:8090.
+      - "8090:8090"
+    networks:
+      - cp-net
+    healthcheck:
+      # python:3.12-slim has no curl; probe /healthz with the stdlib.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/healthz',timeout=3).status==200 else 1)"
+      interval: 15s
+      timeout: 4s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped

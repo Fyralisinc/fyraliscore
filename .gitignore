@@ -38,12 +38,15 @@ env/
 node_modules/
 ui/dist/
 ui/.vite/
+ui/.next/
 ui/test-results/
 ui/playwright-report/
 ui/coverage/
 
 # ---- Local data / artifacts ----
 *.local
+.fyralis/
+.fyralis-*.pid
 Memory.md
 docker-compose.override.yml
 *.log
@@ -85,6 +88,10 @@ backups/
 # Local skills cache + lockfile (per-machine tooling, not source)
 .agents/
 skills-lock.json
+
+# Local Codex project guidance and defaults
+/AGENTS.md
+/.codex/
 
 # Scratch refactor transcript (internal dev note, kept local)
 think_refactor.md

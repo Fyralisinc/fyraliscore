@@ -9,6 +9,8 @@
 
 x-codex-local-auth: &codex-local-auth
   environment:
+    LLM_PROVIDER: codex
+    LLM_TIMEOUT_SECONDS: "180"
     CODEX_HOME: /root/.codex
     CODEX_AUTH_FILE: /root/.codex/auth.json
     CODEX_TRANSPORT: app-server
@@ -18,6 +20,9 @@ x-codex-local-auth: &codex-local-auth
     - ${HOME}/.codex/config.toml:/root/.codex/config.toml:ro
 
 services:
+  think_worker:
+    <<: *codex-local-auth
+
   summarization_worker:
     <<: *codex-local-auth
 

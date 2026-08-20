@@ -35,10 +35,11 @@ def _shard():
     }
 
 
-def _make_service():
+def _make_service(*, connector_router=None):
     svc = ShardFetch(
         MagicMock(), MagicMock(),
         config=ShardFetchConfig(), s3_client=MagicMock(),
+        connector_router=connector_router,
     )
     svc._terminate_shard = AsyncMock()  # spy
     return svc
@@ -54,13 +55,13 @@ def _patch_loadable(monkeypatch, *, install):
 
 @pytest.mark.asyncio
 async def test_recoverable_api_error_parks_shard(monkeypatch):
-    svc = _make_service()
-    _patch_loadable(monkeypatch, install={"installation_id": "1"})
-
     async def _raise(*_a, **_k):
         raise GithubApiError("primary rate limit", code="github_api_rate_limited",
                              recoverable=True)
-    monkeypatch.setitem(sf.FETCHER_DISPATCH, "github", _raise)
+    router = MagicMock()
+    router.fetch = AsyncMock(side_effect=_raise)
+    svc = _make_service(connector_router=router)
+    _patch_loadable(monkeypatch, install={"id": uuid4()})
 
     await svc._run_fetch_loop(_shard())
     # Parked: NOT terminal-failed.
@@ -79,12 +80,12 @@ async def test_disabled_install_parks_shard(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_nonrecoverable_error_terminal_fails(monkeypatch):
-    svc = _make_service()
-    _patch_loadable(monkeypatch, install={"installation_id": "1"})
-
     async def _raise(*_a, **_k):
         raise ValueError("genuine bug")
-    monkeypatch.setitem(sf.FETCHER_DISPATCH, "github", _raise)
+    router = MagicMock()
+    router.fetch = AsyncMock(side_effect=_raise)
+    svc = _make_service(connector_router=router)
+    _patch_loadable(monkeypatch, install={"id": uuid4()})
 
     await svc._run_fetch_loop(_shard())
     # Non-recoverable → terminal-failed.

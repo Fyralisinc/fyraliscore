@@ -20,9 +20,14 @@ def test_runtime_residual_summary_splits_actions_stages_and_unknown() -> None:
     assert summary == {
         "total_ms": 1000,
         "retrieval_action_timings_ms_total": 325,
+        "retrieval_action_work_timings_ms_total": 325,
+        "retrieval_action_wait_timings_ms_total": 0,
         "retrieval_stage_timings_ms_total": 450,
         "measured_ms_total": 775,
+        "non_wait_measured_ms_total": 775,
+        "parallel_wait_overcount_ms": 0,
         "unaccounted_ms": 225,
+        "work_unaccounted_ms": 225,
     }
 
 

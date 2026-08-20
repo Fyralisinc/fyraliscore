@@ -22,29 +22,25 @@ implement `IfNoneMatch` only via the lower-level HTTP API; for
 those a small adapter sits over `S3Client.put_if_absent` (out of
 scope for M1).
 """
+
 from __future__ import annotations
 
 import hashlib
 import os
 from datetime import date
-from typing import TYPE_CHECKING, Any, get_args
+from typing import Any, Self
 from urllib.parse import urlencode
 from uuid import UUID
 
-from services.ingest.ingestion.raw_tier.envelope import SourceLiteral
+from services.ingest.source_contract.source_catalog import ingestion_source_ids
 
-if TYPE_CHECKING:
-    # aioboto3 client types only matter for static checking; runtime
-    # avoids importing the module to keep test-time import light.
-    pass
-
-# The set of sources whose raw blobs may be keyed. Derived from the single
-# source-of-truth `SourceLiteral` (same package) rather than re-listed inline:
+# The set of sources whose raw blobs may be keyed. Derived from the canonical
+# source-contract index rather than re-listed inline:
 # a hardcoded copy silently drifts when a source is added (the symptom was a
 # `grafana` shard whose blob raised `unknown source` here, miscategorised by
 # the fetch loop as a transient S3 write failure, so the shard parked and
 # re-fetched forever and the tenant never completed onboarding).
-_VALID_SOURCES: frozenset[str] = frozenset(get_args(SourceLiteral))
+_VALID_SOURCES: frozenset[str] = frozenset(ingestion_source_ids())
 _RAW_DATA_CLASS = "raw-ingestion"
 _DEFAULT_RAW_RETENTION_DAYS = 30
 
@@ -127,10 +123,7 @@ def build_raw_s3_key(
         raise ValueError("content_hash is required")
     yyyy_mm = ymd.strftime("%Y-%m")
     prefix = content_hash[:2]
-    return (
-        f"{env}/{source}/{tenant_id}/{yyyy_mm}/{prefix}/"
-        f"{content_hash}.json.zst"
-    )
+    return f"{env}/{source}/{tenant_id}/{yyyy_mm}/{prefix}/{content_hash}.json.zst"
 
 
 class S3Client:
@@ -180,14 +173,22 @@ class S3Client:
         self._client = None
         self._session = None
 
-    async def __aenter__(self) -> "S3Client":
+    async def __aenter__(self) -> Self:
         await self.connect()
         return self
 
-    async def __aexit__(self, *exc: Any) -> None:
+    async def __aexit__(self, *exc: object) -> None:
         await self.close()
 
-    async def put_if_absent(self, key: str, body: bytes) -> None:
+    async def put_if_absent(
+        self,
+        key: str,
+        body: bytes,
+        *,
+        content_type: str = "application/octet-stream",
+        metadata: dict[str, str] | None = None,
+        tagging: str | None = None,
+    ) -> None:
         """Write `body` at `key` only if the key is currently absent.
 
         Treats both 200 (created) and 412 PreconditionFailed
@@ -206,9 +207,16 @@ class S3Client:
                 Key=key,
                 Body=body,
                 IfNoneMatch="*",
-                ContentType="application/octet-stream",
-                Metadata=raw_object_metadata(content_hash=compute_content_hash(body)),
-                Tagging=raw_object_tagging(),
+                ContentType=content_type,
+                # Raw-tier callers keep the existing retention/data-class
+                # metadata. Durable-artifact callers can supply their own
+                # metadata without duplicating this S3 primitive.
+                Metadata=(
+                    metadata
+                    if metadata is not None
+                    else raw_object_metadata(content_hash=compute_content_hash(body))
+                ),
+                Tagging=tagging if tagging is not None else raw_object_tagging(),
             )
         except ClientError as e:
             # 412 PreconditionFailed → key already exists → idempotent

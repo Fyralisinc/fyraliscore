@@ -1,646 +1,193 @@
-"""Integration tests for services/ingest/ingestion/core.ingest + handlers.
+"""Contract-neutral tests for the direct ingestion core.
 
-Mix of unit tests (Slack signature, phrase extraction) and full-stack
-integration tests (real Postgres, real handler, deterministic embedder).
-One integration test hits real Ollama if OLLAMA_URL is reachable.
+External sources no longer enter through this handler registry. Their payloads are
+authenticated, normalized, and emitted by Source Connector capabilities. The
+direct core remains available for Fyralis-owned and non-source product channels.
 """
+
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import hmac
-import json
-import os
-import time
-from datetime import timezone
-from typing import Any
-from uuid import UUID
-
-import asyncpg
-import httpx
-import pytest
-from hypothesis import HealthCheck, given, settings, strategies as st
-
-from lib.embeddings.ollama import OllamaClient, OllamaConfig
-from lib.shared.errors import ValidationError
 from lib.shared.ids import uuid7
+import pytest
+
 from services.domain.actors.repo import ActorRepo
 from services.domain.entity_aliases.repo import EntityAliasRepo
 from services.ingest.ingestion.core import (
     MAX_PAYLOAD_BYTES,
     PayloadTooLarge,
     _dedup_lock_key,
+    _build_source_evidence_create,
     candidate_phrases,
     ingest,
+    ingest_from_draft,
 )
+from services.ingest.ingestion.handlers import ObservationDraft
+from services.ingest.source_contract.models import SourceObjectRef
+from datetime import datetime, timezone
 from services.ingest.ingestion.handlers import (
-    CHANNEL_TRUST_MAP,
     HandlerNotFound,
     get_handler,
     handler_channels,
 )
-from services.ingest.ingestion.handlers.slack import (
-    SlackSignatureError,
-    extract_entities_from_text,
-    parse_slack_ts,
-    verify_slack_signature,
-)
-from services.domain.observations.events import OBSERVATIONS_CHANNEL
 
 
-# =========================================================================
-# Unit — Slack signature
-# =========================================================================
-
-
-def _sign(body: bytes, secret: str, ts: str | None = None) -> tuple[str, str]:
-    ts = ts or str(int(time.time()))
-    basestring = f"v0:{ts}:{body.decode('utf-8')}".encode("utf-8")
-    sig = "v0=" + hmac.new(secret.encode(), basestring, hashlib.sha256).hexdigest()
-    return ts, sig
-
-
-def test_verify_slack_signature_happy():
-    body = b'{"hello":"world"}'
-    secret = "shh"
-    ts, sig = _sign(body, secret)
-    verify_slack_signature(body, ts, sig, secret)
-
-
-def test_verify_slack_signature_tampered_body():
-    body = b'{"hello":"world"}'
-    secret = "shh"
-    ts, sig = _sign(body, secret)
-    with pytest.raises(SlackSignatureError):
-        verify_slack_signature(b'{"hello":"tampered"}', ts, sig, secret)
-
-
-def test_verify_slack_signature_stale_timestamp():
-    body = b"x"
-    secret = "shh"
-    old_ts = str(int(time.time()) - 3600)
-    _, sig = _sign(body, secret, ts=old_ts)
-    with pytest.raises(SlackSignatureError):
-        verify_slack_signature(body, old_ts, sig, secret)
-
-
-def test_verify_slack_signature_missing_raises():
-    with pytest.raises(SlackSignatureError):
-        verify_slack_signature(b"", "", "", "secret")
-
-
-def test_verify_slack_signature_wrong_secret():
-    body = b"x"
-    ts, sig = _sign(body, "real-secret")
-    with pytest.raises(SlackSignatureError):
-        verify_slack_signature(body, ts, sig, "wrong-secret")
-
-
-def test_verify_slack_signature_non_integer_timestamp():
-    with pytest.raises(SlackSignatureError):
-        verify_slack_signature(b"x", "not-an-int", "v0=abc", "secret")
-
-
-# =========================================================================
-# Unit — Slack helpers
-# =========================================================================
-
-
-def test_parse_slack_ts_microseconds():
-    dt = parse_slack_ts("1700000000.123456")
-    assert dt.tzinfo is timezone.utc
-    assert dt.year == 2023
-
-
-def test_extract_entities_from_text_mentions_channels_urls():
-    text = (
-        "Hey <@U01ALICE> ping <@U02BOB|bob> in <#C01ENG> re: "
-        "<https://example.com|the doc> and <https://b.com>."
-    )
-    entities, unresolved = extract_entities_from_text(text)
-    kinds = [(e["type"], e["id"]) for e in entities]
-    assert ("slack_user", "U01ALICE") in kinds
-    assert ("slack_user", "U02BOB") in kinds
-    assert ("slack_channel", "C01ENG") in kinds
-    assert ("url", "https://example.com") in kinds
-    assert ("url", "https://b.com") in kinds
-    assert unresolved == []
-
-
-def test_extract_entities_deduplicates():
-    text = "<@U1> <@U1>"
-    entities, _ = extract_entities_from_text(text)
-    assert len(entities) == 1
-
-
-# =========================================================================
-# Unit — phrase extraction
-# =========================================================================
-
-
-def test_candidate_phrases_empty():
-    assert candidate_phrases("") == []
-
-
-def test_candidate_phrases_caps_output():
-    text = " ".join([f"Alpha{i}" for i in range(200)])
+def test_candidate_phrases_are_bounded_and_deduplicated() -> None:
+    text = "foo bar FOO BAR " + " ".join(f"Alpha{i}" for i in range(200))
     phrases = candidate_phrases(text, max_phrases=50)
+
     assert len(phrases) == 50
+    assert "foo" in {phrase.lower() for phrase in phrases}
 
 
-def test_candidate_phrases_normalizes_in_dedup():
-    text = "foo bar FOO BAR"
-    phrases = candidate_phrases(text)
-    # After normalization "foo" appears once.
-    normalized = {p.lower() for p in phrases}
-    assert "foo" in normalized
+def test_dedup_lock_key_is_stable_and_tenant_scoped() -> None:
+    tenant_id = uuid7()
+    other_tenant_id = uuid7()
 
+    key = _dedup_lock_key(tenant_id, "internal:state_change", "event-1")
 
-def test_dedup_lock_key_is_stable_and_scoped():
-    tenant = uuid7()
-    other_tenant = uuid7()
-    key = _dedup_lock_key(tenant, "slack:message", "T:C:1.0")
-    assert key == _dedup_lock_key(tenant, "slack:message", "T:C:1.0")
-    assert key != _dedup_lock_key(tenant, "github:issue", "T:C:1.0")
-    assert key != _dedup_lock_key(other_tenant, "slack:message", "T:C:1.0")
+    assert key == _dedup_lock_key(
+        tenant_id, "internal:state_change", "event-1"
+    )
+    assert key != _dedup_lock_key(
+        other_tenant_id, "internal:state_change", "event-1"
+    )
     assert 0 <= key <= 0x7FFFFFFFFFFFFFFF
 
 
-# =========================================================================
-# Unit — handler registry
-# =========================================================================
+def test_direct_registry_excludes_external_source_channels() -> None:
+    channels = set(handler_channels())
 
-
-def test_registry_lists_wave2a_handlers():
-    channels = handler_channels()
-    for required in (
-        "slack:message",
+    assert {
         "internal:state_change",
         "internal:anomaly",
         "internal:prediction_resolution",
-    ):
-        assert required in channels
-
-
-def test_registry_get_handler_unknown_raises():
+    } <= channels
+    assert "slack:message" not in channels
+    assert "github:webhook" not in channels
     with pytest.raises(HandlerNotFound):
-        get_handler("mars:webhook")
+        get_handler("slack:message")
 
 
-def test_channel_trust_map_slack_attested_agent():
-    assert CHANNEL_TRUST_MAP["slack:message"] == "attested_agent"
-
-
-# =========================================================================
-# Integration — ingest happy paths
-# =========================================================================
-
-
-class _FakeProducer:
-    def __init__(self) -> None:
-        self.published: list[tuple[str, bytes, bytes | None]] = []
-
-    async def produce(
-        self,
-        topic: str,
-        value: bytes,
-        *,
-        key: bytes | None = None,
-        **_kwargs: Any,
-    ) -> None:
-        self.published.append((topic, value, key))
-
-
-async def _ingest_slack(
-    pool: asyncpg.Pool,
-    tenant_id: UUID,
-    *,
-    text: str = "hello world",
-    user: str = "U01ALICE",
-    channel: str = "C01ENG",
-    ts: str | None = None,
-    embedder=None,
-    actor_repo=None,
-    alias_repo=None,
-):
-    if ts is None:
-        ts = f"{time.time():.6f}"
-    payload = {
-        "team_id": "T01",
-        "event": {
-            "type": "message",
-            "user": user,
-            "text": text,
-            "ts": ts,
-            "channel": channel,
-        },
-    }
-    return await ingest(
-        "slack:message",
-        payload,
-        pool=pool,
-        tenant_id=tenant_id,
-        actor_repo=actor_repo or ActorRepo(pool),
-        alias_repo=alias_repo or EntityAliasRepo(pool),
-        embedder=embedder,
-    )
-
-
-def _google_drive_file_payload(
-    *,
-    text: str,
-    file_id: str = "summary-file-1",
-    name: str = "Renewal Plan.pdf",
-    mime_type: str = "application/pdf",
-    version: str = "1",
-) -> dict[str, Any]:
-    return {
-        "id": file_id,
-        "name": name,
-        "mimeType": mime_type,
-        "version": version,
-        "trashed": False,
-        "createdTime": "2026-04-01T09:00:00.000Z",
-        "modifiedTime": "2026-04-20T10:00:00.000Z",
-        "webViewLink": f"https://drive.google.com/file/d/{file_id}",
-        "owners": [{"emailAddress": "alice@acme.com", "displayName": "Alice"}],
-        "lastModifyingUser": {"emailAddress": "alice@acme.com"},
-        "_fyralis_drive_id": "my-drive",
-        "_fyralis_drive_kind": "my_drive",
-        "_fyralis_owner_email": "alice@acme.com",
-        "_fyralis_removed": False,
-        "_fyralis_extracted_text": text,
-    }
-
-
-@pytest.mark.asyncio
-async def test_small_google_drive_file_does_not_enqueue_summarization(
-    gateway_pool,
-    tenant_id,
-    _DeterministicEmbedder,
-    monkeypatch,
-):
-    monkeypatch.setenv("INGEST_DOCUMENT_SUMMARY_THRESHOLD_CHARS", "1000")
-    producer = _FakeProducer()
-    text = "Short renewal note. Alice owns the customer FAQ."
-
-    result = await ingest(
-        "google_drive:file",
-        _google_drive_file_payload(text=text, file_id="small-summary-file"),
-        pool=gateway_pool,
-        tenant_id=tenant_id,
-        actor_repo=ActorRepo(gateway_pool),
-        alias_repo=EntityAliasRepo(gateway_pool),
-        embedder=_DeterministicEmbedder(),
-        summarization_producer=producer,
-    )
-
-    obs = result.observation
-    assert obs.content.get("summarization") is None
-    assert "Short renewal note" in obs.content_text
-    assert obs.embedding_pending is False
-    assert producer.published == []
-    assert result.trigger_queue_id is not None
-
-
-@pytest.mark.asyncio
-async def test_large_google_drive_file_becomes_pending_summary_request(
-    gateway_pool,
-    tenant_id,
-    _DeterministicEmbedder,
-    monkeypatch,
-):
-    monkeypatch.setenv("INGEST_DOCUMENT_SUMMARY_THRESHOLD_CHARS", "1000")
-    producer = _FakeProducer()
-    text = (
-        "Enterprise renewal plan. Alice owns escalation governance. "
-        "Priya sends the FAQ. Mateo validates the dashboard. "
-        "Support capacity must remain above 85 percent. "
-    ) * 20
-
-    result = await ingest(
-        "google_drive:file",
-        _google_drive_file_payload(
-            text=text,
-            file_id="large-summary-file",
-            name="Enterprise Renewal Plan.pdf",
-            version="2",
+def test_evidence_contract_separates_object_and_revision_identity() -> None:
+    now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+    draft = ObservationDraft(
+        source_channel="notion:object",
+        content_text="Audit status is in progress",
+        content={"status": "in_progress"},
+        occurred_at=now,
+        trust_tier="attested_agent",
+        external_id="notion:page:audit",
+        source_object=SourceObjectRef(
+            object_type="page",
+            object_id="audit",
+            revision_id="2026-08-04T00:00:00Z",
+            operation="update",
+            source_recorded_at=now,
+            supersedes_revision_id="2026-08-03T00:00:00Z",
         ),
+    )
+
+    evidence = _build_source_evidence_create(
+        tenant_id=uuid7(),
+        draft=draft,
+        raw_s3_key="prod/notion/raw.json",
+        ingress_kind="poll",
+        context={
+            "source": "notion",
+            "content_hash": "a" * 40,
+            "raw_ingested_at": now,
+            "normalized_at": now,
+        },
+    )
+
+    assert evidence.source_object_id == "audit"
+    assert evidence.source_revision_id == "2026-08-04T00:00:00Z"
+    assert evidence.supersedes_revision_id == "2026-08-03T00:00:00Z"
+    assert evidence.raw_retention_state == "available"
+
+
+@pytest.mark.asyncio
+async def test_object_updates_and_deletion_persist_as_distinct_evidence_revisions(
+    gateway_pool,
+    tenant_id,
+) -> None:
+    now = datetime(2026, 8, 4, tzinfo=timezone.utc)
+
+    def revision(revision_id: str, operation: str, text: str) -> ObservationDraft:
+        return ObservationDraft(
+            source_channel="notion:object",
+            content_text=text,
+            content={"text": text},
+            occurred_at=now,
+            trust_tier="attested_agent",
+            external_id="notion:page:audit",
+            source_object=SourceObjectRef(
+                object_type="page",
+                object_id="audit",
+                revision_id=revision_id,
+                operation=operation,
+                source_recorded_at=now,
+            ),
+        )
+
+    first = await ingest_from_draft(
+        channel="notion:object",
+        draft=revision("r1", "create", "audit opened"),
         pool=gateway_pool,
         tenant_id=tenant_id,
-        actor_repo=ActorRepo(gateway_pool),
-        alias_repo=EntityAliasRepo(gateway_pool),
-        embedder=_DeterministicEmbedder(),
-        summarization_producer=producer,
+        enqueue_trigger=False,
     )
-
-    obs = result.observation
-    summary = obs.content.get("summarization")
-    assert isinstance(summary, dict)
-    assert summary["status"] == "pending"
-    assert summary["reason"] == "large_document"
-    assert summary["model"] is None
-    assert summary["original_chars"] == len(summary["source_text"])
-    assert "Enterprise renewal plan" in summary["source_text"]
-    assert obs.content_text == (
-        "Document 'Enterprise Renewal Plan.pdf' is queued for summarization."
-    )
-    assert obs.embedding is None
-    assert obs.embedding_pending is True
-    assert result.trigger_queue_id is None
-
-    assert len(producer.published) == 1
-    topic, value, key = producer.published[0]
-    assert topic == "ingestion.summarization.google_drive"
-    assert key == str(tenant_id).encode("utf-8")
-    envelope = json.loads(value)
-    assert envelope["tenant_id"] == str(tenant_id)
-    assert envelope["observation_id"] == str(obs.id)
-    assert envelope["source"] == "google_drive"
-
-
-@pytest.mark.asyncio
-async def test_slack_happy_path_creates_observation(
-    gateway_pool, tenant_id, seeded_actor, _DeterministicEmbedder
-):
-    # Attach identity mapping so actor resolves.
-    await gateway_pool.execute(
-        """
-        INSERT INTO actor_identity_mappings (
-            actor_id, source_channel, source_actor_ref, confidence
-        ) VALUES ($1, 'slack', 'U01ALICE', 1.0)
-        """,
-        seeded_actor,
-    )
-    result = await _ingest_slack(
-        gateway_pool,
-        tenant_id,
-        text="Hello <@U02BOB> please review <https://example.com>",
-        embedder=_DeterministicEmbedder(),
-    )
-    assert not result.deduped
-    obs = result.observation
-    assert obs.source_channel == "slack:message"
-    assert obs.trust_tier == "attested_agent"
-    assert obs.actor_id == seeded_actor
-    ids = [(e["type"], e["id"]) for e in obs.entities_mentioned]
-    assert ("slack_user", "U02BOB") in ids
-    assert ("url", "https://example.com") in ids
-
-
-@pytest.mark.asyncio
-async def test_dedup_same_slack_message_twice(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    ts = f"{time.time():.6f}"
-    r1 = await _ingest_slack(
-        gateway_pool, tenant_id, ts=ts, embedder=_DeterministicEmbedder()
-    )
-    r2 = await _ingest_slack(
-        gateway_pool, tenant_id, ts=ts, embedder=_DeterministicEmbedder()
-    )
-    assert r1.observation.id == r2.observation.id
-    assert r2.deduped is True
-    assert r2.trigger_queue_id is None  # second call doesn't enqueue T1
-    # Single row in observations.
-    count = await gateway_pool.fetchval(
-        "SELECT count(*) FROM observations WHERE tenant_id = $1",
-        tenant_id,
-    )
-    assert count == 1
-
-
-@pytest.mark.asyncio
-async def test_same_external_id_is_not_deduped_across_tenants(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    other_tenant = uuid7()
-    await gateway_pool.execute(
-        "INSERT INTO tenants (id, name) VALUES ($1, $2)",
-        other_tenant,
-        f"test-tenant-{other_tenant.hex[:8]}",
-    )
-    ts = f"{time.time():.6f}"
-
-    first = await _ingest_slack(
-        gateway_pool,
-        tenant_id,
-        ts=ts,
-        embedder=_DeterministicEmbedder(),
-    )
-    second = await _ingest_slack(
-        gateway_pool,
-        other_tenant,
-        ts=ts,
-        embedder=_DeterministicEmbedder(),
-    )
-
-    assert first.observation.external_id == second.observation.external_id
-    assert first.observation.id != second.observation.id
-    assert second.deduped is False
-    count = await gateway_pool.fetchval(
-        """
-        SELECT count(*) FROM observations
-        WHERE source_channel = 'slack:message' AND external_id = $1
-        """,
-        first.observation.external_id,
-    )
-    assert count == 2
-
-
-@pytest.mark.asyncio
-async def test_unknown_actor_ref_records_unresolved_marker(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    r = await _ingest_slack(
-        gateway_pool,
-        tenant_id,
-        user="U99GHOST",
-        embedder=_DeterministicEmbedder(),
-    )
-    obs = r.observation
-    assert obs.actor_id is None
-    assert obs.content.get("_unresolved_actor_ref") == "slack:U99GHOST"
-    rows = await gateway_pool.fetch(
-        """
-        SELECT kind, object_kind, object_key, question, options, payload
-        FROM clarification_requests
-        WHERE tenant_id = $1
-        """,
-        tenant_id,
-    )
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["kind"] == "actor_identity"
-    assert row["object_kind"] == "source_actor_ref"
-    assert row["object_key"] == "slack:U99GHOST"
-    assert "slack:U99GHOST" in row["question"]
-    options = row["options"]
-    if isinstance(options, str):
-        options = json.loads(options)
-    assert {option["id"] for option in options} >= {
-        "same_as_existing_actor",
-        "new_internal_actor",
-        "new_external_actor",
-        "not_an_actor",
-    }
-
-    await _ingest_slack(
-        gateway_pool,
-        tenant_id,
-        user="U99GHOST",
-        ts=f"{time.time() + 1:.6f}",
-        embedder=_DeterministicEmbedder(),
-    )
-    count = await gateway_pool.fetchval(
-        """
-        SELECT COUNT(*)
-        FROM clarification_requests
-        WHERE tenant_id = $1 AND kind = 'actor_identity'
-        """,
-        tenant_id,
-    )
-    assert count == 1
-
-
-@pytest.mark.asyncio
-async def test_entity_alias_fast_path_resolves(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    # Seed an alias
-    repo = EntityAliasRepo(gateway_pool)
-    await repo.insert_alias(
-        phrase="payments",
-        resolved_entity_ref={"type": "commitment", "id": "c-187"},
-        source="manual",
-        confidence=0.95,
+    second = await ingest_from_draft(
+        channel="notion:object",
+        draft=revision("r2", "update", "audit complete"),
+        pool=gateway_pool,
         tenant_id=tenant_id,
+        enqueue_trigger=False,
     )
-    r = await _ingest_slack(
-        gateway_pool,
-        tenant_id,
-        text="payments system is flaky",
-        embedder=_DeterministicEmbedder(),
-        alias_repo=repo,
+    replay = await ingest_from_draft(
+        channel="notion:object",
+        draft=revision("r2", "update", "audit complete"),
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+        enqueue_trigger=False,
     )
-    refs = r.observation.entities_mentioned
-    assert {"type": "commitment", "id": "c-187"} in refs
-
-
-@pytest.mark.asyncio
-async def test_unresolved_entity_phrase_queued_in_content(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    # No aliases seeded — capitalized multi-word phrase looks like
-    # an entity reference so it lands in the resolver queue.
-    r = await _ingest_slack(
-        gateway_pool,
-        tenant_id,
-        text="The Frobozz-Widget will ship tomorrow",
-        embedder=_DeterministicEmbedder(),
+    deleted = await ingest_from_draft(
+        channel="notion:object",
+        draft=revision("r3", "delete", "audit page deleted"),
+        pool=gateway_pool,
+        tenant_id=tenant_id,
+        enqueue_trigger=False,
     )
-    unresolved = r.observation.content.get("_unresolved_phrases", [])
-    assert any("Frobozz-Widget" in p for p in unresolved)
 
-
-@pytest.mark.asyncio
-async def test_embedding_fallback_on_ollama_error(
-    gateway_pool, tenant_id
-):
-    class _FailingEmbedder:
-        class _C:
-            expected_dim = 768
-
-        def __init__(self):
-            self.config = self._C()
-
-        async def embed(self, text):
-            from lib.embeddings.ollama import OllamaError
-
-            raise OllamaError("simulated")
-
-    r = await _ingest_slack(
-        gateway_pool, tenant_id, embedder=_FailingEmbedder()
-    )
-    assert r.observation.embedding_pending is True
-    assert r.observation.embedding is None
-
-
-@pytest.mark.asyncio
-async def test_trust_tier_slack_is_attested_agent(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    r = await _ingest_slack(
-        gateway_pool, tenant_id, embedder=_DeterministicEmbedder()
-    )
-    assert r.observation.trust_tier == "attested_agent"
-
-
-@pytest.mark.asyncio
-async def test_notify_fires_post_commit(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    """Real asyncpg LISTEN fixture — receive observations_new payload."""
-    dsn = os.environ["DATABASE_URL"]
-    listener_conn = await asyncpg.connect(dsn)
-    received: list[str] = []
-
-    def _on_notify(conn, pid, channel, payload):
-        received.append(payload)
-
-    try:
-        await listener_conn.add_listener(OBSERVATIONS_CHANNEL, _on_notify)
-        r = await _ingest_slack(
-            gateway_pool, tenant_id, embedder=_DeterministicEmbedder()
-        )
-        # Poll for notify — should arrive within 1s.
-        for _ in range(50):
-            if received:
-                break
-            await asyncio.sleep(0.02)
-        assert received, "expected an observations_new NOTIFY"
-        payloads = [json.loads(p) for p in received]
-        assert any(p["id"] == str(r.observation.id) for p in payloads)
-    finally:
-        await listener_conn.remove_listener(OBSERVATIONS_CHANNEL, _on_notify)
-        await listener_conn.close()
-
-
-@pytest.mark.asyncio
-async def test_think_trigger_enqueued_on_new_observation(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    r = await _ingest_slack(
-        gateway_pool, tenant_id, embedder=_DeterministicEmbedder()
-    )
-    assert r.trigger_queue_id is not None
-    row = await gateway_pool.fetchrow(
+    assert len({first.observation.id, second.observation.id, deleted.observation.id}) == 3
+    assert replay.deduped
+    assert replay.observation.id == second.observation.id
+    operations = await gateway_pool.fetch(
         """
-        SELECT tenant_id, trigger_kind, trigger_subkind, observation_id
-        FROM think_trigger_queue WHERE id = $1
+        SELECT operation FROM source_evidence
+         WHERE tenant_id = $1 AND source_object_id = 'audit'
+         ORDER BY source_revision_id
         """,
-        r.trigger_queue_id,
+        tenant_id,
     )
-    assert row is not None
-    assert row["tenant_id"] == tenant_id
-    assert row["trigger_kind"] == "T1"
-    assert row["trigger_subkind"] == "event_arrival"
-    assert row["observation_id"] == r.observation.id
-
-
-# =========================================================================
-# Integration — system handler
-# =========================================================================
+    assert [row["operation"] for row in operations] == ["create", "update", "delete"]
+    outbox_count = await gateway_pool.fetchval(
+        """
+        SELECT count(*) FROM identity_resolution_outbox
+         WHERE tenant_id = $1 AND event_kind = 'observation.ready_for_identity'
+        """,
+        tenant_id,
+    )
+    assert outbox_count == 3
 
 
 @pytest.mark.asyncio
-async def test_system_state_change_ingest(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    cause = uuid7()
-    # Seed the cause observation so the FK-ish reference in cause_id
-    # points at a real row (FK isn't enforced on partitioned table per
-    # Wave 0 note, but seeding is hygienic).
+async def test_internal_state_change_ingest(
+    gateway_pool,
+    tenant_id,
+    _DeterministicEmbedder,
+) -> None:
+    cause_id = uuid7()
     await gateway_pool.execute(
         """
         INSERT INTO observations (
@@ -649,74 +196,36 @@ async def test_system_state_change_ingest(
         ) VALUES ($1, $2, now(), 'signal', 'test:harness',
                   '{}'::jsonb, 'origin', 'authoritative')
         """,
-        cause,
+        cause_id,
         tenant_id,
     )
-    payload = {
-        "content_text": "commitment c-1 transitioned doneverified",
-        "content": {"entity_id": "c-1", "kind": "commitment_doneverified"},
-        "cause_event_id": str(cause),
-    }
-    r = await ingest(
+    result = await ingest(
         "internal:state_change",
-        payload,
+        {
+            "content_text": "commitment c-1 transitioned doneverified",
+            "content": {"entity_id": "c-1"},
+            "cause_event_id": str(cause_id),
+        },
         pool=gateway_pool,
         tenant_id=tenant_id,
         actor_repo=ActorRepo(gateway_pool),
         alias_repo=EntityAliasRepo(gateway_pool),
         embedder=_DeterministicEmbedder(),
     )
-    obs = r.observation
-    assert obs.kind == "state_change"
-    assert obs.source_channel == "internal:state_change"
-    assert obs.trust_tier == "authoritative"
-    assert obs.cause_id == cause
+
+    assert result.observation.source_channel == "internal:state_change"
+    assert result.observation.trust_tier == "authoritative"
+    assert result.observation.cause_id == cause_id
 
 
 @pytest.mark.asyncio
-async def test_internal_channel_accepts_null_external_id(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    """internal:* channels don't carry external_id; two calls may
-    produce two rows (they are not deduped by external_id)."""
-    payload = {
-        "content_text": "anomaly detected",
-        "content": {"ref": "x"},
-    }
-    r1 = await ingest(
-        "internal:anomaly",
-        payload,
-        pool=gateway_pool,
-        tenant_id=tenant_id,
-        actor_repo=ActorRepo(gateway_pool),
-        alias_repo=EntityAliasRepo(gateway_pool),
-        embedder=_DeterministicEmbedder(),
-    )
-    r2 = await ingest(
-        "internal:anomaly",
-        payload,
-        pool=gateway_pool,
-        tenant_id=tenant_id,
-        actor_repo=ActorRepo(gateway_pool),
-        alias_repo=EntityAliasRepo(gateway_pool),
-        embedder=_DeterministicEmbedder(),
-    )
-    assert r1.observation.id != r2.observation.id
-    assert r1.observation.kind == "anomaly_flagged"
-
-
-# =========================================================================
-# Integration — malformed / oversized
-# =========================================================================
-
-
-@pytest.mark.asyncio
-async def test_unknown_channel_raises_handler_not_found(
-    gateway_pool, tenant_id
-):
+async def test_source_channel_cannot_bypass_connector_runtime(
+    gateway_pool,
+    tenant_id,
+) -> None:
     with pytest.raises(HandlerNotFound):
         await ingest(
-            "mars:webhook",
+            "slack:message",
             {},
             pool=gateway_pool,
             tenant_id=tenant_id,
@@ -726,226 +235,19 @@ async def test_unknown_channel_raises_handler_not_found(
 
 
 @pytest.mark.asyncio
-async def test_malformed_slack_payload_raises_validation(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    # Missing 'event' → 'text' missing → handler rejects.
-    with pytest.raises(ValidationError):
-        await ingest(
-            "slack:message",
-            {"team_id": "T01"},
-            pool=gateway_pool,
-            tenant_id=tenant_id,
-            actor_repo=ActorRepo(gateway_pool),
-            alias_repo=EntityAliasRepo(gateway_pool),
-            embedder=_DeterministicEmbedder(),
-        )
-
-
-@pytest.mark.asyncio
-async def test_oversized_payload_rejected(gateway_pool, tenant_id):
-    big_payload = {"event": {"text": "x" * (MAX_PAYLOAD_BYTES + 10)}}
+async def test_oversized_direct_payload_is_rejected(
+    gateway_pool,
+    tenant_id,
+) -> None:
     with pytest.raises(PayloadTooLarge):
         await ingest(
-            "slack:message",
-            big_payload,
+            "internal:anomaly",
+            {
+                "content_text": "x" * (MAX_PAYLOAD_BYTES + 1),
+                "content": {},
+            },
             pool=gateway_pool,
             tenant_id=tenant_id,
             actor_repo=ActorRepo(gateway_pool),
             alias_repo=EntityAliasRepo(gateway_pool),
         )
-
-
-# =========================================================================
-# Integration — UUID v7 monotonicity
-# =========================================================================
-
-
-@pytest.mark.asyncio
-async def test_successive_ingests_have_monotonic_ids(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    ids = []
-    for i in range(8):
-        r = await _ingest_slack(
-            gateway_pool,
-            tenant_id,
-            ts=f"{time.time() + i:.6f}",
-            text=f"msg {i}",
-            embedder=_DeterministicEmbedder(),
-        )
-        ids.append(r.observation.id)
-    # UUID v7 is time-sortable; strictly non-decreasing.
-    assert all(ids[i] < ids[i + 1] for i in range(len(ids) - 1))
-
-
-# =========================================================================
-# Integration — 50-concurrent dedup
-# =========================================================================
-
-
-@pytest.mark.asyncio
-async def test_50_concurrent_ingests_same_external_id_dedup_to_one(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    ts = f"{time.time():.6f}"
-
-    async def one():
-        try:
-            return await _ingest_slack(
-                gateway_pool,
-                tenant_id,
-                ts=ts,
-                embedder=_DeterministicEmbedder(),
-            )
-        except Exception:
-            return None
-
-    results = await asyncio.gather(*[one() for _ in range(50)])
-    survived = [r for r in results if r is not None]
-    # Every ingest should return an IngestResult (conflicts collapse to
-    # a read of the winning row); at least one fresh insert, rest dedup.
-    assert len(survived) == 50
-    unique_ids = {r.observation.id for r in survived}
-    assert len(unique_ids) == 1
-    count = await gateway_pool.fetchval(
-        "SELECT count(*) FROM observations WHERE tenant_id = $1", tenant_id
-    )
-    assert count == 1
-
-
-# =========================================================================
-# Integration — replay 100 events → 100 dedups
-# =========================================================================
-
-
-@pytest.mark.asyncio
-async def test_replay_events_dedups_to_zero_new_rows(
-    gateway_pool, tenant_id, _DeterministicEmbedder
-):
-    # Seed 20 events (smaller than 100 to keep the test fast; the
-    # invariant — "every replay dedups" — is the same).
-    original: list[UUID] = []
-    for i in range(20):
-        r = await _ingest_slack(
-            gateway_pool,
-            tenant_id,
-            ts=f"{time.time() + i:.6f}",
-            text=f"e{i}",
-            embedder=_DeterministicEmbedder(),
-        )
-        original.append(r.observation.id)
-    count_after_seed = await gateway_pool.fetchval(
-        "SELECT count(*) FROM observations WHERE tenant_id = $1", tenant_id
-    )
-    assert count_after_seed == 20
-    # Replay — every message uses the same ts so dedup should fire.
-    # We need the same external_id so reuse the ones we just captured
-    # by reading them back and re-ingesting.
-    rows = await gateway_pool.fetch(
-        "SELECT external_id, content_text FROM observations WHERE tenant_id = $1",
-        tenant_id,
-    )
-    for row in rows:
-        # Parse channel:ts from external_id
-        channel_id, ts = row["external_id"].split(":", 1)
-        r = await _ingest_slack(
-            gateway_pool,
-            tenant_id,
-            ts=ts,
-            channel=channel_id,
-            text=row["content_text"],
-            embedder=_DeterministicEmbedder(),
-        )
-        assert r.deduped is True
-    count_after_replay = await gateway_pool.fetchval(
-        "SELECT count(*) FROM observations WHERE tenant_id = $1", tenant_id
-    )
-    assert count_after_replay == 20
-
-
-# =========================================================================
-# Property test — fuzz Slack shape
-# =========================================================================
-
-
-# Hypothesis: make the test tolerate DB side-effects gracefully.
-@settings(
-    deadline=None,
-    suppress_health_check=[HealthCheck.function_scoped_fixture],
-    max_examples=12,
-)
-@given(
-    text=st.text(max_size=200),
-    user=st.text(
-        alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-        min_size=1,
-        max_size=12,
-    ),
-    channel=st.text(
-        alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-        min_size=1,
-        max_size=12,
-    ),
-)
-@pytest.mark.asyncio
-async def test_fuzz_slack_payload_never_500s(
-    gateway_pool, tenant_id, _DeterministicEmbedder, text, user, channel
-):
-    payload = {
-        "team_id": "T01",
-        "event": {
-            "type": "message",
-            "user": user,
-            "text": text,
-            "ts": f"{time.time():.6f}",
-            "channel": f"C{channel}",
-        },
-    }
-    # A ValidationError is a structured 4xx — acceptable.
-    try:
-        await ingest(
-            "slack:message",
-            payload,
-            pool=gateway_pool,
-            tenant_id=tenant_id,
-            actor_repo=ActorRepo(gateway_pool),
-            alias_repo=EntityAliasRepo(gateway_pool),
-            embedder=_DeterministicEmbedder(),
-        )
-    except ValidationError:
-        pass
-    except Exception as e:
-        # Internal error not acceptable.
-        pytest.fail(f"fuzz raised unexpected {type(e).__name__}: {e}")
-
-
-# =========================================================================
-# Integration — real Ollama
-# =========================================================================
-
-
-@pytest.mark.asyncio
-async def test_real_ollama_embedding_stored(gateway_pool, tenant_id):
-    """Requires OLLAMA_URL + OLLAMA_EMBED_MODEL in env (integration-only)."""
-    url = os.environ.get("OLLAMA_URL")
-    if not url:
-        pytest.skip("OLLAMA_URL not set — skipping real-Ollama test")
-    try:
-        r = httpx.get(f"{url}/api/tags", timeout=2.0)
-        if r.status_code != 200:
-            pytest.skip(f"ollama not reachable: {r.status_code}")
-    except Exception:
-        pytest.skip("ollama not reachable")
-
-    client = OllamaClient(OllamaConfig.from_env())
-    try:
-        r = await _ingest_slack(
-            gateway_pool, tenant_id, text="rate limiter deep dive", embedder=client
-        )
-    finally:
-        await client.close()
-    obs = r.observation
-    assert obs.embedding_pending is False
-    assert obs.embedding is not None
-    assert len(obs.embedding) == 768

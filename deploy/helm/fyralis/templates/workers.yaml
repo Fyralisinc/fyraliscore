@@ -1,0 +1,61 @@
+{{- if .Values.workers.enabled }}
+{{- $root := . }}
+{{- range $name, $worker := .Values.workers.items }}
+{{- if $worker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "fyralis.fullname" $root }}-{{ $name }}
+  labels:
+    {{- include "fyralis.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  replicas: {{ default $root.Values.workers.defaultReplicas $worker.replicas }}
+  selector:
+    matchLabels:
+      {{- include "fyralis.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: {{ $name }}
+  template:
+    metadata:
+      annotations:
+        checksum/app-env: {{ toJson $root.Values.app | sha256sum }}
+      labels:
+        {{- include "fyralis.selectorLabels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $name }}
+    spec:
+      serviceAccountName: {{ include "fyralis.serviceAccountName" $root }}
+      initContainers:
+        {{- include "fyralis.waitForLocalServices" $root | nindent 8 }}
+      containers:
+        - name: {{ $name }}
+          image: {{ include "fyralis.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          command:
+            {{- toYaml $worker.command | nindent 12 }}
+          ports:
+            - name: health
+              containerPort: {{ $root.Values.app.ingestionHealthPort }}
+          envFrom:
+            - configMapRef:
+                name: {{ include "fyralis.appEnvConfigName" $root }}
+            - secretRef:
+                name: {{ include "fyralis.appSecretName" $root }}
+            {{- if and $root.Values.app.figmaOAuth.enabled $root.Values.app.figmaOAuth.existingSecret (or (eq $name "shard-fetch") (eq $name "reconciler") (eq $name "periodic-reconciler")) }}
+            # Only components that exchange or refresh Figma grants receive
+            # the customer-managed secret-reference configuration.
+            - secretRef:
+                name: {{ $root.Values.app.figmaOAuth.existingSecret }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 8
+          resources:
+            {{- toYaml $root.Values.resources | nindent 12 }}
+---
+{{- end }}
+{{- end }}
+{{- end }}

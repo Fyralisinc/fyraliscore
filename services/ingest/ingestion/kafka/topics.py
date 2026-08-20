@@ -15,23 +15,21 @@ and the circuit-breaker lag probe all derive names from THIS module. Nothing
 else may hardcode a per-source topic string — a test asserts the provisioner's
 topic set equals `all_data_plane_topics()`.
 
-The canonical source list is `RawEnvelope.SourceLiteral`, so the topic
-registry and the envelope schema can never drift: add a source to the literal
-and its four topics appear here automatically.
+The canonical source list is the generated source-contract index, so topic and
+envelope validation cannot drift from connector manifests.
 
 Control-plane topics (`ingestion.tenant_traffic_signal`, progress) are NOT
 per-source — they carry per-tenant signals, not per-source data — and live as
 plain constants at their existing call sites.
 """
+
 from __future__ import annotations
 
-from typing import get_args
-
-from services.ingest.ingestion.raw_tier.envelope import SourceLiteral
+from services.ingest.source_contract.source_catalog import ingestion_source_ids
 
 # The canonical, ordered tuple of ingestion sources, derived from the
-# envelope's Literal so the two can never diverge.
-INGESTION_SOURCES: tuple[str, ...] = tuple(get_args(SourceLiteral))
+# generated index plus the explicitly scoped supplemental adapters.
+INGESTION_SOURCES: tuple[str, ...] = ingestion_source_ids()
 
 # The per-source data-plane stages. The string is both the topic infix and
 # the logical stage name used in consumer-group construction.
@@ -56,13 +54,11 @@ def topic_for(stage: str, source: str) -> str:
     """
     if stage not in DATA_PLANE_STAGES:
         raise ValueError(
-            f"unknown ingestion stage {stage!r}; "
-            f"expected one of {DATA_PLANE_STAGES}"
+            f"unknown ingestion stage {stage!r}; expected one of {DATA_PLANE_STAGES}"
         )
     if source not in INGESTION_SOURCES:
         raise ValueError(
-            f"unknown ingestion source {source!r}; "
-            f"expected one of {INGESTION_SOURCES}"
+            f"unknown ingestion source {source!r}; expected one of {INGESTION_SOURCES}"
         )
     return f"{_TOPIC_PREFIX}.{stage}.{source}"
 
@@ -74,8 +70,7 @@ def topics_for_stage(stage: str) -> list[str]:
     """
     if stage not in DATA_PLANE_STAGES:
         raise ValueError(
-            f"unknown ingestion stage {stage!r}; "
-            f"expected one of {DATA_PLANE_STAGES}"
+            f"unknown ingestion stage {stage!r}; expected one of {DATA_PLANE_STAGES}"
         )
     return [f"{_TOPIC_PREFIX}.{stage}.{source}" for source in INGESTION_SOURCES]
 
@@ -84,11 +79,7 @@ def all_data_plane_topics() -> list[str]:
     """Every per-source data-plane topic across every stage. The provisioner
     creates exactly this set (plus the control-plane topics).
     """
-    return [
-        topic
-        for stage in DATA_PLANE_STAGES
-        for topic in topics_for_stage(stage)
-    ]
+    return [topic for stage in DATA_PLANE_STAGES for topic in topics_for_stage(stage)]
 
 
 def consumer_group(stage_group: str, source: str | None) -> str:
@@ -103,8 +94,7 @@ def consumer_group(stage_group: str, source: str | None) -> str:
         return stage_group
     if source not in INGESTION_SOURCES:
         raise ValueError(
-            f"unknown ingestion source {source!r}; "
-            f"expected one of {INGESTION_SOURCES}"
+            f"unknown ingestion source {source!r}; expected one of {INGESTION_SOURCES}"
         )
     return f"{stage_group}.{source}"
 
